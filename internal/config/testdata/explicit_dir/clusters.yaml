@@ -1,0 +1,4 @@
+clusters:
+  - name: explicit
+    brokers: ['explicit-broker:9092']
+    color: white

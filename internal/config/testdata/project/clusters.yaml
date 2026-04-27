@@ -1,0 +1,10 @@
+clusters:
+  - name: prod
+    color: green
+    read_only: false
+    sasl:
+      username: project-user
+
+  - name: dev
+    brokers: ['dev-broker-1:9092', 'dev-broker-2:9092']
+    color: gray

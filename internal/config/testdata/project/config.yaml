@@ -1,0 +1,11 @@
+logging:
+  level: debug
+
+refresh:
+  topics_list: 5s
+
+topics:
+  columns: [name, partitions]
+
+clipboard:
+  method: osc52
