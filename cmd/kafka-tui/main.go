@@ -27,6 +27,11 @@ func main() {
 		return
 	}
 
+	if err := config.EnvFileResolvers().ResolveStruct(flags); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+
 	switch {
 	case flags.ShowVersion:
 		_, _ = fmt.Fprintln(os.Stdout, version.Format(versionString, commit))

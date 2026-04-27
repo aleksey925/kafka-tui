@@ -50,6 +50,12 @@ type LoaderOptions struct {
 	StartDir       string // override starting directory for project lookup
 	ConfigPath     string // value of --config
 	CLIClusterName string // name of an inline CLI cluster (for collision detection)
+
+	// Vault, when non-nil, runs the second phase of placeholder resolution and
+	// fails the load if any ${vault:...} value cannot be looked up. When nil,
+	// vault placeholders are left intact — the call site is expected to wire
+	// the vault client in a later step.
+	Vault VaultResolver
 }
 
 // Loaded is the result of Load.
@@ -114,6 +120,10 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 			return nil, fmt.Errorf("config: %w", remarshalErr)
 		}
 		clusters = cf.Clusters
+	}
+
+	if resolveErr := resolvePlaceholders(&cfg, clusters, opts.Vault); resolveErr != nil {
+		return nil, resolveErr
 	}
 
 	for _, c := range clusters {
@@ -259,6 +269,33 @@ func readYAMLFileIfExists(path string) ([]byte, error) {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
 	return data, nil
+}
+
+// resolvePlaceholders runs the env+file phase always, then the vault phase
+// when a vault resolver is configured. Errors propagate so the loader can
+// refuse to start with unresolved placeholders.
+func resolvePlaceholders(cfg *Config, clusters []Cluster, vault VaultResolver) error {
+	envFile := EnvFileResolvers()
+	if err := envFile.ResolveStruct(cfg); err != nil {
+		return err
+	}
+	if err := envFile.ResolveStruct(clusters); err != nil {
+		return err
+	}
+	if vault == nil {
+		return nil
+	}
+	vaultPhase := VaultOnlyResolvers(vault)
+	if err := vaultPhase.ResolveStruct(cfg); err != nil {
+		return err
+	}
+	if err := vaultPhase.ResolveStruct(clusters); err != nil {
+		return err
+	}
+	if err := assertNoPlaceholders(cfg); err != nil {
+		return err
+	}
+	return assertNoPlaceholders(clusters)
 }
 
 func remarshalInto(dst, src any) error {
