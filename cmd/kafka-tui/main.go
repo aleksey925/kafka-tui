@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/aleksey925/kafka-tui/internal/cli"
+	"github.com/aleksey925/kafka-tui/internal/config"
+	"github.com/aleksey925/kafka-tui/internal/logging"
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
 
@@ -28,12 +32,24 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stdout, version.Format(versionString, commit))
 		return
 	case flags.ShowLogsDir:
-		// real implementation lands in Task 3 (logging).
-		_, _ = fmt.Fprintln(os.Stderr, "--logs-dir: not yet implemented (logging arrives in Task 3)")
-		os.Exit(1)
+		path, err := resolveLogPath(flags)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, filepath.Dir(path))
+		return
 	case flags.ShowLogs:
-		_, _ = fmt.Fprintln(os.Stderr, "--logs: not yet implemented (logging arrives in Task 3)")
-		os.Exit(1)
+		path, err := resolveLogPath(flags)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		if err := logging.OpenInPager(context.Background(), path); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		return
 	}
 
 	// TUI start-up lands in Task 10.
@@ -44,4 +60,19 @@ func main() {
 	if flags.Inline.HasInlineCluster() {
 		_, _ = fmt.Fprintf(os.Stdout, "  inline brokers: %v\n", flags.Inline.Brokers)
 	}
+}
+
+// resolveLogPath loads config (without failing on missing files) and returns
+// the resolved absolute path of the log file.
+func resolveLogPath(flags *cli.Flags) (string, error) {
+	loaded, err := config.Load(config.LoaderOptions{ConfigPath: flags.ConfigPath})
+	logFile := config.Defaults().Logging.File
+	if err == nil && loaded != nil {
+		logFile = loaded.Config.Logging.File
+	}
+	resolved, resolveErr := logging.ResolveFilePath(logFile, "")
+	if resolveErr != nil {
+		return "", fmt.Errorf("resolve log path: %w", resolveErr)
+	}
+	return resolved, nil
 }
