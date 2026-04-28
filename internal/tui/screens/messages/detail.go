@@ -470,11 +470,15 @@ func defaultWriteFile(path string, data []byte) error {
 // inject a [PagerOpenerFunc].
 func DefaultPagerOpener() PagerOpener {
 	return PagerOpenerFunc(func(path string) error {
-		editor := os.Getenv("EDITOR")
+		editor := strings.TrimSpace(os.Getenv("EDITOR"))
 		if editor == "" {
 			editor = "vi"
 		}
-		cmd := exec.CommandContext(context.Background(), editor, path) //nolint:gosec // user-controlled $EDITOR
+		parts := strings.Fields(editor)
+		args := make([]string, 0, len(parts))
+		args = append(args, parts[1:]...)
+		args = append(args, path)
+		cmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

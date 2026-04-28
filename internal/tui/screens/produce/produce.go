@@ -591,7 +591,7 @@ func produceCmd(svc Service, spec kafka.ProduceSpec, closeAfter bool) tea.Cmd {
 // Unsuitable for unit tests; tests inject [PagerOpenerFunc].
 func DefaultPagerOpener() PagerOpener {
 	return PagerOpenerFunc(func(initial []byte) ([]byte, error) {
-		editor := os.Getenv("EDITOR")
+		editor := strings.TrimSpace(os.Getenv("EDITOR"))
 		if editor == "" {
 			editor = "vi"
 		}
@@ -608,7 +608,11 @@ func DefaultPagerOpener() PagerOpener {
 		if cerr := tmp.Close(); cerr != nil {
 			return nil, fmt.Errorf("editor: close temp: %w", cerr)
 		}
-		cmd := exec.CommandContext(context.Background(), editor, path) //nolint:gosec // user-controlled $EDITOR
+		parts := strings.Fields(editor)
+		args := make([]string, 0, len(parts))
+		args = append(args, parts[1:]...)
+		args = append(args, path)
+		cmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

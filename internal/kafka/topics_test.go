@@ -198,12 +198,22 @@ func TestClient_CloneTopic__kfake(t *testing.T) {
 	}))
 
 	produce := []*kgo.Record{
-		{Topic: "src", Key: []byte("k1"), Value: []byte("v1")},
-		{Topic: "src", Key: []byte("k2"), Value: []byte("v2")},
-		{Topic: "src", Key: []byte("k3"), Value: []byte("v3")},
-		{Topic: "src", Key: []byte("k4"), Value: []byte("v4")},
+		{Topic: "src", Partition: 0, Key: []byte("k1"), Value: []byte("v1")},
+		{Topic: "src", Partition: 0, Key: []byte("k2"), Value: []byte("v2")},
+		{Topic: "src", Partition: 1, Value: []byte("vk-less-1")},
+		{Topic: "src", Partition: 1, Value: []byte("vk-less-2")},
 	}
-	require.NoError(t, c.kc.ProduceSync(ctx, produce...).FirstErr())
+	// produce with a manual partitioner so the records land in the partitions
+	// specified above; the clone must preserve that layout.
+	srcOpts, _, err := BuildClientOptions(c.cluster, DialOptions{
+		ClientID:  "topics_test-src-producer",
+		ExtraOpts: []kgo.Opt{kgo.RecordPartitioner(kgo.ManualPartitioner())},
+	})
+	require.NoError(t, err)
+	srcProducer, err := kgo.NewClient(srcOpts...)
+	require.NoError(t, err)
+	t.Cleanup(srcProducer.Close)
+	require.NoError(t, srcProducer.ProduceSync(ctx, produce...).FirstErr())
 
 	progress, err := c.CloneTopic(ctx, "src", "dst", CloneOptions{})
 	require.NoError(t, err)
@@ -220,9 +230,23 @@ func TestClient_CloneTopic__kfake(t *testing.T) {
 	assert.EqualValues(t, len(produce), last.Total)
 	assert.EqualValues(t, len(produce), last.Copied)
 
-	wm, err := c.TopicWatermarks(ctx, "dst")
+	srcWm, err := c.TopicWatermarks(ctx, "src")
 	require.NoError(t, err)
-	assert.EqualValues(t, len(produce), wm.Count())
+	dstWm, err := c.TopicWatermarks(ctx, "dst")
+	require.NoError(t, err)
+	assert.EqualValues(t, len(produce), dstWm.Count())
+	// per-partition counts must match between src and dst — the clone worker
+	// uses ManualPartitioner so keyless records keep their partition rather
+	// than being re-distributed via the default sticky partitioner.
+	srcCounts := make(map[int32]int64, len(srcWm.Partitions))
+	for p, w := range srcWm.Partitions {
+		srcCounts[p] = w.High - w.Low
+	}
+	dstCounts := make(map[int32]int64, len(dstWm.Partitions))
+	for p, w := range dstWm.Partitions {
+		dstCounts[p] = w.High - w.Low
+	}
+	assert.Equal(t, srcCounts, dstCounts)
 }
 
 func TestClient_CloneTopic__emptySource__createsEmptyDest(t *testing.T) {

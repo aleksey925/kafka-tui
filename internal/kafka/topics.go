@@ -350,12 +350,12 @@ type CloneProgress struct {
 	Err    error
 }
 
-// CloneOptions tweaks the source-topic configs that should be carried over
-// to the destination during a clone.
+// CloneOptions tweaks how a topic clone is performed.
 type CloneOptions struct {
-	// CopyConfigs, when non-nil, is the explicit set of topic-level configs
-	// applied to the destination. When nil, no extra configs are copied.
-	CopyConfigs map[string]string
+	// CopyConfigs, when true, fetches the source topic's dynamic configs and
+	// applies them to the destination at create time. When false the
+	// destination is created with broker defaults.
+	CopyConfigs bool
 	// ReplicationFactor for the destination. When zero, it falls back to the
 	// source topic's replication factor.
 	ReplicationFactor int16
@@ -391,11 +391,27 @@ func (c *Client) CloneTopic(ctx context.Context, src, dst string, opts CloneOpti
 		}
 	}
 
+	var configs map[string]string
+	if opts.CopyConfigs {
+		srcConfigs, cfgErr := c.DescribeAllTopicConfigs(ctx, src)
+		if cfgErr != nil {
+			return nil, fmt.Errorf("kafka: clone %q→%q: source configs: %w", src, dst, cfgErr)
+		}
+		configs = make(map[string]string, len(srcConfigs))
+		for _, cfg := range srcConfigs {
+			// only carry over explicit topic-level overrides; broker defaults
+			// and static configs would otherwise be pinned on the destination.
+			if cfg.Source == kmsg.ConfigSourceDynamicTopicConfig.String() && cfg.Value != "" {
+				configs[cfg.Key] = cfg.Value
+			}
+		}
+	}
+
 	if createErr := c.CreateTopic(ctx, CreateTopicSpec{
 		Name:              dst,
 		Partitions:        partitions,
 		ReplicationFactor: rf,
-		Configs:           opts.CopyConfigs,
+		Configs:           configs,
 	}); createErr != nil {
 		return nil, createErr
 	}
@@ -429,6 +445,10 @@ func (c *Client) runClone(
 		ExtraOpts: []kgo.Opt{
 			kgo.ConsumeTopics(src),
 			kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+			// honor each record's Partition field so destination partition layout
+			// matches the source. Without this, keyless records would be
+			// re-distributed via the default sticky partitioner.
+			kgo.RecordPartitioner(kgo.ManualPartitioner()),
 		},
 	})
 	if err != nil {

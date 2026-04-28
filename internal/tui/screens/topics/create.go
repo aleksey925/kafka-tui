@@ -204,11 +204,7 @@ func (c *CloneForm) Options() kafka.CloneOptions {
 		opts.ReplicationFactor = int16(rf) //nolint:gosec // bounded above
 	}
 	if strings.EqualFold(get("copy_configs"), "yes") {
-		// nil signals "do not copy" in kafka.CloneOptions; the actual copy is
-		// done at the kafka layer when the caller supplies a non-nil map. We
-		// can't compute the source configs here without a Service handle, so
-		// leave the map nil and rely on kafka.Client.CloneTopic semantics.
-		opts.CopyConfigs = map[string]string{}
+		opts.CopyConfigs = true
 	}
 	return opts
 }
