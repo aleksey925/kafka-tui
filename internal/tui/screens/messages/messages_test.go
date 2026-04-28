@@ -147,44 +147,84 @@ func TestDetail_FormatHotkeysSwitchView(t *testing.T) {
 	assert.Equal(t, messages.ViewHex, m.Detail().ViewMode())
 }
 
-func TestDetail_CopyValueUsesClipboard(t *testing.T) {
+func TestDetail_CopyRecordUsesClipboard(t *testing.T) {
 	cb := &fakeClipboard{}
 	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "orders", Value: []byte("payload")},
+		{Topic: "orders", Partition: 1, Offset: 7, Key: []byte("kk"), Value: []byte("hello")},
 	}, 0)
 
 	_, _ = model.Update(keyPress("y"))
-	_, _ = model.Update(keyPress("v"))
-
-	assert.Equal(t, []string{"payload"}, cb.payloads)
-	assert.Contains(t, model.ConsumeAction().Toast, "copied value")
-}
-
-func TestDetail_CopyKeyUsesClipboard(t *testing.T) {
-	cb := &fakeClipboard{}
-	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "orders", Key: []byte("kk"), Value: []byte("vv")},
-	}, 0)
-
-	_, _ = model.Update(keyPress("y"))
-	_, _ = model.Update(keyPress("k"))
-
-	assert.Equal(t, []string{"kk"}, cb.payloads)
-}
-
-func TestDetail_CopyAllProducesJSON(t *testing.T) {
-	cb := &fakeClipboard{}
-	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "orders", Partition: 1, Offset: 7, Value: []byte("hello")},
-	}, 0)
-
-	_, _ = model.Update(keyPress("y"))
-	_, _ = model.Update(keyPress("a"))
 
 	require.Len(t, cb.payloads, 1)
 	assert.Contains(t, cb.payloads[0], `"topic": "orders"`)
 	assert.Contains(t, cb.payloads[0], `"partition": 1`)
 	assert.Contains(t, cb.payloads[0], `"offset": 7`)
+	assert.Contains(t, cb.payloads[0], `"text": "kk"`)
+	assert.Contains(t, model.ConsumeAction().Toast, "copied record")
+}
+
+func TestDetail_CopyRecord_NoClipboard_WarnsUnavailable(t *testing.T) {
+	// arrange
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages: []kafka.Message{{Topic: "t", Value: []byte("v")}},
+		Index:    0,
+	})
+
+	// act
+	_, _ = model.Update(keyPress("y"))
+
+	// assert
+	assert.Contains(t, model.ConsumeAction().Warn, "clipboard unavailable")
+}
+
+func TestDetail_CopyRecord_ClipboardError_WarnsWithError(t *testing.T) {
+	// arrange
+	cb := &fakeClipboard{err: errors.New("no display")}
+	model := newDetail(t, cb, []kafka.Message{
+		{Topic: "t", Value: []byte("v")},
+	}, 0)
+
+	// act
+	_, _ = model.Update(keyPress("y"))
+
+	// assert
+	assert.Contains(t, model.ConsumeAction().Warn, "no display")
+}
+
+func TestDetail_SaveValue_JSONDetectedAsJSON(t *testing.T) {
+	// arrange
+	fw := &fakeWriter{}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages:   []kafka.Message{{Topic: "t", Partition: 0, Offset: 1, Value: []byte(`{"a":1}`)}},
+		Index:      0,
+		FileWriter: fw,
+		OutputDir:  "/tmp",
+	})
+
+	// act
+	_, _ = model.Update(keyPress("s"))
+
+	// assert
+	require.Len(t, fw.writes, 1)
+	assert.Equal(t, "/tmp/t-p0-o1-value.json", fw.writes[0].path)
+}
+
+func TestDetail_SaveValue_BinaryGetsBinExt(t *testing.T) {
+	// arrange
+	fw := &fakeWriter{}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages:   []kafka.Message{{Topic: "t", Partition: 0, Offset: 1, Value: []byte{0x00, 0x01, 0x02}}},
+		Index:      0,
+		FileWriter: fw,
+		OutputDir:  "/tmp",
+	})
+
+	// act
+	_, _ = model.Update(keyPress("s"))
+
+	// assert
+	require.Len(t, fw.writes, 1)
+	assert.Equal(t, "/tmp/t-p0-o1-value.bin", fw.writes[0].path)
 }
 
 func TestDetail_SaveValueWritesFile(t *testing.T) {
@@ -199,7 +239,7 @@ func TestDetail_SaveValueWritesFile(t *testing.T) {
 	_, _ = model.Update(keyPress("s"))
 
 	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p1-o7.txt", fw.writes[0].path)
+	assert.Equal(t, "/tmp/orders-p1-o7-value.txt", fw.writes[0].path)
 	assert.Equal(t, []byte("hello"), fw.writes[0].data)
 	assert.Contains(t, model.ConsumeAction().Toast, "saved")
 }
@@ -216,7 +256,7 @@ func TestDetail_SaveFullJSON(t *testing.T) {
 	_, _ = model.Update(keyPress("S"))
 
 	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p0-o3.json", fw.writes[0].path)
+	assert.Equal(t, "/tmp/orders-p0-o3-record.json", fw.writes[0].path)
 	assert.Contains(t, string(fw.writes[0].data), `"topic": "orders"`)
 }
 

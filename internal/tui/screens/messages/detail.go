@@ -88,7 +88,6 @@ type DetailModel struct {
 	pager     PagerOpener
 	outputDir string
 	view      ValueView
-	yPrimed   bool
 	action    DetailAction
 	styles    theme.Styles
 	now       func() time.Time
@@ -164,7 +163,7 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
 		{Key: "n/p", Label: "next/prev"},
 		{Key: "1/2/3", Label: "json/raw/hex"},
-		{Key: "y …", Label: "copy"},
+		{Key: "y", Label: "copy"},
 		{Key: "s/S", Label: "save"},
 		{Key: "e", Label: "$EDITOR"},
 	}
@@ -181,11 +180,6 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	if !ok {
 		return d, nil
 	}
-	if d.yPrimed {
-		d.handleYankFollowup(key)
-		d.yPrimed = false
-		return d, nil
-	}
 	switch key.String() {
 	case "esc", "q":
 		d.action.Back = true
@@ -200,7 +194,7 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	case "3":
 		d.view = ViewHex
 	case "y":
-		d.yPrimed = true
+		d.copyRecord()
 	case "s":
 		d.saveValue()
 	case "S":
@@ -220,24 +214,14 @@ func (d *DetailModel) move(delta int) {
 	d.index = clampInt(d.index+delta, 0, len(d.messages)-1)
 }
 
-// handleYankFollowup interprets the second key of `y <x>`.
-func (d *DetailModel) handleYankFollowup(key tea.KeyPressMsg) {
+func (d *DetailModel) copyRecord() {
 	cur := d.Current()
-	switch key.String() {
-	case "k":
-		d.copy(string(cur.Key), "key")
-	case "v":
-		d.copy(string(cur.Value), "value")
-	case "h":
-		d.copy(headersText(cur.Headers), "headers")
-	case "a":
-		blob, err := json.MarshalIndent(toExportable(cur), "", "  ")
-		if err != nil {
-			d.action.Warn = "copy: " + err.Error()
-			return
-		}
-		d.copy(string(blob), "all")
+	blob, err := json.MarshalIndent(toExportable(cur), "", "  ")
+	if err != nil {
+		d.action.Warn = "copy: " + err.Error()
+		return
 	}
+	d.copy(string(blob), "record")
 }
 
 func (d *DetailModel) copy(payload, label string) {
@@ -272,7 +256,7 @@ func (d *DetailModel) saveFullJSON() {
 		d.action.Warn = "save: " + err.Error()
 		return
 	}
-	name := defaultSaveName(cur, "message", ".json")
+	name := defaultSaveName(cur, "record", ".json")
 	path := filepath.Join(d.outputDir, name)
 	if err := d.writer.Write(path, blob); err != nil {
 		d.action.Warn = "save: " + err.Error()
@@ -337,7 +321,7 @@ func (d *DetailModel) View(width, _ int) string {
 func (d *DetailModel) renderHeader(cur kafka.Message, _ int) string {
 	pos := fmt.Sprintf("%d/%d", d.index+1, len(d.messages))
 	body := fmt.Sprintf(
-		"%s · P%d · offset %d · %s",
+		"%s · partition %d · offset %d · %s",
 		cur.Topic,
 		cur.Partition,
 		cur.Offset,
@@ -438,11 +422,11 @@ func defaultSaveName(msg kafka.Message, kind, ext string) string {
 	if clean == "" {
 		clean = "message"
 	}
-	return fmt.Sprintf("%s-p%d-o%d%s", clean, msg.Partition, msg.Offset, ext)
+	return fmt.Sprintf("%s-p%d-o%d-%s%s", clean, msg.Partition, msg.Offset, kind, ext)
 }
 
 func saveExt(payload []byte, kind string) string {
-	if kind == "message" {
+	if kind == "record" {
 		return ".json"
 	}
 	switch kafka.DetectValueFormat(payload) {
