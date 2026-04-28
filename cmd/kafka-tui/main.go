@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/aleksey925/kafka-tui/internal/cli"
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/logging"
+	"github.com/aleksey925/kafka-tui/internal/tui"
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
 
@@ -57,13 +60,19 @@ func main() {
 		return
 	}
 
-	// TUI start-up lands in Task 10.
-	_, _ = fmt.Fprintln(os.Stdout, "kafka-tui: TUI is not implemented yet (arrives in Task 10).")
-	if flags.ClusterName != "" {
-		_, _ = fmt.Fprintf(os.Stdout, "  cluster: %s\n", flags.ClusterName)
-	}
-	if flags.Inline.HasInlineCluster() {
-		_, _ = fmt.Fprintf(os.Stdout, "  inline brokers: %v\n", flags.Inline.Brokers)
+	model := tui.New(tui.Options{
+		Cluster:      flags.ClusterName,
+		ClusterColor: flags.Inline.Color,
+		ReadOnly:     flags.Inline.ReadOnly,
+		FromCLI:      flags.Inline.HasInlineCluster(),
+		Initial:      tui.ScreenClusters,
+		Version:      versionString,
+		Commit:       commit,
+	})
+
+	if _, err := tea.NewProgram(model).Run(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
 	}
 }
 
