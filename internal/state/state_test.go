@@ -3,7 +3,9 @@ package state_test
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -333,6 +335,93 @@ func TestAddProduce_ContextCancellationStopsInsert(t *testing.T) {
 	got, listErr := store.RecentProduce(t.Context(), 10)
 	require.NoError(t, listErr)
 	assert.Empty(t, got)
+}
+
+func TestDefaultPath_HomeUnsetReturnsError(t *testing.T) {
+	// arrange — os.UserHomeDir consults different env vars per platform.
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+	case "plan9":
+		t.Setenv("home", "")
+	default:
+		t.Setenv("HOME", "")
+	}
+
+	// act
+	_, err := state.DefaultPath()
+
+	// assert
+	require.Error(t, err)
+}
+
+func TestOpen_EmptyPathResolvesViaDefaultPath(t *testing.T) {
+	// arrange
+	tmp := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", tmp)
+	default:
+		t.Setenv("HOME", tmp)
+	}
+
+	// act
+	store, err := state.Open(t.Context(), "")
+
+	// assert
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	expected := filepath.Join(tmp, ".local", "share", "kafka-tui", "state.db")
+	assert.Equal(t, expected, store.Path())
+
+	info, statErr := os.Stat(expected)
+	require.NoError(t, statErr)
+	assert.False(t, info.IsDir())
+}
+
+func TestOpen_CannotCreateParentDirectoryReturnsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: MkdirAll succeeds against a regular file")
+	}
+	// arrange — make the parent path a file, so MkdirAll fails.
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
+	dbPath := filepath.Join(blocker, "nested", "state.db")
+
+	// act
+	_, err := state.Open(t.Context(), dbPath)
+
+	// assert
+	require.Error(t, err)
+}
+
+func TestClose_NilReceiverIsSafe(t *testing.T) {
+	// arrange
+	var s *state.Store
+
+	// act + assert
+	require.NoError(t, s.Close())
+}
+
+func TestOpen_ContextCancelledBeforePingReturnsError(t *testing.T) {
+	// arrange
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "state.db")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	// act
+	store, err := state.Open(ctx, dbPath)
+
+	// assert
+	require.Error(t, err)
+	if store != nil {
+		_ = store.Close()
+	}
 }
 
 // helpers
