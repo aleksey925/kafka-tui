@@ -395,6 +395,83 @@ func TestRefreshInterval_OffYieldsNilCmd(t *testing.T) {
 	assert.Nil(t, m.AutoRefreshTick())
 }
 
+func TestFilterTopics_ShowsOnlyMatchingTopics(t *testing.T) {
+	// arrange
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "orders"},
+		{Name: "payments"},
+		{Name: "users"},
+		{Name: "logs"},
+	}, nil)
+	m := topics.New(topics.Options{
+		Service:      svc,
+		FilterTopics: []string{"orders", "payments"},
+	})
+
+	// act
+	drive(t, m, m.Init())
+
+	// assert
+	visible := m.Topics()
+	assert.Equal(t, []kafka.TopicSummary{
+		{Name: "orders"},
+		{Name: "payments"},
+	}, visible)
+	assert.Len(t, m.AllTopics(), 4)
+}
+
+func TestFilterTopics_EmptyFilter_ShowsAll(t *testing.T) {
+	// arrange
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "alpha"},
+		{Name: "beta"},
+	}, nil)
+	m := topics.New(topics.Options{Service: svc})
+
+	// act
+	drive(t, m, m.Init())
+
+	// assert
+	visible := m.Topics()
+	assert.Equal(t, []kafka.TopicSummary{
+		{Name: "alpha"},
+		{Name: "beta"},
+	}, visible)
+}
+
+func TestFilterTopics_CombinesWithInternalToggle(t *testing.T) {
+	// arrange
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "orders"},
+		{Name: "__consumer_offsets", IsInternal: true},
+		{Name: "payments"},
+		{Name: "users"},
+	}, nil)
+	m := topics.New(topics.Options{
+		Service:      svc,
+		FilterTopics: []string{"orders", "__consumer_offsets", "payments"},
+	})
+
+	// act
+	drive(t, m, m.Init())
+
+	// assert — internal hidden by default even if in filter
+	visible := m.Topics()
+	assert.Equal(t, []kafka.TopicSummary{
+		{Name: "orders"},
+		{Name: "payments"},
+	}, visible)
+
+	// toggle internal on
+	_, _ = m.Update(keyPress("i"))
+	visible = m.Topics()
+	assert.Equal(t, []kafka.TopicSummary{
+		{Name: "orders"},
+		{Name: "__consumer_offsets", IsInternal: true},
+		{Name: "payments"},
+	}, visible)
+}
+
 // ----- helpers -----
 
 func buildModelWith(t *testing.T, ts []kafka.TopicSummary) *topics.Model {

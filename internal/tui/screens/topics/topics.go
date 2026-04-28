@@ -79,6 +79,9 @@ type Options struct {
 	// Columns lists the column keys to render, in order. Empty falls back to
 	// [DefaultColumns].
 	Columns []string
+	// FilterTopics, when non-empty, limits the displayed topics to this set.
+	// Used for groups→topics navigation.
+	FilterTopics []string
 	// RefreshInterval, when > 0, enables periodic auto-refresh.
 	RefreshInterval time.Duration
 	// Now is the injected clock (defaults to time.Now).
@@ -96,6 +99,7 @@ type Model struct {
 	readOnly bool
 
 	columns      []string
+	filterNames  map[string]struct{}
 	allTopics    []kafka.TopicSummary
 	hiddenIntern int
 	showInternal bool
@@ -154,10 +158,19 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
+	var filterSet map[string]struct{}
+	if len(opts.FilterTopics) > 0 {
+		filterSet = make(map[string]struct{}, len(opts.FilterTopics))
+		for _, name := range opts.FilterTopics {
+			filterSet[name] = struct{}{}
+		}
+	}
+
 	return &Model{
 		svc:             opts.Service,
 		readOnly:        opts.ReadOnly,
 		columns:         cols,
+		filterNames:     filterSet,
 		watermarks:      map[string]kafka.TopicWatermarks{},
 		sizes:           map[string]int64{},
 		configs:         map[string][]kafka.TopicConfig{},
@@ -548,6 +561,11 @@ func (m *Model) visibleTopics() []kafka.TopicSummary {
 		if t.IsInternal && !m.showInternal {
 			hidden++
 			continue
+		}
+		if len(m.filterNames) > 0 {
+			if _, ok := m.filterNames[t.Name]; !ok {
+				continue
+			}
 		}
 		out = append(out, t)
 	}

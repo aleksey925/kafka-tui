@@ -121,9 +121,10 @@ type Model struct {
 
 	// nav seeds — populated when a screen requests navigation, consumed when
 	// the next screen is instantiated.
-	navTopic       string
-	navPrefill     *kafka.Message
-	navGroupFilter string
+	navTopic        string
+	navTopicsFilter []string
+	navPrefill      *kafka.Message
+	navGroupFilter  string
 }
 
 // New creates a root model populated with the given options.
@@ -723,11 +724,8 @@ func (m *Model) routeGroupsAction(s *groupsScreen) tea.Cmd {
 		m.navTopic = a.Topic
 		return m.pushScreenCmd(ScreenMessages)
 	case len(a.TopicsForGroup) > 0:
-		// topics screen does not yet support filtering by a subset of
-		// topics; surface the request as a toast on the groups screen.
-		s.m.Toasts().Push(components.ToastInfo,
-			fmt.Sprintf("topic filter %v: not yet supported in :topics", a.TopicsForGroup))
-		return nil
+		m.navTopicsFilter = a.TopicsForGroup
+		return m.pushScreenCmd(ScreenTopics)
 	}
 	return nil
 }
@@ -824,6 +822,7 @@ func (m *Model) instantiate(id ScreenID) {
 	if m.boot == nil {
 		return
 	}
+	defer m.clearNavSeeds()
 	switch id {
 	case ScreenClusters:
 		m.active = &clustersScreen{m: m.newClusters()}
@@ -856,6 +855,13 @@ func (m *Model) instantiate(id ScreenID) {
 	}
 }
 
+func (m *Model) clearNavSeeds() {
+	m.navTopic = ""
+	m.navTopicsFilter = nil
+	m.navPrefill = nil
+	m.navGroupFilter = ""
+}
+
 func (m *Model) newClusters() *clusters.Model {
 	b := m.boot
 	return clusters.New(clusters.Options{
@@ -877,6 +883,7 @@ func (m *Model) newTopics() *topics.Model {
 		Service:         m.client,
 		ReadOnly:        m.clusterRO,
 		Columns:         cfg.Topics.Columns,
+		FilterTopics:    m.navTopicsFilter,
 		RefreshInterval: parseRefresh(cfg.Refresh.TopicsList),
 		Now:             m.now,
 		Styles:          m.styles,
@@ -922,12 +929,10 @@ func (m *Model) newProduce() *produce.Model {
 
 func (m *Model) newGroups() *groups.Model {
 	cfg := m.boot.Loaded.Config
-	filter := m.navGroupFilter
-	m.navGroupFilter = ""
 	return groups.New(groups.Options{
 		Service:               m.client,
 		ReadOnly:              m.clusterRO,
-		FilterTopic:           filter,
+		FilterTopic:           m.navGroupFilter,
 		ListRefreshInterval:   parseRefresh(cfg.Refresh.GroupsList),
 		DetailRefreshInterval: parseRefresh(cfg.Refresh.GroupDetail),
 		Now:                   m.now,
