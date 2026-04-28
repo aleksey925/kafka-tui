@@ -30,7 +30,10 @@ func main() {
 		return
 	}
 
-	if err := config.EnvFileResolvers().ResolveStruct(flags); err != nil {
+	// ResolveAll runs env+file then asserts no placeholders remain, so a
+	// stranded ${vault:...} on a CLI flag (e.g. --sasl-password) fails at
+	// startup instead of silently propagating the literal placeholder string.
+	if err := config.ResolveAll(flags, nil); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}

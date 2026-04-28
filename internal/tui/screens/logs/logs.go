@@ -641,13 +641,24 @@ func readAll(path string, off int64) ([]string, int64, error) {
 		return nil, off, fmt.Errorf("logs: open %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	// stat BEFORE scanning so writes that arrive while we read don't bump the
+	// reported next-offset past content we never observed (those bytes get
+	// picked up on the next tick instead).
+	info, err := f.Stat()
+	if err != nil {
+		return nil, off, fmt.Errorf("logs: stat %s: %w", path, err)
+	}
+	size := info.Size()
+	if size <= off {
+		return nil, size, nil
+	}
 	if off > 0 {
 		if _, seekErr := f.Seek(off, io.SeekStart); seekErr != nil {
 			return nil, off, fmt.Errorf("logs: seek %s: %w", path, seekErr)
 		}
 	}
 	var lines []string
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(io.LimitReader(f, size-off))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
@@ -655,11 +666,7 @@ func readAll(path string, off int64) ([]string, int64, error) {
 	if scanErr := scanner.Err(); scanErr != nil {
 		return nil, off, fmt.Errorf("logs: read %s: %w", path, scanErr)
 	}
-	info, err := f.Stat()
-	if err != nil {
-		return nil, off, fmt.Errorf("logs: stat %s: %w", path, err)
-	}
-	return lines, info.Size(), nil
+	return lines, size, nil
 }
 
 func clamp(v, lo, hi int) int {
