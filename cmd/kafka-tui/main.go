@@ -21,13 +21,8 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
 
-// these variables are populated at build time via -ldflags "-X main.version=... -X main.commit=...".
-//
 //nolint:gochecknoglobals // ldflags target.
-var (
-	versionString = "dev"
-	commit        = ""
-)
+var ver = "0.0.0"
 
 func main() {
 	flags, ok := cli.MustParseOrExit()
@@ -46,7 +41,7 @@ func main() {
 
 	switch {
 	case flags.ShowVersion:
-		_, _ = fmt.Fprintln(os.Stdout, version.Format(versionString, commit))
+		_, _ = fmt.Fprintln(os.Stdout, version.NewBuildInfo(ver).Display())
 		return
 	case flags.ShowLogsDir:
 		path, err := resolveLogPath(flags)
@@ -140,8 +135,7 @@ func run(flags *cli.Flags) error {
 		ReadOnly:     flags.Inline.ReadOnly,
 		FromCLI:      flags.Inline.HasInlineCluster(),
 		Initial:      tui.ScreenClusters,
-		Version:      versionString,
-		Commit:       commit,
+		Build:        version.NewBuildInfo(ver),
 		Bootstrap:    boot,
 	})
 

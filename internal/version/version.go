@@ -1,12 +1,45 @@
 package version
 
-import "fmt"
+import (
+	"fmt"
+	"runtime/debug"
+)
 
-// Format renders the human-readable version string in the form "v0.7.3 (a1b2c3d)".
-// If commit is empty, only the version is rendered.
-func Format(version, commit string) string {
-	if commit == "" {
-		return version
+const shortHashLen = 7
+
+// BuildInfo describes the binary's identity (semver + VCS hash).
+type BuildInfo struct {
+	Version string
+	Commit  string
+}
+
+// NewBuildInfo creates a BuildInfo with the given version and the commit hash
+// auto-extracted from Go VCS build settings.
+func NewBuildInfo(ver string) BuildInfo {
+	return BuildInfo{Version: ver, Commit: vcsRevision()}
+}
+
+// Display returns "x.y.z (hash)" or "x.y.z" if Commit is empty.
+func (b BuildInfo) Display() string {
+	if b.Commit == "" {
+		return b.Version
 	}
-	return fmt.Sprintf("%s (%s)", version, commit)
+	return fmt.Sprintf("%s (%s)", b.Version, b.Commit)
+}
+
+func vcsRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return extractRevision(info.Settings)
+}
+
+func extractRevision(settings []debug.BuildSetting) string {
+	for _, s := range settings {
+		if s.Key == "vcs.revision" && len(s.Value) >= shortHashLen {
+			return s.Value[:shortHashLen]
+		}
+	}
+	return ""
 }

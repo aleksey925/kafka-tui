@@ -65,8 +65,8 @@ type Options struct {
 	// arrive via tea.WindowSizeMsg.
 	Width, Height int
 
-	// Version / Commit are shown in the help overlay footer.
-	Version, Commit string
+	// Build describes the binary's version and VCS commit hash.
+	Build version.BuildInfo
 
 	// Now is an injectable clock for deterministic tests.
 	Now func() time.Time
@@ -101,8 +101,7 @@ type Model struct {
 
 	styles  theme.Styles
 	now     func() time.Time
-	version string
-	commit  string
+	build version.BuildInfo
 
 	quit bool
 
@@ -165,8 +164,7 @@ func New(opts Options) *Model {
 		autoRefresh: true,
 		styles:      styles,
 		now:         now,
-		version:     opts.Version,
-		commit:      opts.Commit,
+		build:       opts.Build,
 		boot:        opts.Bootstrap,
 		activeClu:   opts.Cluster,
 		clusterClr:  opts.ClusterColor,
@@ -460,7 +458,7 @@ func (m *Model) renderBody() string {
 
 func (m *Model) renderHelp() string {
 	title := m.styles.HelpTitle.Render("Help")
-	versionLine := m.styles.StatusInfo.Render(version.Format(m.version, m.commit))
+	versionLine := m.styles.StatusInfo.Render(m.build.Display())
 
 	globalHints := []layout.KeyHint{
 		{Key: ":", Label: "open command bar"},

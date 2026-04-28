@@ -12,6 +12,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
+	"github.com/aleksey925/kafka-tui/internal/version"
 )
 
 func TestParseCommand(t *testing.T) {
@@ -226,7 +227,7 @@ func TestModel_SearchMode(t *testing.T) {
 }
 
 func TestModel_HelpToggle(t *testing.T) {
-	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Version: "v0.7.3", Commit: "abcdef0", Width: 80})
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Build: version.BuildInfo{Version: "v0.7.3", Commit: "abcdef0"}, Width: 80})
 
 	updated, _ := m.Update(keyPress("?"))
 	m = updated.(*tui.Model)

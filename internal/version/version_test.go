@@ -1,31 +1,78 @@
 package version
 
 import (
+	"runtime/debug"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestFormat__withCommit__includesParens(t *testing.T) {
-	// arrange + act
-	got := Format("v0.7.3", "a1b2c3d")
+func TestBuildInfo_Display(t *testing.T) {
+	tests := []struct {
+		name  string
+		build BuildInfo
+		want  string
+	}{
+		{
+			name:  "version with commit",
+			build: BuildInfo{Version: "1.2.3", Commit: "abc1234"},
+			want:  "1.2.3 (abc1234)",
+		},
+		{
+			name:  "version without commit",
+			build: BuildInfo{Version: "1.2.3"},
+			want:  "1.2.3",
+		},
+		{
+			name:  "default dev version without commit",
+			build: BuildInfo{Version: "0.0.0"},
+			want:  "0.0.0",
+		},
+	}
 
-	// assert
-	assert.Equal(t, "v0.7.3 (a1b2c3d)", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.build.Display())
+		})
+	}
 }
 
-func TestFormat__withoutCommit__returnsVersionOnly(t *testing.T) {
-	// arrange + act
-	got := Format("v0.7.3", "")
+func TestExtractRevision(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings []debug.BuildSetting
+		want     string
+	}{
+		{
+			name:     "empty settings",
+			settings: nil,
+			want:     "",
+		},
+		{
+			name:     "no vcs.revision key",
+			settings: []debug.BuildSetting{{Key: "GOOS", Value: "linux"}},
+			want:     "",
+		},
+		{
+			name:     "valid revision is truncated to short hash",
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abc1234567890def"}},
+			want:     "abc1234",
+		},
+		{
+			name:     "revision shorter than shortHashLen is rejected",
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abc"}},
+			want:     "",
+		},
+		{
+			name:     "revision exactly shortHashLen long",
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "abc1234"}},
+			want:     "abc1234",
+		},
+	}
 
-	// assert
-	assert.Equal(t, "v0.7.3", got)
-}
-
-func TestFormat__devVersion(t *testing.T) {
-	// arrange + act
-	got := Format("dev", "abcdef0")
-
-	// assert
-	assert.Equal(t, "dev (abcdef0)", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractRevision(tt.settings))
+		})
+	}
 }
