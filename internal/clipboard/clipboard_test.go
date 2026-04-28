@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,11 +134,14 @@ func TestNew__auto__joinsErrorsWhenBothFail(t *testing.T) {
 }
 
 func TestNew__auto__concurrencyDoesNotSerializeTransports(t *testing.T) {
-	// arrange — both transports block on a shared channel; if Copy ran
-	// them sequentially the second would deadlock.
-	gate := make(chan struct{})
-	native := &gatingClipboard{gate: gate, recordingClipboard: recordingClipboard{}}
-	osc52 := &gatingClipboard{gate: gate, recordingClipboard: recordingClipboard{}}
+	// arrange — each transport's Copy blocks on a shared rendezvous wait
+	// group: it calls Done then Wait. If MethodAuto ran them sequentially
+	// the first Copy would block forever (count=1, waiting for count=0
+	// which only happens after the second Copy is entered).
+	rendezvous := &sync.WaitGroup{}
+	rendezvous.Add(2)
+	native := &rendezvousClipboard{wg: rendezvous}
+	osc52 := &rendezvousClipboard{wg: rendezvous}
 
 	c := clipboard.New(clipboard.Options{Method: clipboard.MethodAuto, Native: native, OSC52: osc52})
 
@@ -145,11 +149,14 @@ func TestNew__auto__concurrencyDoesNotSerializeTransports(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- c.Copy(context.Background(), "x") }()
 
-	close(gate)
-	err := <-done
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Copy did not return — transports ran sequentially")
+	}
 
 	// assert
-	require.NoError(t, err)
 	assert.Equal(t, []string{"x"}, native.payloads())
 	assert.Equal(t, []string{"x"}, osc52.payloads())
 }
@@ -370,15 +377,17 @@ func (r *recordingClipboard) payloads() []string {
 	return out
 }
 
-// gatingClipboard blocks Copy until gate is closed. Used to verify the
-// auto transport runs both calls concurrently.
-type gatingClipboard struct {
+// rendezvousClipboard requires every concurrent Copy invocation to reach
+// the rendezvous before any single Copy can return. Sequential execution
+// cannot satisfy the wait, so a deadlock means the transport serialized.
+type rendezvousClipboard struct {
 	recordingClipboard
-	gate chan struct{}
+	wg *sync.WaitGroup
 }
 
-func (g *gatingClipboard) Copy(ctx context.Context, payload string) error {
-	<-g.gate
+func (g *rendezvousClipboard) Copy(ctx context.Context, payload string) error {
+	g.wg.Done()
+	g.wg.Wait()
 	return g.recordingClipboard.Copy(ctx, payload)
 }
 

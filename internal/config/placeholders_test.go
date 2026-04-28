@@ -31,6 +31,33 @@ func (s *stubVault) Lookup(path, key string) (string, error) {
 	return v, nil
 }
 
+// missingEnvLookup returns an EnvLookup that reports `name` as absent and
+// delegates everything else to os.LookupEnv. This avoids os.Unsetenv calls
+// that mutate process-wide env state across parallel tests.
+func missingEnvLookup(name string) config.EnvLookup {
+	return func(n string) (string, bool) {
+		if n == name {
+			return "", false
+		}
+		return os.LookupEnv(n)
+	}
+}
+
+// unsetEnv removes an env var for the duration of the test, capturing the
+// original value (if any) and restoring it during t.Cleanup.
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	prev, had := os.LookupEnv(name)
+	require.NoError(t, os.Unsetenv(name))
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(name, prev)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
+}
+
 func TestResolveString__envSet(t *testing.T) {
 	// arrange
 	t.Setenv("KT_USER", "alice")
@@ -45,10 +72,10 @@ func TestResolveString__envSet(t *testing.T) {
 
 func TestResolveString__envWithDefault__usesDefault(t *testing.T) {
 	// arrange
-	require.NoError(t, os.Unsetenv("KT_NOT_SET"))
+	r := config.Resolvers{Env: missingEnvLookup("KT_NOT_SET")}
 
 	// act
-	got, err := config.EnvFileResolvers().ResolveString("v=${env:KT_NOT_SET:-fallback}")
+	got, err := r.ResolveString("v=${env:KT_NOT_SET:-fallback}")
 
 	// assert
 	require.NoError(t, err)
@@ -69,10 +96,10 @@ func TestResolveString__envWithDefault__envWins(t *testing.T) {
 
 func TestResolveString__envMissingNoDefault__error(t *testing.T) {
 	// arrange
-	require.NoError(t, os.Unsetenv("KT_REALLY_MISSING"))
+	r := config.Resolvers{Env: missingEnvLookup("KT_REALLY_MISSING")}
 
 	// act
-	_, err := config.EnvFileResolvers().ResolveString("${env:KT_REALLY_MISSING}")
+	_, err := r.ResolveString("${env:KT_REALLY_MISSING}")
 
 	// assert
 	require.Error(t, err)
@@ -333,7 +360,7 @@ func TestResolveAll__noVaultButVaultPlaceholderRemains__error(t *testing.T) {
 
 func TestResolveAll__envFailureBeforeVault(t *testing.T) {
 	// arrange
-	require.NoError(t, os.Unsetenv("KT_NOPE"))
+	unsetEnv(t, "KT_NOPE")
 	type creds struct {
 		V string
 	}
@@ -386,7 +413,7 @@ func TestLoad_PlaceholderResolution_EnvFile(t *testing.T) {
 	assert.Equal(t, "CA-BLOB", loaded.Clusters[0].TLS.CA)
 }
 
-func TestLoad_PlaceholderResolution_VaultLeftWhenNoResolver(t *testing.T) {
+func TestLoad_PlaceholderResolution_VaultErrorsWhenNoResolver(t *testing.T) {
 	// arrange
 	homeDir := t.TempDir()
 	cfgDir := filepath.Join(homeDir, ".kafka-tui")
@@ -403,17 +430,16 @@ func TestLoad_PlaceholderResolution_VaultLeftWhenNoResolver(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "clusters.yaml"), clustersYAML, 0o644))
 
-	// act — without vault resolver, vault placeholder is left intact
-	loaded, err := config.Load(config.LoaderOptions{
+	// act — without a vault resolver, leftover ${vault:...} must fail loud
+	// so unresolved secrets cannot leak into runtime fields like SASL passwords.
+	_, err := config.Load(config.LoaderOptions{
 		HomeDir:  homeDir,
 		StartDir: t.TempDir(),
 	})
 
 	// assert
-	require.NoError(t, err)
-	require.Len(t, loaded.Clusters, 1)
-	require.NotNil(t, loaded.Clusters[0].SASL)
-	assert.Equal(t, "${vault:kv/db#pw}", loaded.Clusters[0].SASL.Password)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "${vault:kv/db#pw}")
 }
 
 func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
@@ -451,7 +477,7 @@ func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
 
 func TestLoad_PlaceholderResolution_MissingEnv__loadError(t *testing.T) {
 	// arrange
-	require.NoError(t, os.Unsetenv("KT_LOAD_MISSING"))
+	unsetEnv(t, "KT_LOAD_MISSING")
 	homeDir := t.TempDir()
 	cfgDir := filepath.Join(homeDir, ".kafka-tui")
 	require.NoError(t, os.MkdirAll(cfgDir, 0o755))

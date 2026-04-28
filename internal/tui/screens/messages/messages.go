@@ -380,7 +380,16 @@ func (m *Model) cursorIndex() (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	return parseRowID(row.ID)
+	partition, offset, ok := parseRowID(row.ID)
+	if !ok {
+		return 0, false
+	}
+	for i, msg := range m.messages {
+		if msg.Partition == partition && msg.Offset == offset {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
@@ -561,9 +570,9 @@ func (m *Model) JumpToPartition(partitions []int32) tea.Cmd {
 
 func (m *Model) refreshTable() {
 	rows := make([]components.Row, 0, len(m.messages))
-	for i, msg := range m.messages {
+	for _, msg := range m.messages {
 		rows = append(rows, components.Row{
-			ID:     formatRowID(i),
+			ID:     formatRowID(msg.Partition, msg.Offset),
 			Values: m.rowValues(msg),
 		})
 	}
@@ -693,23 +702,33 @@ func columnSpec(key string) components.Column {
 	}
 }
 
-// formatRowID renders a stable row identifier that maps back to the index
-// in m.messages. Using a deterministic ID lets the table preserve cursor
-// focus across SetRows calls (e.g. when follow-mode appends new rows).
-func formatRowID(i int) string {
-	return "msg-" + strconv.Itoa(i)
+// formatRowID renders a stable row identifier from a record's partition
+// and offset. Using a content-based ID (rather than the slice index) lets
+// the table preserve cursor focus when follow-mode prepends new rows or
+// when the slice is otherwise reordered.
+func formatRowID(partition int32, offset int64) string {
+	return "msg-" + strconv.FormatInt(int64(partition), 10) + "-" + strconv.FormatInt(offset, 10)
 }
 
-func parseRowID(id string) (int, bool) {
+func parseRowID(id string) (int32, int64, bool) {
 	const prefix = "msg-"
 	if !strings.HasPrefix(id, prefix) {
-		return 0, false
+		return 0, 0, false
 	}
-	n, err := strconv.Atoi(id[len(prefix):])
-	if err != nil || n < 0 {
-		return 0, false
+	rest := id[len(prefix):]
+	dash := strings.IndexByte(rest, '-')
+	if dash <= 0 {
+		return 0, 0, false
 	}
-	return n, true
+	p, err := strconv.ParseInt(rest[:dash], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	o, err := strconv.ParseInt(rest[dash+1:], 10, 64)
+	if err != nil || o < 0 {
+		return 0, 0, false
+	}
+	return int32(p), o, true
 }
 
 func lowestOffsets(msgs []kafka.Message) map[int32]int64 {

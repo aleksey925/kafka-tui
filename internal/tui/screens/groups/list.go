@@ -115,20 +115,12 @@ type Model struct {
 	styles theme.Styles
 }
 
-// pendingOp tracks a destructive action awaiting confirmation.
+// pendingOp tracks a destructive action awaiting confirmation. An empty
+// group means no operation is pending; only the delete flow uses this
+// today, so a single field is enough.
 type pendingOp struct {
-	kind  pendingKind
 	group string
 }
-
-type pendingKind int
-
-const (
-	opNone pendingKind = iota
-	opDelete
-)
-
-var _ = opNone // documentation marker.
 
 // New constructs a Model.
 func New(opts Options) *Model {
@@ -373,7 +365,7 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case a.OpenResetExpress:
 		return m.openResetForGroup(d.Group(), true, ScopeDetail{Group: d.Group()})
 	case a.Delete:
-		m.pending = pendingOp{kind: opDelete, group: d.Group()}
+		m.pending = pendingOp{group: d.Group()}
 		m.confirm = components.NewConfirm(
 			"Delete consumer group",
 			fmt.Sprintf("Delete group %q? This cannot be undone.", d.Group()),
@@ -464,7 +456,7 @@ func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	m.pending = pendingOp{kind: opDelete, group: row.ID}
+	m.pending = pendingOp{group: row.ID}
 	m.confirm = components.NewConfirm(
 		"Delete consumer group",
 		fmt.Sprintf("Delete group %q? This cannot be undone.", row.ID),
@@ -483,7 +475,7 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		op := m.pending
 		m.confirm = nil
 		m.pending = pendingOp{}
-		if op.kind == opDelete {
+		if op.group != "" {
 			return m, deleteCmd(m.svc, op.group)
 		}
 	case components.ConfirmNo:

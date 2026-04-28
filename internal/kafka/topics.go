@@ -446,6 +446,12 @@ func (c *Client) runClone(
 	for p, w := range wm.Partitions {
 		endsByPartition[p] = w.High
 	}
+	// progressed accumulates the highest offset+1 we have observed for each
+	// partition across polls. PollFetches returns whatever is currently
+	// available, so a partition that finished draining in an earlier poll
+	// won't reappear in later fetches — without cumulative tracking the
+	// terminator below would never observe completion.
+	progressed := make(map[int32]int64, len(wm.Partitions))
 
 	var copied atomic.Int64
 	for {
@@ -465,6 +471,9 @@ func (c *Client) runClone(
 				Headers:   r.Headers,
 			}
 			batch = append(batch, rec)
+			if next := r.Offset + 1; next > progressed[r.Partition] {
+				progressed[r.Partition] = next
+			}
 		})
 		if len(batch) > 0 {
 			if results := worker.ProduceSync(ctx, batch...); results.FirstErr() != nil {
@@ -475,7 +484,7 @@ func (c *Client) runClone(
 			progress <- CloneProgress{Total: total, Copied: copied.Load()}
 		}
 
-		if reachedEnd(fetches, endsByPartition) {
+		if reachedEnd(progressed, endsByPartition) {
 			progress <- CloneProgress{Total: total, Copied: copied.Load(), Done: true}
 			return
 		}
@@ -508,30 +517,19 @@ func safeInt16(n int) (int16, error) {
 }
 
 // reachedEnd returns true when all partitions whose high watermark we
-// recorded have been consumed up to (or past) that watermark.
-func reachedEnd(fetches kgo.Fetches, ends map[int32]int64) bool {
+// recorded have been consumed up to (or past) that watermark. progressed
+// is the cumulative next-offset observed for each partition across all
+// polls so far.
+func reachedEnd(progressed, ends map[int32]int64) bool {
 	if len(ends) == 0 {
 		return true
 	}
-	progressed := map[int32]int64{}
-	fetches.EachPartition(func(ftp kgo.FetchTopicPartition) {
-		// HighWatermark + LogStartOffset are populated when the broker
-		// reports them. We only care about the latest fetched offset.
-		if n := len(ftp.Records); n > 0 {
-			last := ftp.Records[n-1]
-			progressed[last.Partition] = last.Offset + 1
-		}
-	})
 	for p, end := range ends {
-		offset, seen := progressed[p]
-		if !seen {
-			// no records yet for this partition – check if it was already empty
-			if end == 0 {
-				continue
-			}
-			return false
+		if end == 0 {
+			continue
 		}
-		if offset < end {
+		offset, seen := progressed[p]
+		if !seen || offset < end {
 			return false
 		}
 	}

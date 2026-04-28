@@ -80,8 +80,8 @@ func TestResolveFilePath__envPlaceholder(t *testing.T) {
 }
 
 func TestResolveFilePath__envWithDefault__usesDefault(t *testing.T) {
-	// arrange — variable explicitly unset
-	require.NoError(t, os.Unsetenv("KAFKA_TUI_NOT_SET"))
+	// arrange — variable explicitly unset, restored after the test
+	unsetEnv(t, "KAFKA_TUI_NOT_SET")
 
 	// act
 	got, err := ResolveFilePath("${env:KAFKA_TUI_NOT_SET:-/tmp/fallback.log}", "")
@@ -105,7 +105,7 @@ func TestResolveFilePath__envWithDefault__envWins(t *testing.T) {
 
 func TestResolveFilePath__missingEnvNoDefault__returnsError(t *testing.T) {
 	// arrange
-	require.NoError(t, os.Unsetenv("KAFKA_TUI_REALLY_MISSING"))
+	unsetEnv(t, "KAFKA_TUI_REALLY_MISSING")
 
 	// act
 	_, err := ResolveFilePath("${env:KAFKA_TUI_REALLY_MISSING}/app.log", "")
@@ -340,4 +340,20 @@ func TestOpenInPager__usesPagerEnv(t *testing.T) {
 	got, readErr := os.ReadFile(marker) //nolint:gosec // test-controlled path
 	require.NoError(t, readErr)
 	assert.Equal(t, logFile+"\n", string(got))
+}
+
+// unsetEnv removes an env var for the duration of the test, capturing the
+// original value (if any) and restoring it during t.Cleanup. Avoids leaving
+// processes-wide env state mutated when the test ends.
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	prev, had := os.LookupEnv(name)
+	require.NoError(t, os.Unsetenv(name))
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(name, prev)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
 }

@@ -273,7 +273,10 @@ func readYAMLFileIfExists(path string) ([]byte, error) {
 
 // resolvePlaceholders runs the env+file phase always, then the vault phase
 // when a vault resolver is configured. Errors propagate so the loader can
-// refuse to start with unresolved placeholders.
+// refuse to start with unresolved placeholders. The final assertNoPlaceholders
+// pass runs unconditionally — when vault is nil any leftover ${vault:...}
+// must surface as a hard startup error rather than slipping into runtime
+// fields like SASL passwords.
 func resolvePlaceholders(cfg *Config, clusters []Cluster, vault VaultResolver) error {
 	envFile := EnvFileResolvers()
 	if err := envFile.ResolveStruct(cfg); err != nil {
@@ -282,15 +285,14 @@ func resolvePlaceholders(cfg *Config, clusters []Cluster, vault VaultResolver) e
 	if err := envFile.ResolveStruct(clusters); err != nil {
 		return err
 	}
-	if vault == nil {
-		return nil
-	}
-	vaultPhase := VaultOnlyResolvers(vault)
-	if err := vaultPhase.ResolveStruct(cfg); err != nil {
-		return err
-	}
-	if err := vaultPhase.ResolveStruct(clusters); err != nil {
-		return err
+	if vault != nil {
+		vaultPhase := VaultOnlyResolvers(vault)
+		if err := vaultPhase.ResolveStruct(cfg); err != nil {
+			return err
+		}
+		if err := vaultPhase.ResolveStruct(clusters); err != nil {
+			return err
+		}
 	}
 	if err := assertNoPlaceholders(cfg); err != nil {
 		return err

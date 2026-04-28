@@ -114,6 +114,8 @@ type Model struct {
 	create   *CreateForm
 	clone    *CloneForm
 	progress kafka.CloneProgress
+	cloneCh  <-chan kafka.CloneProgress
+	cloneCxl context.CancelFunc
 
 	width, height   int
 	loading         bool
@@ -126,22 +128,12 @@ type Model struct {
 	styles theme.Styles
 }
 
-// pendingOp tracks a destructive action awaiting confirmation.
+// pendingOp tracks a destructive action awaiting confirmation. An empty
+// topic means no operation is pending; only the delete flow uses this
+// today, so a single field is enough.
 type pendingOp struct {
-	kind  pendingKind
 	topic string
 }
-
-type pendingKind int
-
-const (
-	// opNone is the zero-value placeholder; "no operation pending".
-	opNone pendingKind = iota
-	// opDelete is the "delete topic" pending operation.
-	opDelete
-)
-
-var _ = opNone // referenced for documentation.
 
 // New constructs a Model.
 func New(opts Options) *Model {
@@ -267,9 +259,13 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 		m.handleMutated(msg)
 		cmd := m.refreshCmd()
 		return m, cmd
+	case cloneStartedMsg:
+		m.cloneCh = msg.ch
+		m.cloneCxl = msg.cancel
+		return m, clonePollCmd(msg.ch)
 	case CloneProgressMsg:
-		m.handleCloneProgress(msg)
-		return m, nil
+		cmd := m.handleCloneProgress(msg)
+		return m, cmd
 	case RefreshTickMsg:
 		cmd := m.HandleRefreshTick()
 		return m, cmd
@@ -385,7 +381,7 @@ func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	m.pending = pendingOp{kind: opDelete, topic: row.ID}
+	m.pending = pendingOp{topic: row.ID}
 	m.confirm = components.NewConfirm(
 		"Delete topic",
 		fmt.Sprintf("Delete topic %q? This cannot be undone.", row.ID),
@@ -463,17 +459,33 @@ func (m *Model) handleCloningKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleCloneProgress(msg CloneProgressMsg) {
+func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
 	m.progress = msg.Progress
 	if msg.Progress.Done {
 		m.mode = ModeList
 		m.clone = nil
+		ch := m.cloneCh
+		m.cloneCh = nil
+		if m.cloneCxl != nil {
+			m.cloneCxl()
+			m.cloneCxl = nil
+		}
 		if msg.Progress.Err != nil {
 			m.toasts.Push(components.ToastError, "clone failed: "+msg.Progress.Err.Error())
 		} else {
 			m.toasts.Push(components.ToastSuccess, fmt.Sprintf("clone done — %d records", msg.Progress.Copied))
 		}
+		// drain any remaining items so the producer goroutine isn't blocked
+		// waiting on a closed-but-buffered channel.
+		if ch != nil {
+			go drainChannel(ch)
+		}
+		return nil
 	}
+	if m.cloneCh != nil {
+		return clonePollCmd(m.cloneCh)
+	}
+	return nil
 }
 
 func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
@@ -486,7 +498,7 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		op := m.pending
 		m.confirm = nil
 		m.pending = pendingOp{}
-		if op.kind == opDelete {
+		if op.topic != "" {
 			cmd := deleteCmd(m.svc, op.topic)
 			return m, cmd
 		}
@@ -745,26 +757,48 @@ func createCmd(svc Service, spec kafka.CreateTopicSpec) tea.Cmd {
 	}
 }
 
-// cloneStartCmd kicks off a clone. The Service.CloneTopic call returns
-// immediately with a progress channel; we drain it and emit a single final
-// CloneProgressMsg with Done=true. Intermediate progress updates are also
-// surfaced — but only the final one transitions back to ModeList.
+// cloneStartedMsg is the internal handoff from cloneStartCmd to the model:
+// it carries the freshly-opened progress channel so the screen can keep
+// streaming intermediate updates into the overlay.
+type cloneStartedMsg struct {
+	ch     <-chan kafka.CloneProgress
+	cancel context.CancelFunc
+}
+
+// cloneStartCmd kicks off a clone. svc.CloneTopic returns a progress
+// channel immediately; we hand it to the model via cloneStartedMsg so the
+// model can drive a chain of clonePollCmds and surface every intermediate
+// progress tick to the overlay.
 func cloneStartCmd(svc Service, src, dst string, opts kafka.CloneOptions) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
 		ch, err := svc.CloneTopic(ctx, src, dst, opts)
 		if err != nil {
+			cancel()
 			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true, Err: err}}
 		}
-		var last kafka.CloneProgress
-		for p := range ch {
-			last = p
+		return cloneStartedMsg{ch: ch, cancel: cancel}
+	}
+}
+
+// clonePollCmd reads one progress message from ch. When the channel is
+// closed before a Done flag arrived, it synthesizes one so the screen
+// always transitions back to ModeList.
+func clonePollCmd(ch <-chan kafka.CloneProgress) tea.Cmd {
+	return func() tea.Msg {
+		p, ok := <-ch
+		if !ok {
+			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true}}
 		}
-		if !last.Done {
-			last.Done = true
-		}
-		return CloneProgressMsg{Progress: last}
+		return CloneProgressMsg{Progress: p}
+	}
+}
+
+// drainChannel pulls items from ch until it's closed. Used to release the
+// clone goroutine when the user transitions away before the channel is
+// fully drained.
+func drainChannel(ch <-chan kafka.CloneProgress) {
+	for range ch { //nolint:revive // intentional drain.
 	}
 }
 

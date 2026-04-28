@@ -63,7 +63,9 @@ func (l *Logger) Close() error {
 }
 
 // Init opens (creating parent dirs as needed) the log file and returns a
-// configured *Logger. The returned Logger is also installed as slog.Default.
+// configured *Logger. Callers that want this logger to be the package-wide
+// default should call slog.SetDefault on Logger.Logger themselves — Init
+// avoids touching the global default so test isolation is preserved.
 func Init(opts Options) (*Logger, error) {
 	level, err := ParseLevel(opts.Level)
 	if err != nil {
@@ -98,7 +100,6 @@ func Init(opts Options) (*Logger, error) {
 
 	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
 	logger := slog.New(handler)
-	slog.SetDefault(logger)
 
 	return &Logger{Logger: logger, Writer: w, ResolvedAt: resolved}, nil
 }
