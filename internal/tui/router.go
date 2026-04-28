@@ -14,6 +14,7 @@ type ScreenID string
 const (
 	ScreenClusters    ScreenID = "clusters"
 	ScreenTopics      ScreenID = "topics"
+	ScreenMessages    ScreenID = "messages"
 	ScreenGroups      ScreenID = "groups"
 	ScreenLogs        ScreenID = "logs"
 	ScreenConfigSrc   ScreenID = "config-sources"
