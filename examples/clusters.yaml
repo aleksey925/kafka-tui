@@ -1,0 +1,44 @@
+# kafka-tui clusters.yaml — Kafka cluster definitions.
+#
+# Merging happens by `name`: a project-level entry overrides individual fields
+# of a global-level entry with the same name. Inline CLI clusters (--brokers)
+# always win over a same-named entry from this file for the session.
+#
+# Color must be one of: red | yellow | green | gray | white.
+# `read_only: true` blocks all destructive actions (produce, delete, reset).
+
+clusters:
+  # 1) Plain local cluster, no auth, no TLS.
+  - name: local
+    brokers: ['localhost:9092']
+    color: green
+
+  # 2) Production cluster: read-only, SCRAM over TLS, secrets via Vault.
+  - name: prod
+    brokers: ['prod-1.kafka.internal:9093', 'prod-2.kafka.internal:9093']
+    color: red
+    read_only: true
+    sasl:
+      mechanism: SCRAM-SHA-512
+      username: ${env:KAFKA_USER}
+      password: ${vault:secret/kafka/prod#password}
+    tls:
+      ca_file: /etc/ssl/certs/kafka-ca.pem
+      # cert_file / key_file may be supplied for mTLS; specifying both inline
+      # content (`cert: |`) and a *_file path for the same key is an error
+      skip_verify: false
+
+  # 3) Staging: SASL_PLAINTEXT (no TLS) — auto-detected from sasl present, tls absent.
+  - name: stage
+    brokers: ['stage-1.kafka.internal:9092']
+    color: yellow
+    sasl:
+      mechanism: PLAIN
+      username: stage-user
+      password: ${file:/run/secrets/stage-kafka-password}
+
+  # 4) Dev: TLS with system CAs (empty `tls: {}` enables TLS without overrides).
+  - name: dev
+    brokers: ['dev.kafka.internal:9093']
+    color: gray
+    tls: {}
