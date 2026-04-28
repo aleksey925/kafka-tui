@@ -65,6 +65,14 @@ type Options struct {
 	Columns []string
 	// PageSize bounds how many records are fetched per request.
 	PageSize int
+	// Clipboard is forwarded to the detail view for copy hotkeys.
+	Clipboard Clipboard
+	// FileWriter is forwarded to the detail view for save hotkeys.
+	FileWriter FileWriter
+	// Pager is forwarded to the detail view for the pager hotkey.
+	Pager PagerOpener
+	// OutputDir is forwarded to the detail view for save targets.
+	OutputDir string
 	// Now is the injected clock (defaults to time.Now).
 	Now func() time.Time
 	// Styles overrides the theme palette (mostly for tests).
@@ -77,9 +85,13 @@ type Model struct {
 	topic    string
 	readOnly bool
 
-	columns  []string
-	pageSize int
-	filter   []int32
+	columns   []string
+	pageSize  int
+	filter    []int32
+	clipboard Clipboard
+	writer    FileWriter
+	pager     PagerOpener
+	outputDir string
 
 	messages []kafka.Message
 	table    *components.Table
@@ -126,15 +138,19 @@ func New(opts Options) *Model {
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
 	return &Model{
-		svc:      opts.Service,
-		topic:    opts.Topic,
-		readOnly: opts.ReadOnly,
-		columns:  cols,
-		pageSize: pageSize,
-		table:    tbl,
-		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:      now,
-		styles:   styles,
+		svc:       opts.Service,
+		topic:     opts.Topic,
+		readOnly:  opts.ReadOnly,
+		columns:   cols,
+		pageSize:  pageSize,
+		clipboard: opts.Clipboard,
+		writer:    opts.FileWriter,
+		pager:     opts.Pager,
+		outputDir: opts.OutputDir,
+		table:     tbl,
+		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:       now,
+		styles:    styles,
 	}
 }
 
@@ -335,11 +351,15 @@ func (m *Model) openDetail() {
 		return
 	}
 	m.detail = NewDetailModel(DetailOptions{
-		Messages: m.messages,
-		Index:    idx,
-		ReadOnly: m.readOnly,
-		Now:      m.now,
-		Styles:   m.styles,
+		Messages:   m.messages,
+		Index:      idx,
+		ReadOnly:   m.readOnly,
+		Clipboard:  m.clipboard,
+		FileWriter: m.writer,
+		Pager:      m.pager,
+		OutputDir:  m.outputDir,
+		Now:        m.now,
+		Styles:     m.styles,
 	})
 	m.mode = ModeDetail
 }

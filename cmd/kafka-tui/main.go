@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/cli"
+	"github.com/aleksey925/kafka-tui/internal/clipboard"
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/logging"
 	"github.com/aleksey925/kafka-tui/internal/state"
@@ -114,6 +115,7 @@ func run(flags *cli.Flags) error {
 	globalPath, projectPath := configPaths()
 
 	dialer := tui.NewKafkaDialer("kafka-tui")
+	clip := clipboard.New(clipboard.Options{})
 
 	boot := &tui.Bootstrap{
 		Loaded:          loaded,
@@ -126,6 +128,7 @@ func run(flags *cli.Flags) error {
 		Pinger:          tui.NewClusterPinger(dialer, 5*time.Second),
 		Editor:          clusters.DefaultEditor(),
 		History:         produceHistory(store, logger.Logger),
+		Clipboard:       clip,
 		Pager:           produce.DefaultPagerOpener(),
 		StartupWarnings: loaded.Warnings,
 		ReadOnly:        flags.Inline.ReadOnly,

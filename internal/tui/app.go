@@ -902,12 +902,13 @@ func (m *Model) newTopicConfigs() *topics.ConfigsModel {
 func (m *Model) newMessages() *messages.Model {
 	cfg := m.boot.Loaded.Config
 	return messages.New(messages.Options{
-		Service:  m.client,
-		Topic:    m.navTopic,
-		ReadOnly: m.clusterRO,
-		Columns:  cfg.Messages.Columns,
-		Now:      m.now,
-		Styles:   m.styles,
+		Service:   m.client,
+		Topic:     m.navTopic,
+		ReadOnly:  m.clusterRO,
+		Columns:   cfg.Messages.Columns,
+		Clipboard: m.boot.Clipboard,
+		Now:       m.now,
+		Styles:    m.styles,
 	})
 }
 

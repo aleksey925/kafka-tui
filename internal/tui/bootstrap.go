@@ -8,6 +8,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
 )
 
@@ -72,6 +73,8 @@ type Bootstrap struct {
 	Editor clusters.Editor
 	// History persists produce form entries. nil disables history.
 	History produce.History
+	// Clipboard is forwarded to messages detail for copy hotkeys. nil disables copy.
+	Clipboard messages.Clipboard
 	// Pager opens the produce value field in $EDITOR. nil disables Ctrl+E.
 	Pager produce.PagerOpener
 	// StartupWarnings is surfaced as toasts on the clusters screen.
