@@ -68,7 +68,7 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 
 	flags := &Flags{}
 
-	fs.BoolVar(&flags.ShowVersion, "version", false, "print version and exit")
+	fs.BoolVarP(&flags.ShowVersion, "version", "v", false, "print version and exit")
 	fs.BoolVar(&flags.ShowLogs, "logs", false, "open the log file in $PAGER and exit")
 	fs.BoolVar(&flags.ShowLogsDir, "logs-dir", false, "print the log directory and exit")
 
@@ -95,6 +95,10 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 			return nil, ErrHelpRequested
 		}
 		return nil, fmt.Errorf("cli: %w", err)
+	}
+
+	if fs.NArg() > 0 {
+		return nil, &ParseError{Msg: fmt.Sprintf("unexpected argument: %q", fs.Arg(0))}
 	}
 
 	// resolve cluster name when only --brokers is given
@@ -206,6 +210,7 @@ func MustParseOrExit() (*Flags, bool) {
 	case errors.Is(err, ErrHelpRequested):
 		return nil, false
 	case err != nil:
+		_, _ = fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(2)
 	}
 	return f, true

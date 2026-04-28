@@ -128,6 +128,17 @@ func (t *Table) Rows() []Row {
 // Cursor returns the current row index in the *view* (post filter/sort).
 func (t *Table) Cursor() int { return t.cursor }
 
+// GoToID moves the cursor to the row with the given ID. Returns true if found.
+func (t *Table) GoToID(id string) bool {
+	for i, idx := range t.view {
+		if t.rows[idx].ID == id {
+			t.cursor = i
+			return true
+		}
+	}
+	return false
+}
+
 // SelectedRow returns the row currently under the cursor, or false if the
 // view is empty.
 func (t *Table) SelectedRow() (Row, bool) {

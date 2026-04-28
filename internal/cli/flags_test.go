@@ -21,15 +21,19 @@ func TestParse__noArgs__returnsEmptyFlags(t *testing.T) {
 }
 
 func TestParse__versionFlag__setsShowVersion(t *testing.T) {
-	// arrange
-	var out, errOut bytes.Buffer
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			// arrange
+			var out, errOut bytes.Buffer
 
-	// act
-	f, err := Parse([]string{"--version"}, &out, &errOut)
+			// act
+			f, err := Parse([]string{flag}, &out, &errOut)
 
-	// assert
-	require.NoError(t, err)
-	assert.True(t, f.ShowVersion)
+			// assert
+			require.NoError(t, err)
+			assert.True(t, f.ShowVersion)
+		})
+	}
 }
 
 func TestParse__logsAndLogsDir__areMutuallyExclusive(t *testing.T) {
@@ -230,6 +234,20 @@ func TestParse__helpFlag__returnsErrHelpRequested(t *testing.T) {
 	assert.ErrorIs(t, err, ErrHelpRequested)
 }
 
+func TestParse__positionalArgs__fails(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"something"}, &out, &errOut)
+
+	// assert
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Contains(t, pe.Msg, "unexpected argument")
+	assert.Contains(t, pe.Msg, "something")
+}
+
 func TestParse__unknownFlag__fails(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
@@ -239,6 +257,8 @@ func TestParse__unknownFlag__fails(t *testing.T) {
 
 	// assert
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag")
+	assert.Contains(t, err.Error(), "--nonsense")
 }
 
 func TestCLICluster_HasInlineCluster(t *testing.T) {

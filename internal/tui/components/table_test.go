@@ -309,6 +309,43 @@ func TestTable_SearchSurvivesRowReplacement(t *testing.T) {
 	assert.Equal(t, "a", row.ID)
 }
 
+func TestTable_GoToID_Found(t *testing.T) {
+	// arrange
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "1"}},
+		{ID: "b", Values: []string{"beta", "2"}},
+		{ID: "c", Values: []string{"gamma", "3"}},
+	})
+
+	// act
+	found := tbl.GoToID("c")
+
+	// assert
+	assert.True(t, found)
+	assert.Equal(t, 2, tbl.Cursor())
+	row, ok := tbl.SelectedRow()
+	require.True(t, ok)
+	assert.Equal(t, "c", row.ID)
+}
+
+func TestTable_GoToID_NotFound(t *testing.T) {
+	// arrange
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "1"}},
+		{ID: "b", Values: []string{"beta", "2"}},
+	})
+	tbl.GoToID("b")
+
+	// act
+	found := tbl.GoToID("nonexistent")
+
+	// assert
+	assert.False(t, found)
+	assert.Equal(t, 1, tbl.Cursor())
+}
+
 // ----- helpers -----
 
 func simpleColumns() []components.Column {

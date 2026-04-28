@@ -125,6 +125,10 @@ type Model struct {
 	navTopicsFilter []string
 	navPrefill      *kafka.Message
 	navGroupFilter  string
+
+	// lastTopic remembers which topic was selected when navigating away from
+	// the topics screen, so the cursor can be restored on return.
+	lastTopic string
 }
 
 // New creates a root model populated with the given options.
@@ -672,18 +676,21 @@ func (m *Model) routeTopicsAction(s *topicsScreen) tea.Cmd {
 	a := s.m.ConsumeAction()
 	switch {
 	case a.Quit:
-		// Esc/q on the topics list returns to clusters.
 		return m.popOrReplaceToClusters()
 	case a.Messages != "":
+		m.lastTopic = a.Messages
 		m.navTopic = a.Messages
 		return m.pushScreenCmd(ScreenMessages)
 	case a.Configs != "":
+		m.lastTopic = a.Configs
 		m.navTopic = a.Configs
 		return m.pushScreenCmd(ScreenTopicConfigs)
 	case a.Groups != "":
+		m.lastTopic = a.Groups
 		m.navGroupFilter = a.Groups
 		return m.pushScreenCmd(ScreenGroups)
 	case a.Produce != "":
+		m.lastTopic = a.Produce
 		m.navTopic = a.Produce
 		m.navPrefill = nil
 		return m.pushScreenCmd(ScreenProduce)
@@ -884,6 +891,7 @@ func (m *Model) newTopics() *topics.Model {
 		ReadOnly:        m.clusterRO,
 		Columns:         cfg.Topics.Columns,
 		FilterTopics:    m.navTopicsFilter,
+		FocusTopic:      m.lastTopic,
 		RefreshInterval: parseRefresh(cfg.Refresh.TopicsList),
 		Now:             m.now,
 		Styles:          m.styles,

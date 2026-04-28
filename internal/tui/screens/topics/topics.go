@@ -82,6 +82,8 @@ type Options struct {
 	// FilterTopics, when non-empty, limits the displayed topics to this set.
 	// Used for groups→topics navigation.
 	FilterTopics []string
+	// FocusTopic, when non-empty, moves the cursor to this topic after load.
+	FocusTopic string
 	// RefreshInterval, when > 0, enables periodic auto-refresh.
 	RefreshInterval time.Duration
 	// Now is the injected clock (defaults to time.Now).
@@ -100,6 +102,7 @@ type Model struct {
 
 	columns      []string
 	filterNames  map[string]struct{}
+	focusTopic   string
 	allTopics    []kafka.TopicSummary
 	hiddenIntern int
 	showInternal bool
@@ -171,6 +174,7 @@ func New(opts Options) *Model {
 		readOnly:        opts.ReadOnly,
 		columns:         cols,
 		filterNames:     filterSet,
+		focusTopic:      opts.FocusTopic,
 		watermarks:      map[string]kafka.TopicWatermarks{},
 		sizes:           map[string]int64{},
 		configs:         map[string][]kafka.TopicConfig{},
@@ -215,6 +219,9 @@ func (m *Model) AllTopics() []kafka.TopicSummary {
 	copy(out, m.allTopics)
 	return out
 }
+
+// Cursor returns the current table cursor position. For tests.
+func (m *Model) Cursor() int { return m.table.Cursor() }
 
 // ShowInternal reports whether internal topics are currently visible.
 func (m *Model) ShowInternal() bool { return m.showInternal }
@@ -544,6 +551,10 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 		m.watermarks[w.Topic] = w.Watermarks
 	}
 	m.refreshTable()
+	if m.focusTopic != "" {
+		m.table.GoToID(m.focusTopic)
+		m.focusTopic = ""
+	}
 }
 
 func (m *Model) handleMutated(msg TopicMutatedMsg) {

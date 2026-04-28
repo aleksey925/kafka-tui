@@ -395,6 +395,45 @@ func TestRefreshInterval_OffYieldsNilCmd(t *testing.T) {
 	assert.Nil(t, m.AutoRefreshTick())
 }
 
+func TestFocusTopic_CursorRestoredAfterLoad(t *testing.T) {
+	// arrange
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "alpha"},
+		{Name: "beta"},
+		{Name: "gamma"},
+	}, nil)
+	m := topics.New(topics.Options{
+		Service:    svc,
+		FocusTopic: "gamma",
+	})
+
+	// act
+	drive(t, m, m.Init())
+
+	// assert
+	visible := m.Topics()
+	require.Len(t, visible, 3)
+	assert.Equal(t, 2, m.Cursor())
+}
+
+func TestFocusTopic_UnknownTopic_CursorStaysAtZero(t *testing.T) {
+	// arrange
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "alpha"},
+		{Name: "beta"},
+	}, nil)
+	m := topics.New(topics.Options{
+		Service:    svc,
+		FocusTopic: "nonexistent",
+	})
+
+	// act
+	drive(t, m, m.Init())
+
+	// assert
+	assert.Equal(t, 0, m.Cursor())
+}
+
 func TestFilterTopics_ShowsOnlyMatchingTopics(t *testing.T) {
 	// arrange
 	svc := newFakeService([]kafka.TopicSummary{
