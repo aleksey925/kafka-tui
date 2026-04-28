@@ -1,18 +1,34 @@
 // Package tui hosts the Bubble Tea v2 root model that wires the global
 // chrome (header, command bar, status bar, key hints) to the screen router.
 //
-// Individual screens (clusters, topics, messages, etc.) are added in later
-// tasks; this package only provides the shell.
+// The host owns:
+//   - the active *kafka.Client (re-dialed when the user switches cluster);
+//   - one instance of each screen, only one of which is non-nil at a time;
+//   - the Bootstrap struct that supplies dialer, pinger, history, paths.
+//
+// Screens never touch the host directly. They populate an Action; the host
+// reads it after every Update and routes via the Router.
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/config"
+	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/logs"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/topics"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
@@ -61,6 +77,11 @@ type Options struct {
 	// KeyHints lists the small set of hotkeys shown at the bottom of every
 	// screen. Each screen will eventually override these via a message.
 	KeyHints []layout.KeyHint
+
+	// Bootstrap supplies the wiring needed to construct real screens (config,
+	// dialer, pinger, history). When nil the host falls back to a placeholder
+	// body — that path is exercised by unit tests that don't drive screens.
+	Bootstrap *Bootstrap
 }
 
 // Model is the Bubble Tea root model. It is exported so cmd/kafka-tui can
@@ -84,6 +105,25 @@ type Model struct {
 	commit  string
 
 	quit bool
+
+	// boot holds production wiring (nil in tests that don't drive screens).
+	boot *Bootstrap
+
+	// active kafka client (set when user connects to a cluster).
+	client     *kafka.Client
+	activeClu  string
+	clusterClr string
+	clusterRO  bool
+	fromCLI    bool
+
+	// active screen instance (nil when no screen is wired — placeholder body).
+	active screen
+
+	// nav seeds — populated when a screen requests navigation, consumed when
+	// the next screen is instantiated.
+	navTopic       string
+	navPrefill     *kafka.Message
+	navGroupFilter string
 }
 
 // New creates a root model populated with the given options.
@@ -101,10 +141,7 @@ func New(opts Options) *Model {
 		hints = DefaultKeyHints()
 	}
 	router := NewRouter()
-	if opts.Initial != "" {
-		router.Push(opts.Initial)
-	}
-	return &Model{
+	m := &Model{
 		router: router,
 		mode:   ModeNormal,
 		header: layout.HeaderInfo{
@@ -125,7 +162,16 @@ func New(opts Options) *Model {
 		now:         now,
 		version:     opts.Version,
 		commit:      opts.Commit,
+		boot:        opts.Bootstrap,
+		activeClu:   opts.Cluster,
+		clusterClr:  opts.ClusterColor,
+		clusterRO:   opts.ReadOnly,
+		fromCLI:     opts.FromCLI,
 	}
+	if opts.Initial != "" {
+		m.pushScreen(opts.Initial)
+	}
+	return m
 }
 
 // DefaultKeyHints returns the key hints shown by every screen until a screen
@@ -140,9 +186,19 @@ func DefaultKeyHints() []layout.KeyHint {
 	}
 }
 
-// Init implements tea.Model.
+// Init implements tea.Model. Returns the active screen's Init cmd. When the
+// clusters screen reports a [clusters.Model.SkipTarget] (because there's
+// exactly one cluster or --brokers was supplied), the host connects to it
+// immediately and starts on the topics screen instead.
 func (m *Model) Init() tea.Cmd {
-	return nil
+	if cs, ok := m.active.(*clustersScreen); ok {
+		if name, skip := cs.m.SkipTarget(); skip {
+			if connectCmd := m.connectCluster(name); connectCmd != nil {
+				return connectCmd
+			}
+		}
+	}
+	return m.activeInit()
 }
 
 // Router exposes the underlying router (for tests and bootstrap).
@@ -165,6 +221,10 @@ func (m *Model) Status() layout.StatusInfo { return m.status }
 
 // Quit reports whether the model has signaled program termination.
 func (m *Model) Quit() bool { return m.quit }
+
+// ActiveClient returns the currently connected *kafka.Client (nil before any
+// cluster has been selected). Exposed so cmd/kafka-tui can close it on exit.
+func (m *Model) ActiveClient() *kafka.Client { return m.client }
 
 // SetAutoRefresh forces a refresh state (used at bootstrap).
 func (m *Model) SetAutoRefresh(on bool) {
@@ -198,11 +258,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.applySize()
 		return m, nil
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		newM, cmd := m.handleKey(msg)
+		return newM, cmd
 	}
-	return m, nil
+	// non-key, non-resize message → forward to active screen so async cmds
+	// (e.g. topic-loaded, fetch-result) reach their owner.
+	cmd := m.forwardToActive(msg)
+	cmd = teaBatch(cmd, m.routeActiveAction())
+	return m, cmd
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -237,16 +303,25 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.quit = true
 		return m, tea.Quit
-	case "q", "esc":
-		// q/esc pops the screen stack; if nothing remains, quit.
-		if m.router.Depth() <= 1 {
-			m.quit = true
-			return m, tea.Quit
-		}
-		m.router.Pop()
-		return m, nil
 	}
-	return m, nil
+	// forward to active screen first; it may consume q/esc itself
+	// (e.g. close an overlay). After the screen handles it we look at the
+	// resulting Action; if no screen wants to keep us, q/esc pops the stack.
+	cmd := m.forwardToActive(key)
+	routeCmd := m.routeActiveAction()
+	if cmd == nil && routeCmd == nil {
+		switch key.String() {
+		case "q", "esc":
+			if m.router.Depth() <= 1 {
+				m.quit = true
+				return m, tea.Quit
+			}
+			m.popScreen()
+			next := m.activeInit()
+			return m, next
+		}
+	}
+	return m, teaBatch(cmd, routeCmd)
 }
 
 func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -263,8 +338,8 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = ModeNormal
 		m.command = layout.CommandBar{}
-		m.router.Replace(cmd.Screen)
-		return m, nil
+		next := m.replaceScreen(cmd.Screen, cmd.Arg)
+		return m, next
 	case "backspace":
 		if n := len(m.command.Buffer); n > 0 {
 			m.command.Buffer = m.command.Buffer[:n-1]
@@ -342,7 +417,7 @@ func (m *Model) render() string {
 		cmd = layout.CommandLine(m.styles, m.search)
 	}
 
-	hints := layout.KeyHints(m.styles, m.hints)
+	hints := layout.KeyHints(m.styles, m.activeKeyHints())
 
 	parts := []string{topRow}
 	if body != "" {
@@ -365,13 +440,15 @@ func (m *Model) statusForRender() layout.StatusInfo {
 	return s
 }
 
-// renderBody returns a placeholder body until real screens land in later
-// tasks. The active screen's name is shown so users see something meaningful
-// during bootstrap.
+// renderBody dispatches to the active screen. Falls back to the placeholder
+// when no instance is available (test path or unwired bootstrap).
 func (m *Model) renderBody() string {
 	active := m.router.Active()
 	if active == "" {
 		return m.styles.StatusInfo.Render("(no screen active)")
+	}
+	if v := m.activeView(); v != "" {
+		return v
 	}
 	return m.styles.StatusInfo.Render(string(active) + " — coming soon")
 }
@@ -427,4 +504,465 @@ func joinRow(width int, left, right string) string {
 	}
 	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// teaBatch returns a command that runs cmds in any order. nils are filtered.
+func teaBatch(cmds ...tea.Cmd) tea.Cmd {
+	out := make([]tea.Cmd, 0, len(cmds))
+	for _, c := range cmds {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	switch len(out) {
+	case 0:
+		return nil
+	case 1:
+		return out[0]
+	default:
+		return tea.Batch(out...)
+	}
+}
+
+// updateHeaderForActive refreshes the header chrome when the active cluster
+// changes (typically after [Connect]).
+func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool) {
+	m.activeClu = name
+	m.clusterClr = color
+	m.clusterRO = readOnly
+	m.fromCLI = fromCLI
+	m.header = layout.HeaderInfo{
+		Cluster:      name,
+		ClusterColor: color,
+		ReadOnly:     readOnly,
+		FromCLI:      fromCLI,
+	}
+}
+
+// connectCluster dials the named cluster and replaces the topics screen on
+// the stack. Closes the previous *kafka.Client, if any.
+func (m *Model) connectCluster(name string) tea.Cmd {
+	if m.boot == nil || m.boot.Dialer == nil {
+		return nil
+	}
+	clu := findCluster(m.boot.Clusters, name)
+	if clu == nil {
+		return nil
+	}
+	client, err := m.boot.Dialer.Dial(*clu)
+	if err != nil {
+		// surface dial errors via the clusters screen toast queue when we
+		// can; otherwise log and stay on the clusters screen.
+		if cs, ok := m.active.(*clustersScreen); ok {
+			cs.m.Toasts().Push(components.ToastError, fmt.Sprintf("connect %q failed: %v", name, err))
+		}
+		return nil
+	}
+	if m.client != nil {
+		m.client.Close()
+	}
+	m.client = client
+	m.updateHeaderForActive(clu.Name, clu.Color, clu.ReadOnly || (m.boot != nil && m.boot.ReadOnly), name == m.boot.CLIName)
+	return m.replaceScreen(ScreenTopics, "")
+}
+
+// findCluster returns a pointer to the cluster with the given name, or nil.
+func findCluster(list []config.Cluster, name string) *config.Cluster {
+	for i := range list {
+		if list[i].Name == name {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+// applySize forwards the new geometry to the active screen.
+func (m *Model) applySize() {
+	if m.active == nil {
+		return
+	}
+	w, h := m.width, m.bodyHeight()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	m.active.SetSize(w, h)
+}
+
+// bodyHeight returns the inner height left for the active screen after the
+// chrome is subtracted (header row + command line + key hints row).
+func (m *Model) bodyHeight() int {
+	h := m.height - 3
+	if h < 1 {
+		return 0
+	}
+	return h
+}
+
+// activeKeyHints returns the hints for the active screen, falling back to
+// the model's default when no screen is wired.
+func (m *Model) activeKeyHints() []layout.KeyHint {
+	if m.active == nil {
+		return m.hints
+	}
+	return m.active.KeyHints()
+}
+
+// activeView returns the active screen's body, or "" if no instance exists.
+func (m *Model) activeView() string {
+	if m.active == nil {
+		return ""
+	}
+	return m.active.View()
+}
+
+// activeInit returns the active screen's Init cmd, or nil.
+func (m *Model) activeInit() tea.Cmd {
+	if m.active == nil {
+		return nil
+	}
+	return m.active.Init()
+}
+
+// forwardToActive sends msg to the active screen and returns its tea.Cmd.
+func (m *Model) forwardToActive(msg tea.Msg) tea.Cmd {
+	if m.active == nil {
+		return nil
+	}
+	return m.active.Update(msg)
+}
+
+// routeActiveAction reads the active screen's pending Action and reacts to
+// it (push/pop/replace/connect/quit). Returns any tea.Cmd produced.
+func (m *Model) routeActiveAction() tea.Cmd {
+	switch s := m.active.(type) {
+	case *clustersScreen:
+		return m.routeClustersAction(s)
+	case *topicsScreen:
+		return m.routeTopicsAction(s)
+	case *messagesScreen:
+		return m.routeMessagesAction(s)
+	case *produceScreen:
+		return m.routeProduceAction(s)
+	case *groupsScreen:
+		return m.routeGroupsAction(s)
+	case *logsScreen:
+		return m.routeLogsAction(s)
+	case *configsrcScreen:
+		return m.routeConfigSrcAction(s)
+	case *topicConfigsScreen:
+		return m.routeTopicConfigsAction(s)
+	}
+	return nil
+}
+
+func (m *Model) routeClustersAction(s *clustersScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	if a.Quit {
+		m.quit = true
+		return tea.Quit
+	}
+	if a.Connect != "" {
+		return m.connectCluster(a.Connect)
+	}
+	return nil
+}
+
+func (m *Model) routeTopicsAction(s *topicsScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	switch {
+	case a.Quit:
+		// Esc/q on the topics list returns to clusters.
+		return m.popOrReplaceToClusters()
+	case a.Messages != "":
+		m.navTopic = a.Messages
+		return m.pushScreenCmd(ScreenMessages)
+	case a.Configs != "":
+		m.navTopic = a.Configs
+		return m.pushScreenCmd(ScreenTopicConfigs)
+	case a.Groups != "":
+		m.navGroupFilter = a.Groups
+		return m.pushScreenCmd(ScreenGroups)
+	case a.Produce != "":
+		m.navTopic = a.Produce
+		m.navPrefill = nil
+		return m.pushScreenCmd(ScreenProduce)
+	}
+	return nil
+}
+
+func (m *Model) routeMessagesAction(s *messagesScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	switch {
+	case a.Back:
+		m.popScreen()
+		return m.activeInit()
+	case a.Produce != "":
+		m.navTopic = a.Produce
+		m.navPrefill = a.PrefillFromMessage
+		return m.pushScreenCmd(ScreenProduce)
+	}
+	return nil
+}
+
+func (m *Model) routeProduceAction(s *produceScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	if a.Back {
+		m.popScreen()
+		return m.activeInit()
+	}
+	return nil
+}
+
+func (m *Model) routeGroupsAction(s *groupsScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	switch {
+	case a.Back:
+		m.popScreen()
+		return m.activeInit()
+	case a.Topic != "":
+		m.navTopic = a.Topic
+		return m.pushScreenCmd(ScreenMessages)
+	case len(a.TopicsForGroup) > 0:
+		// topics screen does not yet support filtering by a subset of
+		// topics; surface the request as a toast on the groups screen.
+		s.m.Toasts().Push(components.ToastInfo,
+			fmt.Sprintf("topic filter %v: not yet supported in :topics", a.TopicsForGroup))
+		return nil
+	}
+	return nil
+}
+
+func (m *Model) routeLogsAction(s *logsScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	if a.Back {
+		m.popScreen()
+		return m.activeInit()
+	}
+	return nil
+}
+
+func (m *Model) routeConfigSrcAction(s *configsrcScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	if a.Back {
+		m.popScreen()
+		return m.activeInit()
+	}
+	return nil
+}
+
+func (m *Model) routeTopicConfigsAction(s *topicConfigsScreen) tea.Cmd {
+	a := s.m.ConsumeAction()
+	if a.Back {
+		m.popScreen()
+		return m.activeInit()
+	}
+	return nil
+}
+
+// popOrReplaceToClusters pops the topics screen to expose the clusters list
+// underneath; if there's nothing below, it replaces with the clusters screen.
+func (m *Model) popOrReplaceToClusters() tea.Cmd {
+	if m.router.Depth() > 1 {
+		m.popScreen()
+		return m.activeInit()
+	}
+	return m.replaceScreen(ScreenClusters, "")
+}
+
+// pushScreen pushes id onto the router stack and constructs the screen
+// instance. Used at startup. Discards the resulting Init cmd because the
+// caller is expected to invoke [Init] separately.
+func (m *Model) pushScreen(id ScreenID) {
+	m.active = nil
+	m.router.Push(id)
+	m.instantiate(id)
+	m.applySize()
+}
+
+// pushScreenCmd is the runtime variant: pushes a screen, instantiates it, and
+// returns its Init cmd to be batched with the host's reply.
+func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
+	m.active = nil
+	m.router.Push(id)
+	m.instantiate(id)
+	m.applySize()
+	return m.activeInit()
+}
+
+// replaceScreen swaps the active screen for a new id, freeing the previous
+// instance.
+func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
+	if id == ScreenClusters && arg != "" {
+		// `:cluster <name>` connects to a known cluster directly.
+		return m.connectCluster(arg)
+	}
+	m.active = nil
+	m.router.Replace(id)
+	m.instantiate(id)
+	m.applySize()
+	return m.activeInit()
+}
+
+// popScreen pops the router stack and frees the previously active screen.
+// The new active screen (one level up) is re-instantiated from the bootstrap
+// data, since we drop instances when leaving them to release Kafka follow
+// sessions, table state, etc.
+func (m *Model) popScreen() {
+	m.active = nil
+	m.router.Pop()
+	if id := m.router.Active(); id != "" {
+		m.instantiate(id)
+	}
+	m.applySize()
+}
+
+// instantiate constructs the screen for id using the current bootstrap. When
+// boot is nil or required deps (e.g. *kafka.Client for topic screens) are
+// absent, the active screen is left nil and [renderBody] falls back to the
+// placeholder.
+func (m *Model) instantiate(id ScreenID) {
+	if m.boot == nil {
+		return
+	}
+	switch id {
+	case ScreenClusters:
+		m.active = &clustersScreen{m: m.newClusters()}
+	case ScreenTopics:
+		if m.client != nil {
+			m.active = &topicsScreen{m: m.newTopics()}
+		}
+	case ScreenTopicConfigs:
+		if m.client != nil {
+			m.active = &topicConfigsScreen{m: m.newTopicConfigs()}
+		}
+	case ScreenMessages:
+		if m.client != nil {
+			m.active = &messagesScreen{m: m.newMessages()}
+		}
+	case ScreenProduce:
+		if m.client != nil {
+			m.active = &produceScreen{m: m.newProduce()}
+		}
+	case ScreenGroups:
+		if m.client != nil {
+			m.active = &groupsScreen{m: m.newGroups()}
+		}
+	case ScreenLogs:
+		m.active = &logsScreen{m: m.newLogs()}
+	case ScreenConfigSrc:
+		m.active = &configsrcScreen{m: m.newConfigSrc()}
+	case ScreenHelpOverlay:
+		// help is a chrome overlay, not a routed screen.
+	}
+}
+
+func (m *Model) newClusters() *clusters.Model {
+	b := m.boot
+	return clusters.New(clusters.Options{
+		Clusters:        b.Clusters,
+		CLIName:         b.CLIName,
+		GlobalPath:      b.GlobalPath,
+		ProjectPath:     b.ProjectPath,
+		Pinger:          b.Pinger,
+		Editor:          b.Editor,
+		StartupWarnings: b.StartupWarnings,
+		Now:             m.now,
+		Styles:          m.styles,
+	})
+}
+
+func (m *Model) newTopics() *topics.Model {
+	cfg := m.boot.Loaded.Config
+	return topics.New(topics.Options{
+		Service:         m.client,
+		ReadOnly:        m.clusterRO,
+		Columns:         cfg.Topics.Columns,
+		RefreshInterval: parseRefresh(cfg.Refresh.TopicsList),
+		Now:             m.now,
+		Styles:          m.styles,
+	})
+}
+
+func (m *Model) newTopicConfigs() *topics.ConfigsModel {
+	return topics.NewConfigsModel(topics.ConfigsOptions{
+		Service: m.client,
+		Topic:   m.navTopic,
+		Now:     m.now,
+		Styles:  m.styles,
+	})
+}
+
+func (m *Model) newMessages() *messages.Model {
+	cfg := m.boot.Loaded.Config
+	return messages.New(messages.Options{
+		Service:  m.client,
+		Topic:    m.navTopic,
+		ReadOnly: m.clusterRO,
+		Columns:  cfg.Messages.Columns,
+		Now:      m.now,
+		Styles:   m.styles,
+	})
+}
+
+func (m *Model) newProduce() *produce.Model {
+	cfg := m.boot.Loaded.Config
+	return produce.New(produce.Options{
+		Service:            m.client,
+		Cluster:            m.activeClu,
+		Topic:              m.navTopic,
+		ReadOnly:           m.clusterRO,
+		HistorySize:        cfg.Produce.HistorySize,
+		History:            m.boot.History,
+		Pager:              m.boot.Pager,
+		PrefillFromMessage: m.navPrefill,
+		Now:                m.now,
+		Styles:             m.styles,
+	})
+}
+
+func (m *Model) newGroups() *groups.Model {
+	cfg := m.boot.Loaded.Config
+	filter := m.navGroupFilter
+	m.navGroupFilter = ""
+	return groups.New(groups.Options{
+		Service:               m.client,
+		ReadOnly:              m.clusterRO,
+		FilterTopic:           filter,
+		ListRefreshInterval:   parseRefresh(cfg.Refresh.GroupsList),
+		DetailRefreshInterval: parseRefresh(cfg.Refresh.GroupDetail),
+		Now:                   m.now,
+		Styles:                m.styles,
+	})
+}
+
+func (m *Model) newLogs() *logs.Model {
+	return logs.New(logs.Options{
+		Path:   m.boot.LogPath,
+		Now:    m.now,
+		Styles: m.styles,
+	})
+}
+
+func (m *Model) newConfigSrc() *configsrc.Model {
+	return configsrc.New(configsrc.Options{
+		Sources: m.boot.Loaded.Sources,
+		Styles:  m.styles,
+	})
+}
+
+// parseRefresh converts the config string ("off", "5s", …) into a duration.
+// "off" / unparseable / zero map to 0 (auto-refresh disabled).
+func parseRefresh(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "off") {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
 }
