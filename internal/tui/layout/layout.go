@@ -52,10 +52,11 @@ type KeyHint struct {
 // CommandBar is the optional prompt that appears when the user types `:` or
 // `/`. Visible only when Active is true.
 type CommandBar struct {
-	Active bool
-	Prefix rune // ':' or '/'
-	Buffer string
-	Error  string // shown beneath the prompt when set
+	Active     bool
+	Prefix     rune // ':' or '/'
+	Buffer     string
+	Suggestion string // ghost text shown after the buffer (Tab to accept)
+	Error      string // shown beneath the prompt when set
 }
 
 // Header renders the title bar `kafka-tui · <cluster> (<color>) [RO] (cli)`.
@@ -138,6 +139,12 @@ func CommandLine(s theme.Styles, c CommandBar) string {
 	}
 	prefix := string(c.Prefix)
 	body := s.CommandHL.Render(prefix) + s.Command.Render(c.Buffer)
+	if c.Suggestion != "" {
+		ghost := strings.TrimPrefix(c.Suggestion, strings.ToLower(c.Buffer))
+		if ghost != "" {
+			body += s.CommandGhost.Render(ghost)
+		}
+	}
 	if c.Error != "" {
 		body += "  " + s.StatusErr.Render(c.Error)
 	}

@@ -91,42 +91,44 @@ func (p Palette) ClusterColor(name string) color.Color {
 type Styles struct {
 	Palette Palette
 
-	Header     lipgloss.Style
-	HeaderBar  lipgloss.Style
-	Cluster    lipgloss.Style
-	ReadOnly   lipgloss.Style
-	StatusBar  lipgloss.Style
-	StatusInfo lipgloss.Style
-	StatusWarn lipgloss.Style
-	StatusErr  lipgloss.Style
-	KeyHints   lipgloss.Style
-	HintKey    lipgloss.Style
-	HintLabel  lipgloss.Style
-	Command    lipgloss.Style
-	CommandHL  lipgloss.Style
-	Toast      lipgloss.Style
-	HelpTitle  lipgloss.Style
+	Header       lipgloss.Style
+	HeaderBar    lipgloss.Style
+	Cluster      lipgloss.Style
+	ReadOnly     lipgloss.Style
+	StatusBar    lipgloss.Style
+	StatusInfo   lipgloss.Style
+	StatusWarn   lipgloss.Style
+	StatusErr    lipgloss.Style
+	KeyHints     lipgloss.Style
+	HintKey      lipgloss.Style
+	HintLabel    lipgloss.Style
+	Command      lipgloss.Style
+	CommandHL    lipgloss.Style
+	CommandGhost lipgloss.Style
+	Toast        lipgloss.Style
+	HelpTitle    lipgloss.Style
 }
 
 // New builds the default Styles using the supplied palette.
 func New(p Palette) Styles {
 	return Styles{
-		Palette:    p,
-		Header:     lipgloss.NewStyle().Foreground(p.Foreground).Bold(true),
-		HeaderBar:  lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
-		Cluster:    lipgloss.NewStyle().Bold(true),
-		ReadOnly:   lipgloss.NewStyle().Foreground(p.StatusWarn).Bold(true),
-		StatusBar:  lipgloss.NewStyle().Foreground(p.Muted),
-		StatusInfo: lipgloss.NewStyle().Foreground(p.Muted),
-		StatusWarn: lipgloss.NewStyle().Foreground(p.StatusWarn),
-		StatusErr:  lipgloss.NewStyle().Foreground(p.StatusError),
-		KeyHints:   lipgloss.NewStyle().Foreground(p.Muted),
-		HintKey:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
-		HintLabel:  lipgloss.NewStyle().Foreground(p.Muted),
-		Command:    lipgloss.NewStyle().Foreground(p.Foreground),
-		CommandHL:  lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
-		Toast:      lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
-		HelpTitle:  lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
+		Palette:      p,
+		Header:       lipgloss.NewStyle().Foreground(p.Foreground).Bold(true),
+		HeaderBar:    lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
+		Cluster:      lipgloss.NewStyle().Bold(true),
+		ReadOnly:     lipgloss.NewStyle().Foreground(p.StatusWarn).Bold(true),
+		StatusBar:    lipgloss.NewStyle().Foreground(p.Muted),
+		StatusInfo:   lipgloss.NewStyle().Foreground(p.Muted),
+		StatusWarn:   lipgloss.NewStyle().Foreground(p.StatusWarn),
+		StatusErr:    lipgloss.NewStyle().Foreground(p.StatusError),
+		KeyHints:     lipgloss.NewStyle().Foreground(p.Muted),
+		HintKey:      lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
+		HintLabel:    lipgloss.NewStyle().Foreground(p.Muted),
+		Command:      lipgloss.NewStyle().Foreground(p.Foreground),
+		CommandHL:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
+		CommandGhost: lipgloss.NewStyle().Foreground(p.Muted),
+		Toast:        lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
+		HelpTitle:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
 	}
 }
 

@@ -208,6 +208,129 @@ func TestModel_CommandEscapeCancels(t *testing.T) {
 	assert.Empty(t, m.CommandBuffer())
 }
 
+func TestCompletionSuggestion(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "empty", prefix: "", want: ""},
+		{name: "t matches topics", prefix: "t", want: "topics"},
+		{name: "to matches topics", prefix: "to", want: "topics"},
+		{name: "top matches topics", prefix: "top", want: "topics"},
+		{name: "topics exact no suggestion", prefix: "topics", want: ""},
+		{name: "g matches groups", prefix: "g", want: "groups"},
+		{name: "cl matches clusters", prefix: "cl", want: "clusters"},
+		{name: "cluster matches clusters", prefix: "cluster", want: "clusters"},
+		{name: "clusters exact no suggestion", prefix: "clusters", want: ""},
+		{name: "l matches logs", prefix: "l", want: "logs"},
+		{name: "c matches clusters (first alphabetically)", prefix: "c", want: "clusters"},
+		{name: "co matches config sources", prefix: "co", want: "config sources"},
+		{name: "config matches config sources", prefix: "config", want: "config sources"},
+		{name: "config s matches config sources", prefix: "config s", want: "config sources"},
+		{name: "unknown prefix", prefix: "z", want: ""},
+		{name: "leading colon stripped", prefix: ":to", want: "topics"},
+		{name: "case insensitive", prefix: "TO", want: "topics"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tui.CompletionSuggestion(tc.prefix)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestModel_CommandTabCompletion(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
+
+	// arrange
+	updated, _ := m.Update(keyPress(":"))
+	m = updated.(*tui.Model)
+
+	// act — type "to", should suggest "topics"
+	for _, ch := range "to" {
+		updated, _ = m.Update(keyPressRune(ch))
+		m = updated.(*tui.Model)
+	}
+
+	// assert
+	assert.Equal(t, "to", m.CommandBuffer())
+	assert.Equal(t, "topics", m.CommandSuggestion())
+	assert.Contains(t, m.Render(), "pics")
+
+	// act — press Tab to accept
+	updated, _ = m.Update(keyPress("tab"))
+	m = updated.(*tui.Model)
+
+	// assert
+	assert.Equal(t, "topics", m.CommandBuffer())
+	assert.Empty(t, m.CommandSuggestion())
+}
+
+func TestModel_CommandTabCompletion__no_suggestion(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
+
+	// arrange
+	updated, _ := m.Update(keyPress(":"))
+	m = updated.(*tui.Model)
+	for _, ch := range "zzz" {
+		updated, _ = m.Update(keyPressRune(ch))
+		m = updated.(*tui.Model)
+	}
+
+	// act — Tab with no suggestion is a no-op
+	updated, _ = m.Update(keyPress("tab"))
+	m = updated.(*tui.Model)
+
+	// assert
+	assert.Equal(t, "zzz", m.CommandBuffer())
+	assert.Empty(t, m.CommandSuggestion())
+}
+
+func TestModel_CommandTabCompletion__backspace_updates_suggestion(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
+
+	// arrange
+	updated, _ := m.Update(keyPress(":"))
+	m = updated.(*tui.Model)
+	for _, ch := range "topics" {
+		updated, _ = m.Update(keyPressRune(ch))
+		m = updated.(*tui.Model)
+	}
+	assert.Empty(t, m.CommandSuggestion())
+
+	// act — backspace to "topic"
+	updated, _ = m.Update(keyPress("backspace"))
+	m = updated.(*tui.Model)
+
+	// assert — suggestion reappears
+	assert.Equal(t, "topics", m.CommandSuggestion())
+}
+
+func TestModel_CommandTabCompletion__tab_then_enter(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
+
+	// arrange
+	updated, _ := m.Update(keyPress(":"))
+	m = updated.(*tui.Model)
+	for _, ch := range "gr" {
+		updated, _ = m.Update(keyPressRune(ch))
+		m = updated.(*tui.Model)
+	}
+
+	// act — Tab then Enter
+	updated, _ = m.Update(keyPress("tab"))
+	m = updated.(*tui.Model)
+	assert.Equal(t, "groups", m.CommandBuffer())
+
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(*tui.Model)
+
+	// assert
+	assert.Equal(t, tui.ModeNormal, m.Mode())
+	assert.Equal(t, tui.ScreenGroups, m.Router().Active())
+}
+
 func TestModel_SearchMode(t *testing.T) {
 	m := tui.New(tui.Options{Initial: tui.ScreenTopics})
 
@@ -358,6 +481,8 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "ctrl+r":

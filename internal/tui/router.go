@@ -32,6 +32,34 @@ type Command struct {
 	Raw string
 }
 
+// commandNames lists all commands recognized by ParseCommand, used for
+// tab-completion. Compound commands (e.g. "config sources") appear as one
+// entry so the user can complete the whole phrase in one Tab press.
+var commandNames = []string{
+	"clusters",
+	"config sources",
+	"groups",
+	"logs",
+	"topics",
+}
+
+// CompletionSuggestion returns the first command that starts with the given
+// prefix, or "" when nothing matches. The returned string is always the full
+// command name (e.g. "config sources"), never just the suffix.
+func CompletionSuggestion(prefix string) string {
+	prefix = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(prefix), ":"))
+	if prefix == "" {
+		return ""
+	}
+	lower := strings.ToLower(prefix)
+	for _, name := range commandNames {
+		if strings.HasPrefix(name, lower) && name != lower {
+			return name
+		}
+	}
+	return ""
+}
+
 // ErrUnknownCommand is returned by ParseCommand when the input does not match
 // any known screen invocation.
 var ErrUnknownCommand = errors.New("unknown command")

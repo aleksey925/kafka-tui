@@ -213,6 +213,9 @@ func (m *Model) Mode() Mode { return m.mode }
 // CommandBuffer returns the current command-bar buffer (for tests).
 func (m *Model) CommandBuffer() string { return m.command.Buffer }
 
+// CommandSuggestion returns the current command-bar suggestion (for tests).
+func (m *Model) CommandSuggestion() string { return m.command.Suggestion }
+
 // SearchBuffer returns the current search buffer (for tests).
 func (m *Model) SearchBuffer() string { return m.search.Buffer }
 
@@ -343,17 +346,26 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.command = layout.CommandBar{}
 		next := m.replaceScreen(cmd.Screen, cmd.Arg)
 		return m, next
+	case "tab":
+		if m.command.Suggestion != "" {
+			m.command.Buffer = m.command.Suggestion
+			m.command.Suggestion = ""
+			m.command.Error = ""
+		}
+		return m, nil
 	case "backspace":
 		if n := len(m.command.Buffer); n > 0 {
 			m.command.Buffer = m.command.Buffer[:n-1]
 			m.command.Error = ""
 		}
+		m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
 		return m, nil
 	default:
 		if t := key.Text; t != "" {
 			m.command.Buffer += t
 			m.command.Error = ""
 		}
+		m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
 		return m, nil
 	}
 }
