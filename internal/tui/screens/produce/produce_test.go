@@ -58,6 +58,12 @@ func TestNew_TopicPrefilledFromOption(t *testing.T) {
 	assert.Equal(t, "orders", got.Value)
 }
 
+func TestWantsRawInput_AlwaysTrue(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+
+	assert.True(t, m.WantsRawInput())
+}
+
 func TestEsc_RaisesBackAction(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 

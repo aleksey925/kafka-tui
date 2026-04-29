@@ -219,6 +219,25 @@ func TestCreateForm_EscReturnsToList(t *testing.T) {
 	assert.Equal(t, topics.ModeList, m.CurrentMode())
 }
 
+func TestWantsRawInput_TracksFormModes(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	assert.False(t, m.WantsRawInput(), "list mode does not edit text")
+
+	_, _ = m.Update(keyPress("n"))
+	require.Equal(t, topics.ModeCreate, m.CurrentMode())
+	assert.True(t, m.WantsRawInput(), "create form edits text")
+
+	_, _ = m.Update(keyPress("esc"))
+	assert.False(t, m.WantsRawInput())
+
+	_, _ = m.Update(keyPress("y"))
+	require.Equal(t, topics.ModeClone, m.CurrentMode())
+	assert.True(t, m.WantsRawInput(), "clone form edits text")
+}
+
 func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.New(topics.Options{Service: svc})

@@ -379,6 +379,27 @@ func TestReset_OpensFromListWithR(t *testing.T) {
 	assert.Equal(t, groups.StepStrategy, r.Step())
 }
 
+func TestWantsRawInput_OnlyDuringResetParams(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	assert.False(t, m.WantsRawInput(), "list mode is not text input")
+
+	_, _ = m.Update(keyPress("R"))
+	require.Equal(t, groups.ModeReset, m.CurrentMode())
+	require.Equal(t, groups.StepStrategy, m.Reset().Step())
+	assert.False(t, m.WantsRawInput(), "strategy step is selection, not text")
+
+	// j j → ResetShift, enter → StepParams (text input).
+	_, _ = m.Update(keyPress("j"))
+	_, _ = m.Update(keyPress("j"))
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, groups.StepParams, m.Reset().Step())
+	assert.True(t, m.WantsRawInput(), "params step edits text")
+}
+
 func TestReset_ShiftRSetsExpress(t *testing.T) {
 	svc := newFakeService()
 	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}

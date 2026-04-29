@@ -242,6 +242,11 @@ func (m *Model) ConsumeAction() Action {
 // Sending reports whether a produce call is currently in flight.
 func (m *Model) Sending() bool { return m.sending }
 
+// WantsRawInput reports that the produce form is always editing text and wants
+// global shortcut keys (`:`, `/`, `?`, `ctrl+r`) routed to its fields as
+// literals instead of triggering the host-level handlers.
+func (m *Model) WantsRawInput() bool { return true }
+
 // SetSize updates width/height (used by the layout chrome).
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 

@@ -180,6 +180,13 @@ func (m *Model) ConsumeAction() Action {
 // CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
+// WantsRawInput reports true while the reset flow is on the params step
+// (timestamp / shift / specific offset), where the user is editing free-form
+// text and shouldn't have keys captured by global shortcuts.
+func (m *Model) WantsRawInput() bool {
+	return m.mode == ModeReset && m.reset != nil && m.reset.Step() == StepParams
+}
+
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 

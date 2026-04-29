@@ -24,6 +24,11 @@ type screen interface {
 	View() string
 	SetSize(w, h int)
 	KeyHints() []layout.KeyHint
+	// WantsRawInput reports whether the screen is currently editing free-form
+	// text (e.g. a form field) and wants every key — including normally global
+	// shortcuts like `:`, `/`, `?`, `ctrl+r` — routed straight to it. ctrl+c
+	// stays global regardless.
+	WantsRawInput() bool
 }
 
 type clustersScreen struct{ m *clusters.Model }
@@ -37,6 +42,7 @@ func (s *clustersScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *clustersScreen) View() string               { return s.m.View() }
 func (s *clustersScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *clustersScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *clustersScreen) WantsRawInput() bool        { return false }
 
 type topicsScreen struct{ m *topics.Model }
 
@@ -49,6 +55,7 @@ func (s *topicsScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *topicsScreen) View() string               { return s.m.View() }
 func (s *topicsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *topicsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *topicsScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
 
 type messagesScreen struct{ m *messages.Model }
 
@@ -61,6 +68,7 @@ func (s *messagesScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *messagesScreen) View() string               { return s.m.View() }
 func (s *messagesScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *messagesScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *messagesScreen) WantsRawInput() bool        { return false }
 
 type produceScreen struct{ m *produce.Model }
 
@@ -73,6 +81,7 @@ func (s *produceScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *produceScreen) View() string               { return s.m.View() }
 func (s *produceScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *produceScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *produceScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
 
 type groupsScreen struct{ m *groups.Model }
 
@@ -85,6 +94,7 @@ func (s *groupsScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *groupsScreen) View() string               { return s.m.View() }
 func (s *groupsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *groupsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *groupsScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
 
 type logsScreen struct{ m *logs.Model }
 
@@ -97,6 +107,7 @@ func (s *logsScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *logsScreen) View() string               { return s.m.View() }
 func (s *logsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *logsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *logsScreen) WantsRawInput() bool        { return false }
 
 type configsrcScreen struct{ m *configsrc.Model }
 
@@ -109,6 +120,7 @@ func (s *configsrcScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *configsrcScreen) View() string               { return s.m.View() }
 func (s *configsrcScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *configsrcScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *configsrcScreen) WantsRawInput() bool        { return false }
 
 type topicConfigsScreen struct{ m *topics.ConfigsModel }
 
@@ -121,3 +133,4 @@ func (s *topicConfigsScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *topicConfigsScreen) View() string               { return s.m.View() }
 func (s *topicConfigsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
 func (s *topicConfigsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
+func (s *topicConfigsScreen) WantsRawInput() bool        { return false }

@@ -291,6 +291,20 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// ctrl+c is always global so the user can quit even from inside a form.
+	if key.String() == "ctrl+c" {
+		m.quit = true
+		return m, tea.Quit
+	}
+	// when the active screen is editing free-form text (produce form, topic
+	// create/clone, reset params), route every key to it as a literal so
+	// `:`, `/`, `?`, `ctrl+r` reach the form instead of triggering global
+	// shortcuts.
+	if m.active != nil && m.active.WantsRawInput() {
+		cmd := m.forwardToActive(key)
+		routeCmd := m.routeActiveAction()
+		return m, teaBatch(cmd, routeCmd)
+	}
 	switch key.String() {
 	case ":":
 		m.mode = ModeCommand
@@ -306,9 +320,6 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		m.SetAutoRefresh(!m.autoRefresh)
 		return m, nil
-	case "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
 	}
 	// forward to active screen first; it may consume q/esc itself
 	// (e.g. close an overlay). After the screen handles it we look at the

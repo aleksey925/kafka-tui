@@ -204,6 +204,13 @@ func (m *Model) ConsumeAction() Action {
 // CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
+// WantsRawInput reports true while the create / clone form is open so the host
+// routes typed characters straight into the form fields instead of activating
+// global shortcuts.
+func (m *Model) WantsRawInput() bool {
+	return m.mode == ModeCreate || m.mode == ModeClone
+}
+
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
