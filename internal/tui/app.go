@@ -715,6 +715,7 @@ func (m *Model) routeMessagesAction(s *messagesScreen) tea.Cmd {
 		m.popScreen()
 		return m.activeInit()
 	case a.Produce != "":
+		m.lastTopic = a.Produce
 		m.navTopic = a.Produce
 		m.navPrefill = a.PrefillFromMessage
 		return m.pushScreenCmd(ScreenProduce)
@@ -738,6 +739,7 @@ func (m *Model) routeGroupsAction(s *groupsScreen) tea.Cmd {
 		m.popScreen()
 		return m.activeInit()
 	case a.Topic != "":
+		m.lastTopic = a.Topic
 		m.navTopic = a.Topic
 		return m.pushScreenCmd(ScreenMessages)
 	case len(a.TopicsForGroup) > 0:
@@ -838,6 +840,12 @@ func (m *Model) popScreen() {
 func (m *Model) instantiate(id ScreenID) {
 	if m.boot == nil {
 		return
+	}
+	// when re-instantiating after a pop the nav seeds are empty; fall back to
+	// lastTopic so topic-bound screens (messages, produce) recreate against the
+	// correct topic instead of an empty one.
+	if m.navTopic == "" {
+		m.navTopic = m.lastTopic
 	}
 	defer m.clearNavSeeds()
 	switch id {
