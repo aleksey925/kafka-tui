@@ -184,7 +184,7 @@ func DefaultKeyHints() []layout.KeyHint {
 		{Key: ":", Label: "command"},
 		{Key: "/", Label: "search"},
 		{Key: "?", Label: "help"},
-		{Key: "Ctrl+R", Label: "refresh"},
+		{Key: "ctrl+r", Label: "refresh"},
 		{Key: "q", Label: "back/quit"},
 	}
 }
@@ -476,9 +476,9 @@ func (m *Model) renderHelp() string {
 		{Key: ":", Label: "open command bar"},
 		{Key: "/", Label: "open search"},
 		{Key: "?", Label: "toggle help"},
-		{Key: "Ctrl+R", Label: "toggle auto-refresh"},
-		{Key: "Esc/q", Label: "back / quit"},
-		{Key: "Ctrl+C", Label: "quit"},
+		{Key: "ctrl+r", Label: "toggle auto-refresh"},
+		{Key: "esc/q", Label: "back / quit"},
+		{Key: "ctrl+c", Label: "quit"},
 	}
 	commands := []layout.KeyHint{
 		{Key: ":topics", Label: "topics list"},

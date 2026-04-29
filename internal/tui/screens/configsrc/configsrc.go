@@ -21,7 +21,7 @@ import (
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed Esc/q.
+	// Back signals the user pressed esc/q.
 	Back bool
 }
 
@@ -105,10 +105,10 @@ func (m *Model) SetSize(w, h int) {
 // KeyHints returns the screen-specific hints.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return []layout.KeyHint{
-		{Key: "Tab", Label: "switch table"},
+		{Key: "tab", Label: "switch table"},
 		{Key: "/", Label: "search"},
 		{Key: "s/S", Label: "sort"},
-		{Key: "Esc/q", Label: "back"},
+		{Key: "esc/q", Label: "back"},
 	}
 }
 

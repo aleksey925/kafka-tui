@@ -55,7 +55,7 @@ type CommandBar struct {
 	Active     bool
 	Prefix     rune // ':' or '/'
 	Buffer     string
-	Suggestion string // ghost text shown after the buffer (Tab to accept)
+	Suggestion string // ghost text shown after the buffer (tab to accept)
 	Error      string // shown beneath the prompt when set
 }
 

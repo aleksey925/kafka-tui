@@ -1,7 +1,7 @@
 // Package state owns the persistent SQLite store for kafka-tui.
 //
 // The only consumer today is the produce form's history (Task 15 / §7.5):
-// past produces are recorded into `produce_history` so Ctrl+P / Ctrl+N can
+// past produces are recorded into `produce_history` so ctrl+p / ctrl+n can
 // walk them, and so a freshly opened form can prefill from the most recent
 // produce to the same topic.
 //

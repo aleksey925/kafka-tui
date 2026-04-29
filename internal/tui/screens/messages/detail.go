@@ -53,7 +53,7 @@ func (f PagerOpenerFunc) Open(path string) error { return f(path) }
 
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
-	// Back signals the user pressed Esc/q.
+	// Back signals the user pressed esc/q.
 	Back bool
 	// Produce, when non-empty, requests the produce form prefilled with the
 	// resend payload (PrefillFromMessage).
@@ -170,7 +170,7 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 	if !d.readOnly {
 		hints = append(hints, layout.KeyHint{Key: "r", Label: "resend"})
 	}
-	hints = append(hints, layout.KeyHint{Key: "Esc", Label: "back"})
+	hints = append(hints, layout.KeyHint{Key: "esc", Label: "back"})
 	return hints
 }
 

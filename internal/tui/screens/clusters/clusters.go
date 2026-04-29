@@ -114,7 +114,7 @@ type Action struct {
 	// Connect names the cluster the user wants to switch to. The host is
 	// expected to push the topics screen.
 	Connect string
-	// Quit signals the user pressed Esc/q with no other screen below.
+	// Quit signals the user pressed esc/q with no other screen below.
 	Quit bool
 }
 
@@ -301,7 +301,7 @@ func (m *Model) SetSize(w, h int) {
 // KeyHints returns the screen-specific hints shown at the bottom row.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return []layout.KeyHint{
-		{Key: "Enter", Label: "connect"},
+		{Key: "enter", Label: "connect"},
 		{Key: "t/T", Label: "test/all"},
 		{Key: "e", Label: "edit"},
 		{Key: "r", Label: "refresh"},
@@ -415,7 +415,7 @@ func (m *Model) openEditChooser() tea.Cmd {
 	return nil
 }
 
-// connectCurrent handles `Enter`: probe + connect.
+// connectCurrent handles `enter`: probe + connect.
 func (m *Model) connectCurrent() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -581,7 +581,7 @@ func (m *Model) renderEditChooser() string {
 		}
 		lines = append(lines, "  "+style.Render(marker+c.Label+"  "+c.Path))
 	}
-	lines = append(lines, "", m.styles.HintLabel.Render("Enter select  Esc cancel"))
+	lines = append(lines, "", m.styles.HintLabel.Render("enter select  esc cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 2).

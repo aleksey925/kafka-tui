@@ -36,7 +36,7 @@ type Field struct {
 	listCursor int // for FieldList: which entry is focused
 }
 
-// Form is a vertical stack of Fields navigated with Tab / Shift+Tab. Each
+// Form is a vertical stack of Fields navigated with tab / shift+tab. Each
 // field implements its own per-character editing.
 type Form struct {
 	fields []Field
@@ -136,7 +136,7 @@ func (f *Form) FocusPrev() {
 	f.focus = (f.focus - 1 + len(f.fields)) % len(f.fields)
 }
 
-// Update routes a key message to the focused field. Tab / Shift+Tab change
+// Update routes a key message to the focused field. tab / shift+tab change
 // focus; everything else is delegated to the active field.
 func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
@@ -248,7 +248,7 @@ func renderDropdown(s theme.Styles, fld Field, focused bool) string {
 
 func renderList(s theme.Styles, fld Field, focused bool) string {
 	if len(fld.List) == 0 {
-		return "    " + s.StatusInfo.Render("(empty — Ctrl+A to add)")
+		return "    " + s.StatusInfo.Render("(empty — ctrl+a to add)")
 	}
 	parts := make([]string, 0, len(fld.List))
 	for i, entry := range fld.List {
@@ -261,7 +261,7 @@ func renderList(s theme.Styles, fld Field, focused bool) string {
 		parts = append(parts, "  "+style.Render(prefix+entry))
 	}
 	if focused {
-		parts = append(parts, "    "+s.HintLabel.Render("Ctrl+A add  Ctrl+D delete"))
+		parts = append(parts, "    "+s.HintLabel.Render("ctrl+a add  ctrl+d delete"))
 	}
 	return strings.Join(parts, "\n")
 }

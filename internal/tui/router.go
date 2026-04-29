@@ -34,7 +34,7 @@ type Command struct {
 
 // commandNames lists all commands recognized by ParseCommand, used for
 // tab-completion. Compound commands (e.g. "config sources") appear as one
-// entry so the user can complete the whole phrase in one Tab press.
+// entry so the user can complete the whole phrase in one tab press.
 var commandNames = []string{
 	"clusters",
 	"config sources",
@@ -161,7 +161,7 @@ func (r *Router) Active() ScreenID {
 	return r.stack[len(r.stack)-1]
 }
 
-// Depth returns the current stack depth (handy for tests and `Esc/q` logic).
+// Depth returns the current stack depth (handy for tests and `esc/q` logic).
 func (r *Router) Depth() int {
 	return len(r.stack)
 }

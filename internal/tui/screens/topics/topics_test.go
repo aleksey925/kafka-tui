@@ -205,7 +205,7 @@ func TestN_OpensCreateForm(t *testing.T) {
 	assert.Equal(t, topics.ModeCreate, m.CurrentMode())
 	out := m.View()
 	assert.Contains(t, out, "New topic")
-	assert.Contains(t, out, "Ctrl+S create")
+	assert.Contains(t, out, "ctrl+s create")
 }
 
 func TestCreateForm_EscReturnsToList(t *testing.T) {

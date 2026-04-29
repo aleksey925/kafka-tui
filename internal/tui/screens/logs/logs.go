@@ -27,7 +27,7 @@ const DefaultFollowInterval = 500 * time.Millisecond
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed Esc/q on the list view.
+	// Back signals the user pressed esc/q on the list view.
 	Back bool
 }
 
@@ -158,7 +158,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "/", Label: "search"},
 		{Key: "n/N", Label: "next/prev match"},
 		{Key: "gg/G", Label: "top/bottom"},
-		{Key: "Esc/q", Label: "back"},
+		{Key: "esc/q", Label: "back"},
 	}
 }
 

@@ -378,7 +378,7 @@ func TestView_EditChooserModalRendered(t *testing.T) {
 	assert.Contains(t, out, "global")
 	assert.Contains(t, out, "project")
 	assert.Contains(t, out, "/g/clusters.yaml")
-	assert.Contains(t, out, "Esc cancel")
+	assert.Contains(t, out, "esc cancel")
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {

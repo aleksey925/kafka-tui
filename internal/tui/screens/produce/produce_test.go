@@ -83,7 +83,7 @@ func TestCtrlS_SendsAndClosesOnSuccess(t *testing.T) {
 	assert.Equal(t, []byte("hello"), svc.Sent()[0].Value)
 
 	a := m.ConsumeAction()
-	assert.True(t, a.Back, "Ctrl+S must close after a successful send")
+	assert.True(t, a.Back, "ctrl+s must close after a successful send")
 	require.NotNil(t, a.Sent)
 	assert.Equal(t, int64(99), a.Sent.Offset)
 }
@@ -99,7 +99,7 @@ func TestCtrlShiftS_SendsButKeepsForm(t *testing.T) {
 
 	require.Len(t, svc.Sent(), 1)
 	a := m.ConsumeAction()
-	assert.False(t, a.Back, "Ctrl+Shift+S must NOT close")
+	assert.False(t, a.Back, "ctrl+shift+s must NOT close")
 	require.NotNil(t, a.Sent)
 }
 
@@ -296,10 +296,10 @@ func TestCtrlP_StepsThroughHistory(t *testing.T) {
 	val, _ := m.Form().Field("value")
 	assert.Equal(t, "newest", val.Value, "fresh open prefills with newest entry for topic")
 
-	// Ctrl+P walks back into older entries.
+	// ctrl+p walks back into older entries.
 	_, _ = m.Update(keyPress("ctrl+p"))
 	val, _ = m.Form().Field("value")
-	assert.Equal(t, "newest", val.Value, "first Ctrl+P selects pos 0 (newest)")
+	assert.Equal(t, "newest", val.Value, "first ctrl+p selects pos 0 (newest)")
 
 	_, _ = m.Update(keyPress("ctrl+p"))
 	val, _ = m.Form().Field("value")
@@ -309,7 +309,7 @@ func TestCtrlP_StepsThroughHistory(t *testing.T) {
 	val, _ = m.Form().Field("value")
 	assert.Equal(t, "oldest", val.Value)
 
-	// Ctrl+N steps forward.
+	// ctrl+n steps forward.
 	_, _ = m.Update(keyPress("ctrl+n"))
 	val, _ = m.Form().Field("value")
 	assert.Equal(t, "middle", val.Value)

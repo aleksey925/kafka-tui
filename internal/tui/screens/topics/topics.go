@@ -3,7 +3,7 @@
 //
 // The screen renders a sortable, searchable, configurable-columns table of
 // topics with a counter line ("47 topics, 3 internal hidden"), and dispatches
-// hotkeys for navigation (Enter / m → messages, c → configs, g → consumer
+// hotkeys for navigation (enter / m → messages, c → configs, g → consumer
 // groups for the topic, p → produce) plus inline overlays for create / clone
 // / delete. It owns no Kafka client itself — all admin and read calls flow
 // through a pluggable [Service], which keeps the screen unit-testable.
@@ -52,7 +52,7 @@ type Action struct {
 	Groups string
 	// Produce requests navigation to the produce form for the named topic.
 	Produce string
-	// Quit signals the user pressed Esc/q on the list view.
+	// Quit signals the user pressed esc/q on the list view.
 	Quit bool
 }
 
@@ -249,7 +249,7 @@ func (m *Model) SetSize(w, h int) {
 // KeyHints returns the screen-specific hints shown at the bottom row.
 func (m *Model) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
-		{Key: "Enter/m", Label: "messages"},
+		{Key: "enter/m", Label: "messages"},
 		{Key: "c", Label: "configs"},
 		{Key: "g", Label: "groups"},
 		{Key: "/", Label: "search"},
@@ -671,7 +671,7 @@ func (m *Model) renderCloningOverlay() string {
 		formatThousands(m.progress.Copied),
 		formatThousands(m.progress.Total),
 	)
-	hint := m.styles.HintLabel.Render("Esc — return to list (clone continues in background)")
+	hint := m.styles.HintLabel.Render("esc — return to list (clone continues in background)")
 	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
 }
 

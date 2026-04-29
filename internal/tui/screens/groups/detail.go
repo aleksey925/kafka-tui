@@ -29,7 +29,7 @@ const (
 
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
-	// Back signals Esc/q.
+	// Back signals esc/q.
 	Back bool
 	// OpenReset asks the host to push the reset model with scope = whole detail.
 	OpenReset bool
@@ -167,18 +167,18 @@ const headerLineCount = 4
 // KeyHints returns the screen-specific hints.
 func (d *DetailModel) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
-		{Key: "Tab", Label: "grouped/flat"},
+		{Key: "tab", Label: "grouped/flat"},
 		{Key: "t", Label: "topics"},
 		{Key: "/", Label: "search"},
 	}
 	if !d.readOnly {
 		hints = append(hints,
 			layout.KeyHint{Key: "R", Label: "reset"},
-			layout.KeyHint{Key: "Shift+R", Label: "express"},
+			layout.KeyHint{Key: "shift+r", Label: "express"},
 			layout.KeyHint{Key: "D", Label: "delete"},
 		)
 	}
-	hints = append(hints, layout.KeyHint{Key: "Esc/q", Label: "back"})
+	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
 	return hints
 }
 

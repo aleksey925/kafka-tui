@@ -93,7 +93,7 @@ const (
 
 // ResetAction is the host-facing intent of the reset model.
 type ResetAction struct {
-	// Cancel is set when the user pressed Esc before committing.
+	// Cancel is set when the user pressed esc before committing.
 	Cancel bool
 	// Done is set after a successful commit (Result holds the post-commit
 	// preview) OR after a cancel (Result is nil).
@@ -209,19 +209,19 @@ func (r *ResetModel) KeyHints() []layout.KeyHint {
 	case StepStrategy:
 		return []layout.KeyHint{
 			{Key: "↑/↓", Label: "select"},
-			{Key: "Enter", Label: "next"},
-			{Key: "Esc", Label: "cancel"},
+			{Key: "enter", Label: "next"},
+			{Key: "esc", Label: "cancel"},
 		}
 	case StepParams:
 		return []layout.KeyHint{
-			{Key: "Tab", Label: "next field"},
-			{Key: "Enter", Label: "next"},
-			{Key: "Esc", Label: "cancel"},
+			{Key: "tab", Label: "next field"},
+			{Key: "enter", Label: "next"},
+			{Key: "esc", Label: "cancel"},
 		}
 	case StepPreview:
 		return []layout.KeyHint{
 			{Key: "y", Label: "commit"},
-			{Key: "n/Esc", Label: "cancel"},
+			{Key: "n/esc", Label: "cancel"},
 		}
 	case StepDone:
 		return nil
@@ -580,7 +580,7 @@ func (r *ResetModel) renderPreviewStep() string {
 	if r.step == StepDone {
 		parts = append(parts, "", r.styles.StatusInfo.Render("commit applied"))
 	} else {
-		parts = append(parts, "", r.styles.HintLabel.Render("y commit  n/Esc cancel"))
+		parts = append(parts, "", r.styles.HintLabel.Render("y commit  n/esc cancel"))
 	}
 	return strings.Join(parts, "\n")
 }

@@ -41,7 +41,7 @@ type Service interface {
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed Esc/q on the list view.
+	// Back signals the user pressed esc/q on the list view.
 	Back bool
 	// Topic, when non-empty, requests navigation to the messages screen for
 	// the named topic (raised by `t` in the detail view when the group has
@@ -68,7 +68,7 @@ const (
 type Options struct {
 	// Service is the Kafka admin abstraction. Required.
 	Service Service
-	// ReadOnly disables R/Shift+R/D and surfaces warnings.
+	// ReadOnly disables R/shift+r/D and surfaces warnings.
 	ReadOnly bool
 	// FilterTopic, when non-empty, scopes the list to groups subscribed to
 	// (or with commits for) that topic. The header changes accordingly.
@@ -230,13 +230,13 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		// fall through to the default list hints below.
 	}
 	hints := []layout.KeyHint{
-		{Key: "Enter", Label: "detail"},
+		{Key: "enter", Label: "detail"},
 		{Key: "/", Label: "search"},
 	}
 	if !m.readOnly {
 		hints = append(hints,
 			layout.KeyHint{Key: "R", Label: "reset"},
-			layout.KeyHint{Key: "Shift+R", Label: "express"},
+			layout.KeyHint{Key: "shift+r", Label: "express"},
 			layout.KeyHint{Key: "D", Label: "delete"},
 		)
 	}

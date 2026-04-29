@@ -17,7 +17,7 @@ const (
 	ConfirmPending ConfirmResult = iota
 	// ConfirmYes means the user pressed `y`.
 	ConfirmYes
-	// ConfirmNo means the user pressed `n` or Esc.
+	// ConfirmNo means the user pressed `n` or esc.
 	ConfirmNo
 )
 

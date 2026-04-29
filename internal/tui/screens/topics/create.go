@@ -106,7 +106,7 @@ func (c *CreateForm) Spec() (kafka.CreateTopicSpec, error) {
 // View renders the create form. width=0 falls back to natural width.
 func (c *CreateForm) View(width int) string {
 	header := c.styles.HelpTitle.Render("New topic")
-	hint := c.styles.HintLabel.Render("Tab navigate  Ctrl+S create  Esc cancel")
+	hint := c.styles.HintLabel.Render("tab navigate  ctrl+s create  esc cancel")
 	parts := []string{header}
 	if c.err != "" {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))
@@ -212,7 +212,7 @@ func (c *CloneForm) Options() kafka.CloneOptions {
 // View renders the clone form.
 func (c *CloneForm) View(width int) string {
 	header := c.styles.HelpTitle.Render("Clone topic: " + c.source)
-	hint := c.styles.HintLabel.Render("Tab navigate  Ctrl+S clone  Esc cancel")
+	hint := c.styles.HintLabel.Render("tab navigate  ctrl+s clone  esc cancel")
 	parts := []string{header}
 	if c.err != "" {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))

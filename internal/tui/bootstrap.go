@@ -75,7 +75,7 @@ type Bootstrap struct {
 	History produce.History
 	// Clipboard is forwarded to messages detail for copy hotkeys. nil disables copy.
 	Clipboard messages.Clipboard
-	// Pager opens the produce value field in $EDITOR. nil disables Ctrl+E.
+	// Pager opens the produce value field in $EDITOR. nil disables ctrl+e.
 	Pager produce.PagerOpener
 	// StartupWarnings is surfaced as toasts on the clusters screen.
 	StartupWarnings []string

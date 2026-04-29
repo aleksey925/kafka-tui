@@ -3,9 +3,9 @@
 // (auto/manual), compression codec, key, headers, and value, and supports
 // resending a previously-received message with one click.
 //
-// Send & close (Ctrl+S) submits the record and signals the host to leave;
-// Send & keep (Ctrl+Shift+S) submits without leaving — the form stays open
-// for repeated produces. Ctrl+P / Ctrl+N walk through history; Ctrl+R clears
+// Send & close (ctrl+s) submits the record and signals the host to leave;
+// Send & keep (ctrl+shift+s) submits without leaving — the form stays open
+// for repeated produces. ctrl+p / ctrl+n walk through history; ctrl+r clears
 // every field.
 package produce
 
@@ -34,8 +34,8 @@ type Service interface {
 	Produce(ctx context.Context, spec kafka.ProduceSpec) (kafka.ProduceResult, error)
 }
 
-// History persists past produces and surfaces them for prefill / Ctrl+P /
-// Ctrl+N. Production code wires this to the SQLite-backed store from
+// History persists past produces and surfaces them for prefill / ctrl+p /
+// ctrl+n. Production code wires this to the SQLite-backed store from
 // Task 18; tests pass an in-memory implementation.
 type History interface {
 	// LastForTopic returns the most recent entry for `topic` (used to prefill
@@ -43,7 +43,7 @@ type History interface {
 	// exists for the topic.
 	LastForTopic(topic string) (Entry, bool)
 	// Recent returns up to n entries across all topics, newest-first. The
-	// produce form walks this slice with Ctrl+P / Ctrl+N.
+	// produce form walks this slice with ctrl+p / ctrl+n.
 	Recent(n int) []Entry
 	// Add records a successful produce.
 	Add(entry Entry)
@@ -76,7 +76,7 @@ func (f PagerOpenerFunc) Edit(initial []byte) ([]byte, error) { return f(initial
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed Esc OR completed a "send & close".
+	// Back signals the user pressed esc OR completed a "send & close".
 	Back bool
 	// Sent is non-nil after a successful produce. The host uses this to flash
 	// a success toast and trigger a refresh of the messages screen when the
@@ -99,7 +99,7 @@ type Options struct {
 	HistorySize int
 	// History is the optional persistent backing store. nil disables history.
 	History History
-	// Pager is the $EDITOR opener for the value field. nil disables Ctrl+E.
+	// Pager is the $EDITOR opener for the value field. nil disables ctrl+e.
 	Pager PagerOpener
 	// PrefillFromMessage, when set, populates the form from the source message
 	// (resend mode). Partition is reset to auto.
@@ -190,7 +190,7 @@ func New(opts Options) *Model {
 }
 
 // buildForm returns the canonical field layout. Used both at construction time
-// and by Ctrl+R to reset the entire form.
+// and by ctrl+r to reset the entire form.
 func (m *Model) buildForm() *components.Form {
 	fields := []components.Field{
 		{Key: fieldTopic, Label: "Topic", Kind: components.FieldText, Value: m.topic},
@@ -248,13 +248,13 @@ func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 // KeyHints returns the screen-specific hints shown at the bottom row.
 func (m *Model) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
-		{Key: "Tab", Label: "next field"},
-		{Key: "Ctrl+S", Label: "send"},
-		{Key: "Ctrl+Shift+S", Label: "send & keep"},
-		{Key: "Ctrl+E", Label: "$EDITOR"},
-		{Key: "Ctrl+P/N", Label: "history"},
-		{Key: "Ctrl+R", Label: "clear"},
-		{Key: "Esc", Label: "cancel"},
+		{Key: "tab", Label: "next field"},
+		{Key: "ctrl+s", Label: "send"},
+		{Key: "ctrl+shift+s", Label: "send & keep"},
+		{Key: "ctrl+e", Label: "$EDITOR"},
+		{Key: "ctrl+p/n", Label: "history"},
+		{Key: "ctrl+r", Label: "clear"},
+		{Key: "esc", Label: "cancel"},
 	}
 	return hints
 }
@@ -304,8 +304,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	return m, cmd
 }
 
-// send validates and dispatches a produce. closeAfter=true → Ctrl+S (send &
-// close); closeAfter=false → Ctrl+Shift+S (send & keep).
+// send validates and dispatches a produce. closeAfter=true → ctrl+s (send &
+// close); closeAfter=false → ctrl+shift+s (send & keep).
 func (m *Model) send(closeAfter bool) (*Model, tea.Cmd) {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — produce blocked")
@@ -422,7 +422,7 @@ func parseHeaders(entries []string) ([]kafka.Header, error) {
 }
 
 // recordHistory persists the just-sent payload into the history backend and
-// keeps the in-memory cache in sync so Ctrl+P/Ctrl+N find it instantly.
+// keeps the in-memory cache in sync so ctrl+p/ctrl+n find it instantly.
 func (m *Model) recordHistory(spec kafka.ProduceSpec) {
 	entry := Entry{
 		Cluster:     m.cluster,
@@ -437,12 +437,12 @@ func (m *Model) recordHistory(spec kafka.ProduceSpec) {
 	if m.hist != nil {
 		m.hist.Add(entry)
 	}
-	// invalidate the in-memory cursor so the next Ctrl+P refetches.
+	// invalidate the in-memory cursor so the next ctrl+p refetches.
 	m.histBuf = nil
 	m.histPos = -1
 }
 
-// clear resets every field back to its default state (Ctrl+R).
+// clear resets every field back to its default state (ctrl+r).
 func (m *Model) clear() {
 	m.form = m.buildForm()
 	m.err = ""
@@ -450,8 +450,8 @@ func (m *Model) clear() {
 	m.histBuf = nil
 }
 
-// historyStep moves the history cursor by `delta`. +1 = older (Ctrl+P), -1 =
-// newer (Ctrl+N). Loads the History snapshot lazily on first use.
+// historyStep moves the history cursor by `delta`. +1 = older (ctrl+p), -1 =
+// newer (ctrl+n). Loads the History snapshot lazily on first use.
 func (m *Model) historyStep(delta int) {
 	if m.hist == nil {
 		m.toasts.Push(components.ToastInfo, "history disabled")
@@ -470,7 +470,7 @@ func (m *Model) historyStep(delta int) {
 	}
 	m.histPos = pos
 	if pos < 0 {
-		// Ctrl+N stepped past the newest — reset to the empty form.
+		// ctrl+n stepped past the newest — reset to the empty form.
 		m.form = m.buildForm()
 		return
 	}
@@ -542,7 +542,7 @@ func (m *Model) openEditor() {
 // View renders the form body wrapped in the standard rounded box.
 func (m *Model) View() string {
 	header := m.styles.HelpTitle.Render("Produce → " + m.topic)
-	hint := m.styles.HintLabel.Render("Tab navigate  Ctrl+S send  Ctrl+Shift+S send&keep  Ctrl+E editor  Ctrl+R clear  Esc cancel")
+	hint := m.styles.HintLabel.Render("tab navigate  ctrl+s send  ctrl+shift+s send&keep  ctrl+e editor  ctrl+r clear  esc cancel")
 	parts := []string{header}
 	if m.err != "" {
 		parts = append(parts, m.styles.StatusErr.Render(m.err))
@@ -568,8 +568,8 @@ func (m *Model) View() string {
 // ----- Messages -----
 
 // ProduceResultMsg is dispatched after a produce call returns. Close is true
-// when the request originated from Ctrl+S (send & close); false for
-// Ctrl+Shift+S (send & keep).
+// when the request originated from ctrl+s (send & close); false for
+// ctrl+shift+s (send & keep).
 type ProduceResultMsg struct {
 	Spec   kafka.ProduceSpec
 	Result kafka.ProduceResult

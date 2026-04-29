@@ -21,7 +21,7 @@ const (
 	ToastInfo
 	// ToastWarning is yellow, default lifetime 5s.
 	ToastWarning
-	// ToastError is red and sticky (no auto-dismiss). Cleared on Esc/key.
+	// ToastError is red and sticky (no auto-dismiss). Cleared on esc/key.
 	ToastError
 )
 

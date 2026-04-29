@@ -15,7 +15,7 @@ import (
 )
 
 // ConfigsAction is the host-facing intent of the configs screen. Today the
-// only outbound transition is "back to topics list" via Esc/q.
+// only outbound transition is "back to topics list" via esc/q.
 type ConfigsAction struct {
 	Back bool
 }
@@ -136,10 +136,10 @@ func (m *ConfigsModel) SetSize(w, h int) {
 // KeyHints returns the screen-specific hints.
 func (m *ConfigsModel) KeyHints() []layout.KeyHint {
 	return []layout.KeyHint{
-		{Key: "Tab", Label: "switch table"},
+		{Key: "tab", Label: "switch table"},
 		{Key: "/", Label: "search"},
 		{Key: "s/S", Label: "sort"},
-		{Key: "Esc/q", Label: "back"},
+		{Key: "esc/q", Label: "back"},
 	}
 }
 

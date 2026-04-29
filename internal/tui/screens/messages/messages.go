@@ -29,7 +29,7 @@ type Service interface {
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed Esc/q with no detail view open.
+	// Back signals the user pressed esc/q with no detail view open.
 	Back bool
 	// Produce, when non-empty, requests the produce form prefilled from the
 	// selected message ("resend"). When PrefillFromMessage is non-nil it
@@ -206,7 +206,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		return m.detail.KeyHints()
 	}
 	hints := []layout.KeyHint{
-		{Key: "Enter", Label: "detail"},
+		{Key: "enter", Label: "detail"},
 		{Key: "f", Label: "follow"},
 		{Key: "[/]", Label: "earlier/later"},
 		{Key: "/", Label: "search"},
@@ -214,7 +214,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 	if !m.readOnly {
 		hints = append(hints, layout.KeyHint{Key: "p", Label: "produce"})
 	}
-	hints = append(hints, layout.KeyHint{Key: "Esc/q", Label: "back"})
+	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
 	return hints
 }
 
