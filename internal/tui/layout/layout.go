@@ -33,6 +33,12 @@ type HeaderInfo struct {
 	ClusterColor string
 	ReadOnly     bool
 	FromCLI      bool
+	// Context names the configuration source: "cli" when launched with
+	// --brokers, otherwise the source of clusters.yaml ("global" / "project").
+	Context string
+	// Filter, when non-empty, surfaces the active screen-level filter
+	// (e.g. the open `/` search buffer) in the cluster info pane.
+	Filter string
 }
 
 // StatusInfo describes the right-aligned status block.
@@ -59,29 +65,198 @@ type CommandBar struct {
 	Error      string // shown beneath the prompt when set
 }
 
-// Header renders the title bar `kafka-tui · <cluster> (<color>) [RO] (cli)`.
-func Header(s theme.Styles, info HeaderInfo) string {
-	parts := []string{s.Header.Render("kafka-tui")}
+// HeaderRows is the fixed height of the multi-pane header block. Hosts
+// reserve this many rows above the body frame.
+const HeaderRows = 5
 
+// Build is the binary's identity surfaced in the header's right pane.
+type Build struct {
+	Version string
+	Commit  string
+}
+
+// Header renders the k9s-style three-pane header:
+//
+//	┌──────────────────┬──────────────────────────────┬──────────────┐
+//	│ ClusterInfo k:v  │  Menu <key>  Description     │  kafka-tui   │
+//	│                  │                              │  v0.4.2      │
+//	└──────────────────┴──────────────────────────────┴──────────────┘
+//
+// The block is exactly [HeaderRows] tall so the body geometry stays stable.
+func Header(s theme.Styles, info HeaderInfo, status StatusInfo, hints []KeyHint, build Build, width int) string {
+	if width < 40 {
+		// fallback for very narrow terminals: a single compact line.
+		return compactHeader(s, info)
+	}
+	rightW := 22
+	leftW := 30
+	if width < 80 {
+		leftW = max(20, width/3)
+		rightW = max(16, width/4)
+	}
+	midW := max(10, width-leftW-rightW)
+
+	left := renderClusterInfo(s, info, status, leftW)
+	mid := renderMenu(s, hints, midW)
+	right := renderBrand(s, build, rightW)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right)
+}
+
+func compactHeader(s theme.Styles, info HeaderInfo) string {
+	parts := []string{s.Header.Render("kafka-tui")}
 	if info.Cluster != "" {
-		swatch := lipgloss.NewStyle().
-			Foreground(s.Palette.ClusterColor(info.ClusterColor)).
-			Render("●")
-		clusterName := s.Cluster.Render(info.Cluster)
-		colorTag := ""
-		if info.ClusterColor != "" {
-			colorTag = " " + s.StatusInfo.Render(fmt.Sprintf("(%s)", info.ClusterColor))
-		}
-		parts = append(parts, "·", swatch+" "+clusterName+colorTag)
+		parts = append(parts, "· "+s.Cluster.Render(info.Cluster))
 	}
 	if info.ReadOnly {
 		parts = append(parts, s.ReadOnly.Render("[RO]"))
 	}
-	if info.FromCLI {
-		parts = append(parts, s.StatusInfo.Render("(cli)"))
-	}
-
 	return strings.Join(parts, " ")
+}
+
+func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width int) string {
+	cluster := "—"
+	if info.Cluster != "" {
+		swatch := lipgloss.NewStyle().
+			Foreground(s.Palette.ClusterColor(info.ClusterColor)).
+			Render("●")
+		cluster = swatch + " " + s.Cluster.Render(info.Cluster)
+	}
+	mode := "read-write"
+	if info.ReadOnly {
+		mode = s.ReadOnly.Render("read-only")
+	}
+	context := info.Context
+	if context == "" {
+		if info.FromCLI {
+			context = "cli"
+		} else {
+			context = "—"
+		}
+	}
+	filter := info.Filter
+	if filter == "" {
+		filter = "—"
+	}
+	rows := []struct{ key, val string }{
+		{"Context", context},
+		{"Cluster", cluster},
+		{"Refresh", refreshLabel(s, status)},
+		{"Mode", mode},
+		{"Filter", filter},
+	}
+	lines := make([]string, 0, HeaderRows)
+	keyStyle := lipgloss.NewStyle().Foreground(s.Palette.Muted)
+	for _, r := range rows {
+		key := keyStyle.Render(padRight(r.key+":", 9))
+		lines = append(lines, padLine(" "+key+" "+r.val, width))
+	}
+	for len(lines) < HeaderRows {
+		lines = append(lines, padLine("", width))
+	}
+	return strings.Join(lines[:HeaderRows], "\n")
+}
+
+func refreshLabel(s theme.Styles, status StatusInfo) string {
+	switch status.Mode {
+	case RefreshAuto:
+		body := "auto " + formatDuration(status.Interval)
+		if !status.LastRefresh.IsZero() && !status.Now.IsZero() {
+			elapsed := max(0, status.Now.Sub(status.LastRefresh))
+			body += " · " + formatDuration(elapsed.Round(time.Second)) + " ago"
+		}
+		return body
+	case RefreshManual:
+		return "manual"
+	case RefreshPaused:
+		return s.StatusWarn.Render("paused")
+	case RefreshOff:
+		return "off"
+	default:
+		return "—"
+	}
+}
+
+func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
+	if len(hints) == 0 {
+		hints = []KeyHint{
+			{Key: ":", Label: "command"},
+			{Key: "?", Label: "help"},
+			{Key: "q", Label: "quit"},
+		}
+	}
+	// pack into 2 columns (≤ 12 hints = 6 rows). For small terminals the
+	// second column wraps to a single column.
+	cols := 2
+	if width < 40 {
+		cols = 1
+	}
+	colW := width / cols
+	rowsN := min((len(hints)+cols-1)/cols, HeaderRows)
+	cells := make([]string, len(hints))
+	for i, h := range hints {
+		cells[i] = padRight(s.HintKey.Render("<"+h.Key+">")+" "+s.HintLabel.Render(h.Label), colW)
+	}
+	lines := make([]string, HeaderRows)
+	for r := range HeaderRows {
+		var line strings.Builder
+		for c := range cols {
+			idx := c*rowsN + r
+			if idx < len(cells) {
+				line.WriteString(cells[idx])
+			} else {
+				line.WriteString(strings.Repeat(" ", colW))
+			}
+		}
+		lines[r] = padLine(line.String(), width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderBrand(s theme.Styles, build Build, width int) string {
+	title := s.Header.Render("kafka-tui")
+	version := build.Version
+	if version == "" {
+		version = "(dev)"
+	}
+	commit := ""
+	if build.Commit != "" {
+		commit = " (" + build.Commit + ")"
+	}
+	versionLine := s.StatusInfo.Render(version + commit)
+	lines := []string{
+		"",
+		padLine(centerInWidth(title, width), width),
+		padLine(centerInWidth(versionLine, width), width),
+		"",
+		"",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func centerInWidth(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	left := (width - w) / 2
+	return strings.Repeat(" ", left) + s
+}
+
+func padLine(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 // Status renders the right-aligned refresh indicator.

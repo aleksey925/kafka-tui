@@ -141,6 +141,14 @@ func (d *DetailModel) Rows() []kafka.PartitionLag {
 // Toasts exposes the toast queue (for tests).
 func (d *DetailModel) Toasts() *components.Toasts { return d.toasts }
 
+// LatestFlash returns the freshest live toast from this submodel's queue.
+func (d *DetailModel) LatestFlash() (components.Toast, bool) {
+	if d.toasts == nil {
+		return components.Toast{}, false
+	}
+	return d.toasts.Latest()
+}
+
 // Action returns the current pending action.
 func (d *DetailModel) Action() DetailAction { return d.action }
 
@@ -361,9 +369,6 @@ func rowID(r kafka.PartitionLag) string {
 func (d *DetailModel) View() string {
 	parts := d.headerBlock()
 	parts = append(parts, d.table.View())
-	if t := d.toasts.View(); t != "" {
-		parts = append(parts, t)
-	}
 	if d.loadErr != "" {
 		parts = append(parts, d.styles.StatusErr.Render("error: "+d.loadErr))
 	}

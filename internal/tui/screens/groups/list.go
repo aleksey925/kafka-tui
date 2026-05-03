@@ -16,11 +16,13 @@ package groups
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -153,11 +155,11 @@ func New(opts Options) *Model {
 // without lag fetched yet show "—".
 func listColumns() []components.Column {
 	return []components.Column{
-		{Title: "Group", Width: 28, Sortable: true},
-		{Title: "State", Width: 10, Sortable: true},
-		{Title: "Members", Width: 8, Sortable: true},
-		{Title: "Total Lag", Width: 12, Sortable: true},
-		{Title: "Coordinator", Width: 12, Sortable: true},
+		{Title: "Group", Flex: true, MinWidth: 24, Sortable: true},
+		{Title: "State", Width: 12, Sortable: true},
+		{Title: "Members", Width: 8, Align: lipgloss.Right, Sortable: true},
+		{Title: "Total Lag", Width: 12, Align: lipgloss.Right, Sortable: true},
+		{Title: "Coordinator", Width: 14, Sortable: true},
 	}
 }
 
@@ -190,6 +192,54 @@ func (m *Model) WantsRawInput() bool {
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// Title returns the frame title rendered by the host. In detail/reset modes
+// the title reflects the sub-screen.
+func (m *Model) Title() string {
+	switch m.mode {
+	case ModeDetail:
+		if m.detail != nil {
+			return "Group · " + m.detail.Group()
+		}
+	case ModeReset:
+		if m.reset != nil {
+			return "Reset offsets · " + m.reset.Group()
+		}
+	case ModeList:
+		// fall through to the default list title below.
+	}
+	if m.filterTopic != "" {
+		return fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, len(m.groups))
+	}
+	return fmt.Sprintf("Consumer Groups [%d]", len(m.groups))
+}
+
+// Breadcrumb returns the selected row identifier (or sub-screen state).
+func (m *Model) Breadcrumb() string {
+	if m.mode != ModeList {
+		return ""
+	}
+	row, ok := m.table.SelectedRow()
+	if !ok {
+		return ""
+	}
+	return row.ID
+}
+
+// LatestFlash returns the freshest live toast from the active sub-mode's
+// queue. In detail mode the host should see detail toasts; otherwise list
+// toasts win.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.mode == ModeDetail && m.detail != nil {
+		if t, ok := m.detail.LatestFlash(); ok {
+			return t, true
+		}
+	}
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
 // Detail returns the active detail view (or nil) for tests.
 func (m *Model) Detail() *DetailModel { return m.detail }
 
@@ -217,6 +267,9 @@ func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
 		m.table.SetHeight(maxInt(1, h-7))
+	}
+	if w > 0 {
+		m.table.SetTotalWidth(w)
 	}
 	if m.detail != nil {
 		m.detail.SetSize(w, h)
@@ -579,11 +632,14 @@ func (m *Model) refreshTable() {
 		if l, ok := m.totalLag[g.Group]; ok {
 			lag = formatThousands(l)
 		}
+		state := lipgloss.NewStyle().
+			Foreground(groupStateColor(m.styles, g.State)).
+			Render(g.State)
 		rows = append(rows, components.Row{
 			ID: g.Group,
 			Values: []string{
 				g.Group,
-				g.State,
+				state,
 				members,
 				lag,
 				strconv.FormatInt(int64(g.Coordinator), 10),
@@ -591,6 +647,23 @@ func (m *Model) refreshTable() {
 		})
 	}
 	m.table.SetRows(rows)
+}
+
+// groupStateColor maps a Kafka group state to a palette color so the State
+// cell visually communicates health at a glance.
+func groupStateColor(s theme.Styles, state string) color.Color {
+	switch strings.ToLower(state) {
+	case "stable":
+		return s.Palette.StatusOK
+	case "preparingrebalance", "completingrebalance":
+		return s.Palette.StatusWarn
+	case "dead":
+		return s.Palette.StatusError
+	case "empty":
+		return s.Palette.Muted
+	default:
+		return s.Palette.Foreground
+	}
 }
 
 // FetchLagsForVisible loads the cached lag for every currently visible group.
@@ -618,9 +691,6 @@ func (m *Model) View() string {
 		// fall through to default list rendering below.
 	}
 	parts := []string{m.headerLine(), m.table.View()}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
-	}
 	if m.confirm != nil {
 		parts = append(parts, m.confirm.View(m.width))
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -214,6 +215,14 @@ func (m *Model) WantsRawInput() bool {
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
 // Topics returns the topics currently visible (after the internal-toggle
 // filter), in declared order. For tests.
 func (m *Model) Topics() []kafka.TopicSummary {
@@ -229,6 +238,26 @@ func (m *Model) AllTopics() []kafka.TopicSummary {
 
 // Cursor returns the current table cursor position. For tests.
 func (m *Model) Cursor() int { return m.table.Cursor() }
+
+// Title returns the frame title rendered by the host: "Topics[<n>]" with an
+// internal-hidden suffix when applicable.
+func (m *Model) Title() string {
+	visible := len(m.visibleTopics())
+	body := fmt.Sprintf("Topics[%d]", visible)
+	if m.hiddenIntern > 0 {
+		body = fmt.Sprintf("Topics[%d, +%d internal hidden]", visible, m.hiddenIntern)
+	}
+	return body
+}
+
+// Breadcrumb returns the selected topic name (right-aligned in the frame).
+func (m *Model) Breadcrumb() string {
+	row, ok := m.table.SelectedRow()
+	if !ok {
+		return ""
+	}
+	return row.ID
+}
 
 // ShowInternal reports whether internal topics are currently visible.
 func (m *Model) ShowInternal() bool { return m.showInternal }
@@ -250,6 +279,9 @@ func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
 		m.table.SetHeight(maxInt(1, h-7))
+	}
+	if w > 0 {
+		m.table.SetTotalWidth(w)
 	}
 }
 
@@ -662,9 +694,6 @@ func (m *Model) View() string {
 	}
 
 	parts := []string{m.counterLine(), m.table.View()}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
-	}
 	if m.confirm != nil {
 		parts = append(parts, m.confirm.View(m.width))
 	}
@@ -850,23 +879,23 @@ func buildColumns(keys []string) []components.Column {
 func columnSpec(key string) components.Column {
 	switch key {
 	case "name":
-		return components.Column{Title: "Name", Width: 32, Sortable: true}
+		return components.Column{Title: "Name", Flex: true, MinWidth: 24, Sortable: true}
 	case "partitions":
-		return components.Column{Title: "Partitions", Width: 10, Sortable: true}
+		return components.Column{Title: "Partitions", Width: 10, Align: lipgloss.Right, Sortable: true}
 	case "replicas":
-		return components.Column{Title: "Replicas", Width: 8, Sortable: true}
+		return components.Column{Title: "Replicas", Width: 8, Align: lipgloss.Right, Sortable: true}
 	case "messages":
-		return components.Column{Title: "Messages", Width: 12, Sortable: true}
+		return components.Column{Title: "Messages", Width: 12, Align: lipgloss.Right, Sortable: true}
 	case "size":
-		return components.Column{Title: "Size", Width: 10, Sortable: true}
+		return components.Column{Title: "Size", Width: 10, Align: lipgloss.Right, Sortable: true}
 	case "cleanup_policy":
 		return components.Column{Title: "Cleanup", Width: 12, Sortable: true}
 	case "retention_ms":
 		return components.Column{Title: "Retention", Width: 14, Sortable: true}
 	case "min_isr":
-		return components.Column{Title: "MinISR", Width: 7, Sortable: true}
+		return components.Column{Title: "MinISR", Width: 7, Align: lipgloss.Right, Sortable: true}
 	case "internal":
-		return components.Column{Title: "Int", Width: 4, Sortable: false}
+		return components.Column{Title: "Int", Width: 4, Align: lipgloss.Center, Sortable: false}
 	default:
 		return components.Column{Title: key, Width: 10}
 	}

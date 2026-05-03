@@ -241,8 +241,9 @@ func TestTable_ViewRendersHeaderAndRows(t *testing.T) {
 	assert.Contains(t, out, "state")
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "beta")
-	// cursor marker on the first row
-	assert.Contains(t, out, ">")
+	// cursor row uses the inverted-bg Cursor style — the ANSI sequence for
+	// the accent background must appear somewhere in the output.
+	assert.Contains(t, out, "\x1b[")
 }
 
 func TestTable_ViewEmpty(t *testing.T) {

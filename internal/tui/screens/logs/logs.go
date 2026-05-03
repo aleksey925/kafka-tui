@@ -139,6 +139,26 @@ func (m *Model) Cursor() int { return m.cursor }
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
+// Title returns the frame title rendered by the host.
+func (m *Model) Title() string {
+	body := fmt.Sprintf("Logs · %d lines", len(m.lines))
+	if m.follow {
+		body += " ● LIVE"
+	}
+	return body
+}
+
+// Breadcrumb returns the log file path (right-aligned in the frame).
+func (m *Model) Breadcrumb() string { return m.path }
+
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
@@ -435,9 +455,6 @@ func (m *Model) View() string {
 	}
 	if m.searchActive || m.search != "" {
 		parts = append(parts, m.renderSearchLine())
-	}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
 	}
 	return strings.Join(parts, "\n")
 }

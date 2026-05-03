@@ -109,6 +109,27 @@ func (m *ConfigsModel) ConsumeAction() ConfigsAction {
 // Toasts exposes the toast queue.
 func (m *ConfigsModel) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *ConfigsModel) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
+// Title returns the frame title rendered by the host.
+func (m *ConfigsModel) Title() string {
+	return "Topic Configs · " + m.topic
+}
+
+// Breadcrumb returns the active sub-table indicator.
+func (m *ConfigsModel) Breadcrumb() string {
+	if m.focusParts {
+		return "partitions"
+	}
+	return "configs"
+}
+
 // Configs returns the current loaded config rows (for tests).
 func (m *ConfigsModel) Configs() []kafka.TopicConfig {
 	return append([]kafka.TopicConfig(nil), m.configs...)
@@ -255,9 +276,6 @@ func (m *ConfigsModel) View() string {
 		"",
 		partTitle,
 		m.partTbl.View(),
-	}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, "", t)
 	}
 	if m.loading {
 		parts = append(parts, m.styles.StatusInfo.Render("(loading…)"))

@@ -18,23 +18,26 @@ func TestHeader_RendersAllParts(t *testing.T) {
 		ClusterColor: theme.ClusterRed,
 		ReadOnly:     true,
 		FromCLI:      true,
-	})
+	}, layout.StatusInfo{Mode: layout.RefreshOff}, []layout.KeyHint{
+		{Key: "n", Label: "new"},
+	}, layout.Build{Version: "v1.2.3", Commit: "abc"}, 120)
 
 	assert.Contains(t, out, "kafka-tui")
 	assert.Contains(t, out, "prod-east")
-	assert.Contains(t, out, "(red)")
-	assert.Contains(t, out, "[RO]")
-	assert.Contains(t, out, "(cli)")
+	assert.Contains(t, out, "read-only")
+	assert.Contains(t, out, "cli")
+	assert.Contains(t, out, "v1.2.3")
 }
 
 func TestHeader_OnlyTitleWithoutCluster(t *testing.T) {
 	s := theme.DefaultStyles()
 
-	out := layout.Header(s, layout.HeaderInfo{})
+	out := layout.Header(s, layout.HeaderInfo{},
+		layout.StatusInfo{Mode: layout.RefreshOff}, nil,
+		layout.Build{Version: "v1.0.0"}, 120)
 
 	assert.Contains(t, out, "kafka-tui")
-	assert.NotContains(t, out, "[RO]")
-	assert.NotContains(t, out, "(cli)")
+	assert.NotContains(t, out, "read-only")
 }
 
 func TestStatus_AutoIncludesIntervalAndAge(t *testing.T) {

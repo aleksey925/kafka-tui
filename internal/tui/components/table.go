@@ -22,8 +22,15 @@ import (
 type Column struct {
 	Title string
 	// Width is the rendered width in characters. 0 means "auto" (use the
-	// max of title and longest value).
+	// max of title and longest value). Ignored when Flex is true.
 	Width int
+	// MinWidth is the lower bound for a Flex column. 0 falls back to the
+	// title width.
+	MinWidth int
+	// Flex marks the column as expandable: any width left over after fixed
+	// columns are sized is distributed evenly across all Flex columns.
+	// Requires the table's total width to be set via SetTotalWidth.
+	Flex bool
 	// Align controls horizontal alignment of cell content. Defaults to left.
 	Align lipgloss.Position
 	// Sortable reports whether the column participates in the `s`/`S` sort
@@ -62,6 +69,7 @@ type Table struct {
 	cursor   int
 	viewport int // index in `view` that begins the visible window
 	height   int // visible rows (0 = fit-all, no scrolling)
+	width    int // total terminal width used for flex distribution; 0 = no flex
 
 	search       string
 	searchActive bool
@@ -191,6 +199,11 @@ func (t *Table) SetHeight(rows int) {
 	t.height = rows
 	t.clampViewport()
 }
+
+// SetTotalWidth tells the table how many columns are available for its
+// rendered output. Required for Flex columns to distribute leftover space.
+// 0 disables flex distribution.
+func (t *Table) SetTotalWidth(cols int) { t.width = cols }
 
 // Update routes a key message into the table. It returns the (possibly
 // updated) table and a command (always nil today; reserved for future).
@@ -520,7 +533,19 @@ func (t *Table) viewportRange() (int, int) {
 
 func (t *Table) computeWidths() []int {
 	widths := make([]int, len(t.columns))
+	flexIdxs := make([]int, 0, len(t.columns))
+	fixedTotal := 0
 	for i, c := range t.columns {
+		if c.Flex {
+			lo := c.MinWidth
+			if lo == 0 {
+				lo = lipgloss.Width(c.Title)
+			}
+			widths[i] = lo
+			flexIdxs = append(flexIdxs, i)
+			fixedTotal += lo
+			continue
+		}
 		w := c.Width
 		if w == 0 {
 			w = lipgloss.Width(c.Title)
@@ -533,6 +558,31 @@ func (t *Table) computeWidths() []int {
 			}
 		}
 		widths[i] = w
+		fixedTotal += w
+	}
+	// reserve space for the sort arrow on the active sort column.
+	if t.sortCol >= 0 && t.sortCol < len(widths) && t.sortDir != SortNone {
+		widths[t.sortCol] += 2
+	}
+	if t.width > 0 && len(flexIdxs) > 0 {
+		// "  " separator between columns, plus the multi-select prefix
+		// "[ ] " (4 cols) when applicable.
+		separators := 2 * (len(t.columns) - 1)
+		prefix := 0
+		if t.selectable {
+			prefix = 4
+		}
+		leftover := t.width - fixedTotal - separators - prefix
+		if leftover > 0 {
+			share := leftover / len(flexIdxs)
+			extra := leftover % len(flexIdxs)
+			for j, i := range flexIdxs {
+				widths[i] += share
+				if j < extra {
+					widths[i]++
+				}
+			}
+		}
 	}
 	return widths
 }
@@ -564,7 +614,7 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		cells[i] = padCell(v, widths[i], c.Align)
 	}
-	prefix := "  "
+	prefix := ""
 	if t.selectable {
 		mark := " "
 		if _, ok := t.selected[r.ID]; ok {
@@ -574,7 +624,12 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 	}
 	line := prefix + strings.Join(cells, "  ")
 	if viewIdx == t.cursor {
-		return t.styles.HintKey.Render("> ") + line[2:]
+		// pad the cursor row to the table width so the inverted background
+		// covers the full row, k9s-style.
+		if t.width > lipgloss.Width(line) {
+			line += strings.Repeat(" ", t.width-lipgloss.Width(line))
+		}
+		return t.styles.Cursor.Render(line)
 	}
 	return line
 }
@@ -594,8 +649,11 @@ func (t *Table) renderSearchLine() string {
 
 func padCell(s string, width int, align lipgloss.Position) string {
 	w := lipgloss.Width(s)
-	if w >= width {
+	if w == width {
 		return s
+	}
+	if w > width {
+		return truncateCell(s, width)
 	}
 	pad := strings.Repeat(" ", width-w)
 	switch align {
@@ -607,6 +665,26 @@ func padCell(s string, width int, align lipgloss.Position) string {
 	default:
 		return s + pad
 	}
+}
+
+// truncateCell shortens s to fit within width, appending an ellipsis. Styled
+// content (containing ANSI escapes) is returned as-is to avoid corrupting
+// escape sequences — callers are expected to keep styled cells short.
+func truncateCell(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if strings.ContainsRune(s, '\x1b') {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 func clamp(v, lo, hi int) int {

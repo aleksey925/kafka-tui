@@ -249,6 +249,22 @@ func (m *Model) Form() *components.Form { return m.form }
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
+// Title returns the frame title rendered by the host.
+func (m *Model) Title() string {
+	return "Produce → " + m.topic
+}
+
+// Breadcrumb is unused for the produce form (returns empty).
+func (m *Model) Breadcrumb() string { return "" }
+
 // Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
@@ -856,9 +872,6 @@ func (m *Model) View() string {
 		body = m.form.View()
 	}
 	parts = append(parts, body, "", hint)
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
-	}
 	rendered := strings.Join(parts, "\n")
 
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 2)

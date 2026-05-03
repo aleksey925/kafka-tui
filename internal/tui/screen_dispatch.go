@@ -3,6 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
@@ -29,6 +30,16 @@ type screen interface {
 	// shortcuts like `:`, `/`, `?`, `ctrl+r` — routed straight to it. ctrl+c
 	// stays global regardless.
 	WantsRawInput() bool
+	// LatestFlash returns the freshest live toast from the screen's queue
+	// (after pruning expired entries). Returns false when nothing is live.
+	// The host promotes the result to the global flash bar.
+	LatestFlash() (components.Toast, bool)
+	// Title is rendered in the top-left of the body frame (e.g.
+	// "Topics[42]"). Empty hides the slot.
+	Title() string
+	// Breadcrumb is rendered in the top-right of the body frame, typically
+	// the selected row identifier. Empty hides it.
+	Breadcrumb() string
 }
 
 type clustersScreen struct{ m *clusters.Model }
@@ -39,10 +50,13 @@ func (s *clustersScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *clustersScreen) View() string               { return s.m.View() }
-func (s *clustersScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *clustersScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *clustersScreen) WantsRawInput() bool        { return false }
+func (s *clustersScreen) View() string                          { return s.m.View() }
+func (s *clustersScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *clustersScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *clustersScreen) WantsRawInput() bool                   { return false }
+func (s *clustersScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *clustersScreen) Title() string                         { return s.m.Title() }
+func (s *clustersScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type topicsScreen struct{ m *topics.Model }
 
@@ -52,10 +66,13 @@ func (s *topicsScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *topicsScreen) View() string               { return s.m.View() }
-func (s *topicsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *topicsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *topicsScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
+func (s *topicsScreen) View() string                          { return s.m.View() }
+func (s *topicsScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *topicsScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *topicsScreen) WantsRawInput() bool                   { return s.m.WantsRawInput() }
+func (s *topicsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *topicsScreen) Title() string                         { return s.m.Title() }
+func (s *topicsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type messagesScreen struct{ m *messages.Model }
 
@@ -65,10 +82,13 @@ func (s *messagesScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *messagesScreen) View() string               { return s.m.View() }
-func (s *messagesScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *messagesScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *messagesScreen) WantsRawInput() bool        { return false }
+func (s *messagesScreen) View() string                          { return s.m.View() }
+func (s *messagesScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *messagesScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *messagesScreen) WantsRawInput() bool                   { return false }
+func (s *messagesScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *messagesScreen) Title() string                         { return s.m.Title() }
+func (s *messagesScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type produceScreen struct{ m *produce.Model }
 
@@ -78,10 +98,13 @@ func (s *produceScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *produceScreen) View() string               { return s.m.View() }
-func (s *produceScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *produceScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *produceScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
+func (s *produceScreen) View() string                          { return s.m.View() }
+func (s *produceScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *produceScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *produceScreen) WantsRawInput() bool                   { return s.m.WantsRawInput() }
+func (s *produceScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *produceScreen) Title() string                         { return s.m.Title() }
+func (s *produceScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type groupsScreen struct{ m *groups.Model }
 
@@ -91,10 +114,13 @@ func (s *groupsScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *groupsScreen) View() string               { return s.m.View() }
-func (s *groupsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *groupsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *groupsScreen) WantsRawInput() bool        { return s.m.WantsRawInput() }
+func (s *groupsScreen) View() string                          { return s.m.View() }
+func (s *groupsScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *groupsScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *groupsScreen) WantsRawInput() bool                   { return s.m.WantsRawInput() }
+func (s *groupsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *groupsScreen) Title() string                         { return s.m.Title() }
+func (s *groupsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type logsScreen struct{ m *logs.Model }
 
@@ -104,10 +130,13 @@ func (s *logsScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *logsScreen) View() string               { return s.m.View() }
-func (s *logsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *logsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *logsScreen) WantsRawInput() bool        { return false }
+func (s *logsScreen) View() string                          { return s.m.View() }
+func (s *logsScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *logsScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *logsScreen) WantsRawInput() bool                   { return false }
+func (s *logsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *logsScreen) Title() string                         { return s.m.Title() }
+func (s *logsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type configsrcScreen struct{ m *configsrc.Model }
 
@@ -117,10 +146,13 @@ func (s *configsrcScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *configsrcScreen) View() string               { return s.m.View() }
-func (s *configsrcScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *configsrcScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *configsrcScreen) WantsRawInput() bool        { return false }
+func (s *configsrcScreen) View() string                          { return s.m.View() }
+func (s *configsrcScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *configsrcScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *configsrcScreen) WantsRawInput() bool                   { return false }
+func (s *configsrcScreen) LatestFlash() (components.Toast, bool) { return components.Toast{}, false }
+func (s *configsrcScreen) Title() string                         { return s.m.Title() }
+func (s *configsrcScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
 
 type topicConfigsScreen struct{ m *topics.ConfigsModel }
 
@@ -130,7 +162,10 @@ func (s *topicConfigsScreen) Update(msg tea.Msg) tea.Cmd {
 	s.m = updated
 	return cmd
 }
-func (s *topicConfigsScreen) View() string               { return s.m.View() }
-func (s *topicConfigsScreen) SetSize(w, h int)           { s.m.SetSize(w, h) }
-func (s *topicConfigsScreen) KeyHints() []layout.KeyHint { return s.m.KeyHints() }
-func (s *topicConfigsScreen) WantsRawInput() bool        { return false }
+func (s *topicConfigsScreen) View() string                          { return s.m.View() }
+func (s *topicConfigsScreen) SetSize(w, h int)                      { s.m.SetSize(w, h) }
+func (s *topicConfigsScreen) KeyHints() []layout.KeyHint            { return s.m.KeyHints() }
+func (s *topicConfigsScreen) WantsRawInput() bool                   { return false }
+func (s *topicConfigsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
+func (s *topicConfigsScreen) Title() string                         { return s.m.Title() }
+func (s *topicConfigsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }

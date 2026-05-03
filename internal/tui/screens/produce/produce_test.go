@@ -114,8 +114,8 @@ func TestSend_ToastIncludesPartitionOffsetAndLatency(t *testing.T) {
 	_, cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
 
-	out := m.View()
-	assert.Contains(t, out, "Sent to orders P4:7 (42ms)")
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "Sent to orders P4:7 (42ms)")
 }
 
 func TestSend_FailureSurfacesErrorToast(t *testing.T) {
@@ -381,7 +381,8 @@ func TestCtrlE_NoPagerEmitsWarning(t *testing.T) {
 
 	_, _ = m.Update(keyPress("ctrl+e"))
 
-	assert.Contains(t, m.View(), "no $EDITOR opener configured")
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "no $EDITOR opener configured")
 }
 
 func TestCtrlE_EditorErrorSurfacesToast(t *testing.T) {
@@ -391,7 +392,8 @@ func TestCtrlE_EditorErrorSurfacesToast(t *testing.T) {
 
 	_, _ = m.Update(keyPress("ctrl+e"))
 
-	assert.Contains(t, m.View(), "boom")
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "boom")
 }
 
 func TestReadOnly_BlocksSend(t *testing.T) {
@@ -402,7 +404,8 @@ func TestReadOnly_BlocksSend(t *testing.T) {
 	drive(t, m, cmd)
 
 	assert.Empty(t, svc.Sent())
-	assert.Contains(t, m.View(), "read-only")
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "read-only")
 }
 
 func TestKeyHints_IncludeExpectedShortcuts(t *testing.T) {
@@ -706,7 +709,8 @@ func TestHeadersInsert_EnterOnInvalidRowIsBlocked(t *testing.T) {
 	got, _ := m.Form().Field("headers")
 	assert.Equal(t, []string{"no-equals"}, got.List, "no new row added while current is invalid")
 	assert.Equal(t, produce.ModeInsert, m.Mode(), "stay in INSERT to fix the row")
-	assert.Contains(t, m.View(), "header invalid", "toast surfaces the reason")
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "header invalid", "toast surfaces the reason")
 }
 
 func TestHeadersInsert_EnterChainsAddingRows(t *testing.T) {

@@ -99,9 +99,9 @@ type Model struct {
 	width, height int
 	autoRefresh   bool
 
-	styles  theme.Styles
-	now     func() time.Time
-	build version.BuildInfo
+	styles theme.Styles
+	now    func() time.Time
+	build  version.BuildInfo
 
 	quit bool
 
@@ -128,6 +128,12 @@ type Model struct {
 	// lastTopic remembers which topic was selected when navigating away from
 	// the topics screen, so the cursor can be restored on return.
 	lastTopic string
+
+	// flash holds the latest screen-emitted toast promoted to the global
+	// bottom bar. flashSeenAt tracks which toast (by CreatedAt) we last
+	// promoted, so an older or repeated push isn't re-shown.
+	flash       layout.Flash
+	flashSeenAt time.Time
 }
 
 // New creates a root model populated with the given options.
@@ -268,12 +274,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		newM, cmd := m.handleKey(msg)
-		return newM, cmd
+		flashCmd := m.promoteFlash()
+		return newM, teaBatch(cmd, flashCmd)
+	case flashTickMsg:
+		// re-evaluate the flash so an expired toast clears off the bar.
+		flashCmd := m.promoteFlash()
+		return m, flashCmd
 	}
 	// non-key, non-resize message → forward to active screen so async cmds
 	// (e.g. topic-loaded, fetch-result) reach their owner.
 	cmd := m.forwardToActive(msg)
-	cmd = teaBatch(cmd, m.routeActiveAction())
+	cmd = teaBatch(cmd, m.routeActiveAction(), m.promoteFlash())
 	return m, cmd
 }
 
@@ -432,31 +443,96 @@ func (m *Model) render() string {
 		return m.renderHelp()
 	}
 
-	header := layout.Header(m.styles, m.header)
-	status := layout.Status(m.styles, m.statusForRender())
-	topRow := joinRow(m.width, header, status)
+	header := layout.Header(
+		m.styles,
+		m.header,
+		m.statusForRender(),
+		m.activeKeyHints(),
+		layout.Build{Version: m.build.Version, Commit: m.build.Commit},
+		m.width,
+	)
+
+	cmd := ""
+	switch m.mode {
+	case ModeCommand:
+		cmd = layout.CommandLine(m.styles, m.command)
+	case ModeSearch:
+		cmd = layout.CommandLine(m.styles, m.search)
+	case ModeNormal, ModeHelp:
+		// no prompt rendered in these modes.
+	}
+	// always reserve the prompt row so the body doesn't shift when the
+	// command bar opens. blank when inactive.
+	cmdLine := padLineToWidth(cmd, m.width)
 
 	body := m.renderBody()
+	flash := layout.FlashLine(m.styles, m.flash, m.width)
 
-	cmd := layout.CommandLine(m.styles, m.command)
-	if m.mode == ModeSearch {
-		cmd = layout.CommandLine(m.styles, m.search)
-	}
-
-	hints := layout.KeyHints(m.styles, m.activeKeyHints())
-
-	parts := []string{topRow}
-	if body != "" {
-		parts = append(parts, body)
-	}
-	if cmd != "" {
-		parts = append(parts, cmd)
-	}
-	if hints != "" {
-		parts = append(parts, hints)
-	}
-	return strings.Join(parts, "\n")
+	return strings.Join([]string{header, cmdLine, body, flash}, "\n")
 }
+
+// padLineToWidth returns line padded with spaces so the rendered output
+// equals width (used to keep the prompt row's height stable).
+func padLineToWidth(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	w := lipgloss.Width(line)
+	if w >= width {
+		return line
+	}
+	return line + strings.Repeat(" ", width-w)
+}
+
+// flashTickMsg triggers a re-render so a non-sticky toast that has just
+// expired clears off the global flash bar without waiting for user input.
+type flashTickMsg struct{}
+
+// promoteFlash refreshes the global flash bar from the active screen's
+// latest live toast. Returns a tea.Cmd that re-pumps the flash on the
+// toast's expiry (so the bar clears automatically), or nil for sticky /
+// no-op cases.
+func (m *Model) promoteFlash() tea.Cmd {
+	if m.active == nil {
+		return nil
+	}
+	t, ok := m.active.LatestFlash()
+	if !ok {
+		// nothing live → clear the bar so a stale message doesn't linger.
+		m.flash = layout.Flash{}
+		return nil
+	}
+	if !t.CreatedAt.After(m.flashSeenAt) {
+		return nil
+	}
+	m.flash = flashFromToast(t)
+	m.flashSeenAt = t.CreatedAt
+	if t.Sticky() {
+		return nil
+	}
+	return tea.Tick(t.Lifetime, func(time.Time) tea.Msg { return flashTickMsg{} })
+}
+
+// flashFromToast translates a components.Toast (used by screens) into the
+// chrome-side layout.Flash type. layout/ doesn't import components/ to keep
+// it dependency-free for theming.
+func flashFromToast(t components.Toast) layout.Flash {
+	level := layout.FlashInfo
+	switch t.Level {
+	case components.ToastSuccess:
+		level = layout.FlashOK
+	case components.ToastWarning:
+		level = layout.FlashWarn
+	case components.ToastError:
+		level = layout.FlashErr
+	case components.ToastInfo:
+		level = layout.FlashInfo
+	}
+	return layout.Flash{Text: t.Message, Level: level}
+}
+
+// Flash returns the current flash payload (for tests).
+func (m *Model) Flash() layout.Flash { return m.flash }
 
 func (m *Model) statusForRender() layout.StatusInfo {
 	s := m.status
@@ -466,17 +542,40 @@ func (m *Model) statusForRender() layout.StatusInfo {
 	return s
 }
 
-// renderBody dispatches to the active screen. Falls back to the placeholder
-// when no instance is available (test path or unwired bootstrap).
+// renderBody dispatches to the active screen and wraps the result in the
+// rounded body frame with the screen's title and breadcrumb in the top
+// border. Falls back to a placeholder when no instance is available (test
+// path or unwired bootstrap).
 func (m *Model) renderBody() string {
 	active := m.router.Active()
 	if active == "" {
-		return m.styles.StatusInfo.Render("(no screen active)")
+		return m.frameOrRaw(m.styles.StatusInfo.Render("(no screen active)"), "", "")
 	}
 	if v := m.activeView(); v != "" {
-		return v
+		title, bc := "", ""
+		if m.active != nil {
+			title, bc = m.active.Title(), m.active.Breadcrumb()
+		}
+		return m.frameOrRaw(v, title, bc)
 	}
-	return m.styles.StatusInfo.Render(string(active) + " — coming soon")
+	return m.frameOrRaw(
+		m.styles.StatusInfo.Render(string(active)+" — coming soon"),
+		string(active), "",
+	)
+}
+
+// frameOrRaw wraps body in the rounded frame when geometry is known; tests
+// that don't supply a window size receive the raw body unchanged.
+func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
+	if m.width <= 4 || m.bodyHeight() < 1 {
+		return body
+	}
+	return layout.Frame(m.styles, layout.FrameOpts{
+		Width:      m.width,
+		Height:     m.bodyHeight() + frameInset,
+		Title:      title,
+		Breadcrumb: breadcrumb,
+	}, body)
 }
 
 func (m *Model) renderHelp() string {
@@ -517,19 +616,6 @@ func (m *Model) renderHelp() string {
 		body += "\n\n" + versionLine
 	}
 	return body
-}
-
-// joinRow places left and right strings on a single line, padding so right is
-// pinned to the rightmost column. width=0 falls back to a simple join.
-func joinRow(width int, left, right string) string {
-	if right == "" {
-		return left
-	}
-	if width <= 0 {
-		return left + "  " + right
-	}
-	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
 }
 
 // teaBatch returns a command that runs cmds in any order. nils are filtered.
@@ -602,26 +688,46 @@ func findCluster(list []config.Cluster, name string) *config.Cluster {
 	return nil
 }
 
-// applySize forwards the new geometry to the active screen.
+// applySize forwards the new geometry to the active screen — the inner
+// area inside the body frame (terminal minus chrome and border).
 func (m *Model) applySize() {
 	if m.active == nil {
 		return
 	}
-	w, h := m.width, m.bodyHeight()
+	w, h := m.bodyWidth(), m.bodyHeight()
 	if w <= 0 || h <= 0 {
 		return
 	}
 	m.active.SetSize(w, h)
 }
 
+// frameInset is the height/width contributed by the body frame's top+bottom
+// border (2 rows) and left+right border (2 cols).
+const frameInset = 2
+
+// chromeRows is the total height of the rows the host paints above and
+// below the body frame: the multi-pane header, the always-reserved command
+// prompt row, and the global flash bar.
+const chromeRows = layout.HeaderRows + 1 + 1
+
 // bodyHeight returns the inner height left for the active screen after the
-// chrome is subtracted (header row + command line + key hints row).
+// chrome and the body frame border are subtracted.
 func (m *Model) bodyHeight() int {
-	h := m.height - 3
+	h := m.height - chromeRows - frameInset
 	if h < 1 {
 		return 0
 	}
 	return h
+}
+
+// bodyWidth returns the inner width inside the body frame (terminal width
+// minus the frame's left and right borders).
+func (m *Model) bodyWidth() int {
+	w := m.width - frameInset
+	if w < 1 {
+		return 0
+	}
+	return w
 }
 
 // activeKeyHints returns the hints for the active screen, falling back to
@@ -802,6 +908,7 @@ func (m *Model) popOrReplaceToClusters() tea.Cmd {
 // caller is expected to invoke [Init] separately.
 func (m *Model) pushScreen(id ScreenID) {
 	m.active = nil
+	m.flash = layout.Flash{}
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
@@ -811,6 +918,7 @@ func (m *Model) pushScreen(id ScreenID) {
 // returns its Init cmd to be batched with the host's reply.
 func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
 	m.active = nil
+	m.flash = layout.Flash{}
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
@@ -825,6 +933,7 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 		return m.connectCluster(arg)
 	}
 	m.active = nil
+	m.flash = layout.Flash{}
 	m.router.Replace(id)
 	m.instantiate(id)
 	m.applySize()
@@ -837,6 +946,7 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 // sessions, table state, etc.
 func (m *Model) popScreen() {
 	m.active = nil
+	m.flash = layout.Flash{}
 	m.router.Pop()
 	if id := m.router.Active(); id != "" {
 		m.instantiate(id)

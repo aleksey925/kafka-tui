@@ -358,8 +358,10 @@ func TestView_GoldenWithStatuses(t *testing.T) {
 	assert.Contains(t, out, "✓ ok")
 	assert.Contains(t, out, "✗ failed")
 	assert.Contains(t, out, "[RO]")
-	// error is reported via toast as well.
-	assert.Contains(t, out, "connection refused")
+	// error is reported via toast (now surfaced through the global flash bar,
+	// so check the queue rather than the screen body).
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
 func TestView_EditChooserModalRendered(t *testing.T) {

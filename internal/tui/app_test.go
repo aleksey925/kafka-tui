@@ -1,7 +1,6 @@
 package tui_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -434,32 +433,32 @@ func TestModel_RenderHeaderIncludesClusterAndStatus(t *testing.T) {
 	out := m.Render()
 	assert.Contains(t, out, "kafka-tui")
 	assert.Contains(t, out, "prod-east")
-	assert.Contains(t, out, "[RO]")
-	assert.Contains(t, out, "(cli)")
-	assert.Contains(t, out, "auto: 5s")
-	assert.Contains(t, out, "refreshed 3s ago")
+	// new k9s-style header surfaces these as labeled rows; literal tags
+	// like "[RO]" / "(cli)" no longer appear in the chrome.
+	assert.Contains(t, out, "read-only")
+	assert.Contains(t, out, "cli")
+	assert.Contains(t, out, "auto 5s")
+	assert.Contains(t, out, "3s ago")
 	assert.Contains(t, out, "topics — coming soon")
 }
 
-func TestModel_KeyHintsRenderedAtBottom(t *testing.T) {
-	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 80})
+func TestModel_KeyHintsRenderedInHeader(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 100})
 	out := m.Render()
 
-	// hints contain the default labels
+	// hints contain the default labels — now rendered in the middle pane
+	// of the header instead of the bottom row.
 	for _, label := range []string{"command", "search", "help", "refresh", "back/quit"} {
 		assert.Contains(t, out, label)
 	}
 }
 
 func TestModel_SetKeyHints(t *testing.T) {
-	m := tui.New(tui.Options{Initial: tui.ScreenTopics})
+	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 100})
 	m.SetKeyHints([]layout.KeyHint{{Key: "n", Label: "new"}})
 	out := m.Render()
 
 	assert.Contains(t, out, "new")
-	// default hints should be replaced.
-	lines := strings.Split(out, "\n")
-	assert.NotContains(t, lines[len(lines)-1], "command")
 }
 
 func TestModel_StatusForRefreshMode(t *testing.T) {

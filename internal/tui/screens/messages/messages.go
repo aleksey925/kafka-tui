@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -185,6 +186,32 @@ func (m *Model) Following() bool { return m.following }
 // Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
+// Title returns the frame title rendered by the host.
+func (m *Model) Title() string {
+	body := fmt.Sprintf("Messages · %s [%d]", m.topic, len(m.messages))
+	if m.following {
+		body += " ● LIVE"
+	}
+	return body
+}
+
+// Breadcrumb describes the selected message (right-aligned in the frame).
+func (m *Model) Breadcrumb() string {
+	row, ok := m.table.SelectedRow()
+	if !ok {
+		return ""
+	}
+	return row.ID
+}
+
 // Messages returns the loaded messages in display order (newest first).
 func (m *Model) Messages() []kafka.Message {
 	out := make([]kafka.Message, len(m.messages))
@@ -197,6 +224,9 @@ func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
 		m.table.SetHeight(maxInt(1, h-7))
+	}
+	if w > 0 {
+		m.table.SetTotalWidth(w)
 	}
 }
 
@@ -648,9 +678,6 @@ func (m *Model) View() string {
 		return m.detail.View(m.width, m.height)
 	}
 	parts := []string{m.headerLine(), m.table.View()}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
-	}
 	return strings.Join(parts, "\n")
 }
 
@@ -708,13 +735,13 @@ func columnSpec(key string) components.Column {
 	case "timestamp":
 		return components.Column{Title: "Timestamp", Width: 13, Sortable: true}
 	case "partition":
-		return components.Column{Title: "P", Width: 3, Sortable: true}
+		return components.Column{Title: "P", Width: 3, Align: lipgloss.Right, Sortable: true}
 	case "offset":
-		return components.Column{Title: "Offset", Width: 8, Sortable: true}
+		return components.Column{Title: "Offset", Width: 10, Align: lipgloss.Right, Sortable: true}
 	case "key":
 		return components.Column{Title: "Key", Width: 32, Sortable: true}
 	case "value":
-		return components.Column{Title: "Value", Width: 0, Sortable: false}
+		return components.Column{Title: "Value", Flex: true, MinWidth: 20, Sortable: false}
 	case "headers":
 		return components.Column{Title: "H", Width: 3, Sortable: true}
 	default:

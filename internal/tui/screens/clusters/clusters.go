@@ -12,6 +12,7 @@ package clusters
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"strings"
@@ -51,6 +52,23 @@ func (s ConnectionStatus) Icon() string {
 		return "✗"
 	default:
 		return "?"
+	}
+}
+
+// statusColor maps a connectivity status to its theme palette color.
+// Used for the leading status dot on the cluster row.
+func statusColor(s theme.Styles, st ConnectionStatus) color.Color {
+	switch st {
+	case StatusOK:
+		return s.Palette.StatusOK
+	case StatusFailed:
+		return s.Palette.StatusError
+	case StatusChecking:
+		return s.Palette.StatusWarn
+	case StatusUnknown:
+		return s.Palette.Muted
+	default:
+		return s.Palette.Muted
 	}
 }
 
@@ -289,12 +307,37 @@ func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 // Toasts exposes the toast queue (mostly for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
+// LatestFlash returns the freshest live toast from this screen's queue.
+func (m *Model) LatestFlash() (components.Toast, bool) {
+	if m.toasts == nil {
+		return components.Toast{}, false
+	}
+	return m.toasts.Latest()
+}
+
+// Title returns the frame title rendered by the host.
+func (m *Model) Title() string {
+	return fmt.Sprintf("Clusters[%d]", len(m.clusters))
+}
+
+// Breadcrumb returns the selected cluster (right-aligned in the frame).
+func (m *Model) Breadcrumb() string {
+	row, ok := m.table.SelectedRow()
+	if !ok {
+		return ""
+	}
+	return row.ID
+}
+
 // SetSize updates width/height (called when the host receives WindowSizeMsg).
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
 		// reserve a few rows for chrome (header, toast, hints).
 		m.table.SetHeight(maxInt(1, h-6))
+	}
+	if w > 0 {
+		m.table.SetTotalWidth(w)
 	}
 }
 
@@ -522,9 +565,20 @@ func (m *Model) refreshTable() {
 }
 
 func (m *Model) rowValues(c config.Cluster) []string {
-	swatch := lipgloss.NewStyle().
-		Foreground(m.styles.Palette.ClusterColor(c.Color)).
+	// the leading dot is now driven by connectivity status (k9s-style),
+	// not the user-configured cluster color. The user color is rendered as
+	// a thin vertical bar prefixed to the name cell so it stays a visual
+	// tag rather than a status light.
+	statusDot := lipgloss.NewStyle().
+		Foreground(statusColor(m.styles, m.statuses[c.Name])).
 		Render("●")
+	name := c.Name
+	if c.Color != "" {
+		bar := lipgloss.NewStyle().
+			Foreground(m.styles.Palette.ClusterColor(c.Color)).
+			Render("▎")
+		name = bar + " " + c.Name
+	}
 	flags := []string{}
 	if c.ReadOnly {
 		flags = append(flags, "[RO]")
@@ -533,8 +587,8 @@ func (m *Model) rowValues(c config.Cluster) []string {
 		flags = append(flags, "(cli)")
 	}
 	return []string{
-		swatch,
-		c.Name,
+		statusDot,
+		name,
 		strings.Join(c.Brokers, ","),
 		strings.Join(flags, " "),
 		m.statuses[c.Name].Label(),
@@ -547,9 +601,6 @@ func (m *Model) View() string {
 	parts := []string{m.table.View()}
 	if m.editing {
 		parts = append(parts, m.renderEditChooser())
-	}
-	if t := m.toasts.View(); t != "" {
-		parts = append(parts, t)
 	}
 	return strings.Join(parts, "\n")
 }

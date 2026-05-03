@@ -120,6 +120,16 @@ func (t *Toasts) Items() []Toast {
 // Len returns the number of live toasts.
 func (t *Toasts) Len() int { return len(t.items) }
 
+// Latest returns the most recently pushed live toast (after pruning expired
+// non-sticky entries). Returns false when the queue is empty.
+func (t *Toasts) Latest() (Toast, bool) {
+	t.Tick()
+	if len(t.items) == 0 {
+		return Toast{}, false
+	}
+	return t.items[len(t.items)-1], true
+}
+
 // Tick prunes expired non-sticky toasts. Call from the screen Update loop on
 // every tea.Msg (including timers).
 func (t *Toasts) Tick() {

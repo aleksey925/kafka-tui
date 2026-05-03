@@ -92,6 +92,17 @@ func (m *Model) ConsumeAction() Action {
 // FocusClusters reports whether the per-cluster table currently has focus.
 func (m *Model) FocusClusters() bool { return m.focusClusters }
 
+// Title returns the frame title rendered by the host.
+func (m *Model) Title() string { return "Config Sources" }
+
+// Breadcrumb describes which sub-table is active.
+func (m *Model) Breadcrumb() string {
+	if m.focusClusters {
+		return "clusters"
+	}
+	return "config"
+}
+
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
