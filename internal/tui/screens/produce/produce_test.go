@@ -660,6 +660,55 @@ func TestMode_EnterInSingleLineExitsToNormal(t *testing.T) {
 	assert.Equal(t, "abc", got.Value)
 }
 
+func TestHeadersInsert_InvalidRowShowsInlineMarker(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT, empty row
+	for _, r := range "no-equals" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	out := m.View()
+	assert.Contains(t, out, "must be key=value", "invalid row must surface its reason inline")
+}
+
+func TestHeadersInsert_EmptyKeyIsInvalid(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter"))
+	for _, r := range "=value-only" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	assert.Contains(t, m.View(), "key is empty")
+}
+
+func TestHeadersInsert_ValidRowHasNoMarker(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter"))
+	for _, r := range "x-trace=abc" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	out := m.View()
+	assert.NotContains(t, out, "must be key=value")
+	assert.NotContains(t, out, "key is empty")
+}
+
+func TestHeadersInsert_EnterOnInvalidRowIsBlocked(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT, empty row
+	for _, r := range "no-equals" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	// chain-Enter on invalid row: must NOT add a new row, must surface a toast.
+	_, _ = m.Update(keyPress("enter"))
+
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"no-equals"}, got.List, "no new row added while current is invalid")
+	assert.Equal(t, produce.ModeInsert, m.Mode(), "stay in INSERT to fix the row")
+	assert.Contains(t, m.View(), "header invalid", "toast surfaces the reason")
+}
+
 func TestHeadersInsert_EnterChainsAddingRows(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 	m.Form().FocusKey("headers")

@@ -38,6 +38,13 @@ type Field struct {
 	Options []string // dropdown choices
 	List    []string // list-mode entries
 
+	// Validator, when non-nil, is called for each non-empty list entry
+	// during render and on commit-and-continue. A non-nil error renders
+	// a red `!` marker plus the message next to the entry; hosting
+	// screens can also surface the same error in toasts. Empty entries
+	// are skipped (validator never sees them).
+	Validator func(entry string) error
+
 	listCursor      int // for FieldList: which entry is focused
 	listEntryCursor int // for FieldList: rune cursor within the focused entry
 	textCursor      int // FieldText / FieldTextarea: rune index into Value
@@ -169,6 +176,28 @@ func (f *Form) FocusedListEntry() (string, int, bool) {
 		return "", idx, false
 	}
 	return fld.List[idx], idx, true
+}
+
+// ValidateFocusedListEntry runs the focused list field's Validator on the
+// focused entry. Returns nil for empty entries, no validator, or non-list
+// fields. Used by hosting screens to gate commit-and-continue actions.
+func (f *Form) ValidateFocusedListEntry() error {
+	if len(f.fields) == 0 {
+		return nil
+	}
+	fld := &f.fields[f.focus]
+	if fld.Kind != FieldList || fld.Validator == nil {
+		return nil
+	}
+	idx := fld.listCursor
+	if idx < 0 || idx >= len(fld.List) {
+		return nil
+	}
+	entry := fld.List[idx]
+	if entry == "" {
+		return nil
+	}
+	return fld.Validator(entry)
 }
 
 // ListEntryCursor returns the rune-cursor inside the focused entry of a
@@ -555,15 +584,22 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 			prefix = "  ▸ "
 			style = s.CommandHL
 		}
-		body := prefix + entry
+		// per-entry validator decoration — only flagged for non-empty
+		// invalid entries. valid and empty rows render plain.
+		var marker string
+		if entry != "" && fld.Validator != nil {
+			if err := fld.Validator(entry); err != nil {
+				marker = "  " + s.StatusErr.Render("! "+err.Error())
+			}
+		}
 		if isCurrent && caretOn {
 			runes := []rune(entry)
 			c := min(fld.listEntryCursor, len(runes))
 			c = max(c, 0)
-			parts = append(parts, "  "+renderLineWithCursor(s, style, prefix, runes, c))
+			parts = append(parts, "  "+renderLineWithCursor(s, style, prefix, runes, c)+marker)
 			continue
 		}
-		parts = append(parts, "  "+style.Render(body))
+		parts = append(parts, "  "+style.Render(prefix+entry)+marker)
 	}
 	if focused {
 		parts = append(parts, "    "+s.HintLabel.Render("enter or ctrl+n — add row    ctrl+x — remove row    backspace on empty — remove"))

@@ -221,7 +221,7 @@ func (m *Model) buildForm() *components.Form {
 			Value:   string(kafka.CompressionNone),
 		},
 		{Key: fieldKey, Label: "Key", Kind: components.FieldText},
-		{Key: fieldHeaders, Label: "Headers (key=value)", Kind: components.FieldList},
+		{Key: fieldHeaders, Label: "Headers (key=value)", Kind: components.FieldList, Validator: validateHeader},
 		{Key: fieldValue, Label: "Value", Kind: components.FieldTextarea},
 	}
 	return components.NewForm(fields, components.WithFormStyles(m.styles))
@@ -511,6 +511,12 @@ func (m *Model) handleInsertEnter(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 			m.setMode(ModeNormal)
 			return m, nil
 		}
+		// invalid current row blocks the chain — surface the reason as a
+		// toast and stay in INSERT on the broken row so the user fixes it.
+		if err := m.form.ValidateFocusedListEntry(); err != nil {
+			m.toasts.Push(components.ToastWarning, "header invalid: "+err.Error())
+			return m, nil
+		}
 		// otherwise commit-and-continue: add a new empty row and stay in
 		// INSERT for sequential header entry.
 		m.form.AppendListRow()
@@ -641,8 +647,8 @@ func parsePartition(raw string) (int32, error) {
 }
 
 // parseHeaders converts the FieldList entries (each "key=value") into
-// kafka.Header. Empty entries are skipped; entries without "=" yield an error
-// so the user knows to fix them.
+// kafka.Header. Empty entries are skipped; invalid entries (validateHeader
+// fails) yield an error so the user knows to fix them.
 func parseHeaders(entries []string) ([]kafka.Header, error) {
 	out := make([]kafka.Header, 0, len(entries))
 	for _, e := range entries {
@@ -650,16 +656,31 @@ func parseHeaders(entries []string) ([]kafka.Header, error) {
 		if entry == "" {
 			continue
 		}
-		idx := strings.IndexByte(entry, '=')
-		if idx < 0 {
-			return nil, fmt.Errorf("header %q must be key=value", entry)
+		if err := validateHeader(entry); err != nil {
+			return nil, err
 		}
+		idx := strings.IndexByte(entry, '=')
 		out = append(out, kafka.Header{
 			Key:   strings.TrimSpace(entry[:idx]),
 			Value: []byte(entry[idx+1:]),
 		})
 	}
 	return out, nil
+}
+
+// validateHeader is the per-entry rule shared by the inline form indicator
+// and the send-time validation in parseHeaders. A header is valid when it
+// has the shape `key=value` with a non-empty key (after trimming).
+func validateHeader(entry string) error {
+	trimmed := strings.TrimSpace(entry)
+	idx := strings.IndexByte(trimmed, '=')
+	if idx < 0 {
+		return errors.New("must be key=value")
+	}
+	if strings.TrimSpace(trimmed[:idx]) == "" {
+		return errors.New("key is empty")
+	}
+	return nil
 }
 
 // recordHistory persists the just-sent payload into the history backend and
