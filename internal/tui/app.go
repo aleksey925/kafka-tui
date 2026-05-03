@@ -12,6 +12,8 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -203,11 +205,38 @@ func (m *Model) Init() tea.Cmd {
 	if cs, ok := m.active.(*clustersScreen); ok {
 		if name, skip := cs.m.SkipTarget(); skip {
 			if connectCmd := m.connectCluster(name); connectCmd != nil {
-				return connectCmd
+				return teaBatch(connectCmd, m.watchConfigSnapshots())
 			}
 		}
 	}
-	return m.activeInit()
+	return teaBatch(m.activeInit(), m.watchConfigSnapshots())
+}
+
+// configSnapshotMsg carries a fresh config snapshot from the file watcher.
+// One Snapshot per tea.Cmd; after handling, the host re-arms the listener
+// so subsequent file edits keep arriving.
+type configSnapshotMsg struct {
+	snapshot config.Snapshot
+}
+
+// watchConfigSnapshots returns a tea.Cmd that blocks on the watcher's
+// Snapshots channel until the next event, then surfaces it as a typed msg.
+// Returns nil when no watcher is wired (e.g. tests without bootstrap).
+func (m *Model) watchConfigSnapshots() tea.Cmd {
+	if m.boot == nil || m.boot.ConfigSnapshots == nil {
+		return nil
+	}
+	ch := m.boot.ConfigSnapshots
+	return func() tea.Msg {
+		s, ok := <-ch
+		if !ok {
+			// channel closed (watcher.Close() called or fsnotify died) —
+			// log so future "config didn't reload" reports have a trail.
+			slog.Warn("config watcher snapshot channel closed; auto-reload disabled")
+			return nil
+		}
+		return configSnapshotMsg{snapshot: s}
+	}
 }
 
 // Router exposes the underlying router (for tests and bootstrap).
@@ -238,12 +267,52 @@ func (m *Model) Quit() bool { return m.quit }
 // cluster has been selected). Exposed so cmd/kafka-tui can close it on exit.
 func (m *Model) ActiveClient() *kafka.Client { return m.client }
 
-// SetAutoRefresh forces a refresh state (used at bootstrap).
+// SetAutoRefresh toggles the global auto-refresh state. When the active
+// screen has its own refresh ticker, the change is propagated via
+// SetRefreshPaused so the ticker stops loading data (without stopping the
+// ticker itself). The chrome's Refresh: indicator always reflects the new
+// state.
 func (m *Model) SetAutoRefresh(on bool) {
 	m.autoRefresh = on
-	if on && m.status.Mode == layout.RefreshManual {
+	if m.active != nil {
+		m.active.SetRefreshPaused(!on)
+	}
+	m.syncRefreshStatus()
+}
+
+// syncRefreshStatus keeps the chrome's Refresh: indicator in sync with the
+// active screen's RefreshInterval and the global auto-refresh flag. Called
+// when the active screen changes and when ctrl+r flips m.autoRefresh.
+//
+// Special case: the clusters screen has no periodic poll — it reloads on
+// filesystem events via config.Watcher. We reflect that as RefreshOnEdit
+// instead of falling through to "off".
+func (m *Model) syncRefreshStatus() {
+	if _, ok := m.active.(*clustersScreen); ok && m.boot != nil && m.boot.ConfigSnapshots != nil {
+		m.status.Mode = layout.RefreshOnEdit
+		m.status.Interval = 0
+		return
+	}
+	if m.active != nil && !m.active.SupportsRefresh() {
+		// e.g. message detail, produce form, configsrc snapshot — show
+		// a dash so the user understands the row isn't applicable.
+		m.status.Mode = layout.RefreshNotApplicable
+		m.status.Interval = 0
+		return
+	}
+	interval := time.Duration(0)
+	if m.active != nil {
+		interval = m.active.RefreshInterval()
+	}
+	if interval <= 0 {
+		m.status.Mode = layout.RefreshOff
+		m.status.Interval = 0
+		return
+	}
+	m.status.Interval = interval
+	if m.autoRefresh {
 		m.status.Mode = layout.RefreshAuto
-	} else if !on && m.status.Mode == layout.RefreshAuto {
+	} else {
 		m.status.Mode = layout.RefreshManual
 	}
 }
@@ -280,6 +349,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// re-evaluate the flash so an expired toast clears off the bar.
 		flashCmd := m.promoteFlash()
 		return m, flashCmd
+	case configSnapshotMsg:
+		m.handleConfigSnapshot(msg.snapshot)
+		// re-arm the listener for the next snapshot.
+		return m, teaBatch(m.watchConfigSnapshots(), m.promoteFlash())
 	}
 	// non-key, non-resize message → forward to active screen so async cmds
 	// (e.g. topic-loaded, fetch-result) reach their owner.
@@ -540,8 +613,11 @@ func (m *Model) Flash() layout.Flash { return m.flash }
 
 func (m *Model) statusForRender() layout.StatusInfo {
 	s := m.status
-	if s.Now.IsZero() {
-		s.Now = m.now()
+	// Now is always the live wall clock so the chrome's "X ago" counter
+	// advances on every re-render even between refresh ticks.
+	s.Now = m.now()
+	if m.active != nil {
+		s.LastRefresh = m.active.LastRefresh()
 	}
 	return s
 }
@@ -822,6 +898,90 @@ func (m *Model) routeClustersAction(s *clustersScreen) tea.Cmd {
 	return nil
 }
 
+// handleConfigSnapshot applies a fresh config snapshot delivered by the
+// file watcher. Updates Bootstrap state for everyone; if the user is
+// currently looking at the clusters screen, also pushes the fresh list
+// into the model and a toast that honestly distinguishes "the cluster
+// list changed" from "some other config field changed". Other screens
+// stay silent (their data isn't config-derived in a way that re-render
+// makes sense without a re-instantiate).
+func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
+	if m.boot == nil {
+		return
+	}
+	if snap.Err != nil {
+		// surface parse errors; without this a syntax error in
+		// clusters.yaml would silently keep the stale config and the
+		// user would only notice on the next reconnect.
+		slog.Error("config watcher: reload failed", "err", snap.Err)
+		if cs, ok := m.active.(*clustersScreen); ok {
+			cs.m.Toasts().Push(components.ToastError, "config reload failed: "+snap.Err.Error())
+		}
+		return
+	}
+	if snap.Loaded == nil {
+		return
+	}
+	list := snap.Loaded.Clusters
+	cli := ""
+	if m.boot.BuildClusterList != nil {
+		list, cli = m.boot.BuildClusterList(snap.Loaded.Clusters)
+	}
+	clustersChanged := !reflect.DeepEqual(m.boot.Clusters, list) || m.boot.CLIName != cli
+	m.boot.Loaded = snap.Loaded
+	m.boot.Clusters = list
+	m.boot.CLIName = cli
+	cs, onClusters := m.active.(*clustersScreen)
+	if onClusters {
+		cs.m.SetClusters(list, cli)
+		if clustersChanged {
+			cs.m.Toasts().Push(components.ToastSuccess, fmt.Sprintf("clusters reloaded · %d", len(list)))
+		} else {
+			cs.m.Toasts().Push(components.ToastInfo, "config reloaded")
+		}
+	}
+	// active cluster's fields changed under us — the live *kafka.Client is
+	// still wired to the previous broker/auth values, so warn the user
+	// that a reconnect is required.
+	if snap.ActiveClusterChanged {
+		warning := "active cluster changed in config — reconnect to apply"
+		// always log: even if the chrome can't surface it (e.g. on the
+		// configsrc screen which has no toast queue), the warning sits
+		// in the file log for troubleshooting.
+		slog.Warn(warning)
+		// route through the active screen's toast queue when possible —
+		// promoteFlash will pick it up on the next render. Direct
+		// assignment to m.flash would be wiped by promoteFlash because
+		// the host-side flash slot is not a separate source.
+		if q, ok := activeToastQueue(m.active); ok {
+			q.Push(components.ToastWarning, warning)
+		}
+	}
+}
+
+// activeToastQueue exposes the active screen's toast queue when the
+// concrete model has one. Returns ok=false for screens without queues
+// (currently only configsrc).
+func activeToastQueue(s screen) (*components.Toasts, bool) {
+	switch a := s.(type) {
+	case *clustersScreen:
+		return a.m.Toasts(), true
+	case *topicsScreen:
+		return a.m.Toasts(), true
+	case *messagesScreen:
+		return a.m.Toasts(), true
+	case *produceScreen:
+		return a.m.Toasts(), true
+	case *groupsScreen:
+		return a.m.Toasts(), true
+	case *logsScreen:
+		return a.m.Toasts(), true
+	case *topicConfigsScreen:
+		return a.m.Toasts(), true
+	}
+	return nil, false
+}
+
 // reloadClusters re-reads config files via Bootstrap.ConfigReloader and
 // pushes the fresh list into the clusters screen. Errors are surfaced
 // through the screen's toast queue (which the global flash bar promotes).
@@ -955,6 +1115,7 @@ func (m *Model) pushScreen(id ScreenID) {
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
+	m.syncRefreshStatus()
 }
 
 // pushScreenCmd is the runtime variant: pushes a screen, instantiates it, and
@@ -965,6 +1126,7 @@ func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
+	m.syncRefreshStatus()
 	return m.activeInit()
 }
 
@@ -980,6 +1142,7 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 	m.router.Replace(id)
 	m.instantiate(id)
 	m.applySize()
+	m.syncRefreshStatus()
 	return m.activeInit()
 }
 
@@ -995,6 +1158,7 @@ func (m *Model) popScreen() {
 		m.instantiate(id)
 	}
 	m.applySize()
+	m.syncRefreshStatus()
 }
 
 // instantiate constructs the screen for id using the current bootstrap. When

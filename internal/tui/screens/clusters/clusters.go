@@ -156,6 +156,10 @@ type Options struct {
 	Editor Editor
 	// PingTimeout caps each probe. Defaults to 5s.
 	PingTimeout time.Duration
+	// RefreshInterval enables periodic re-pings of every cluster so the
+	// status dots stay current without user input. 0 disables auto-refresh
+	// entirely; defaults to 60s when zero is passed and Pinger is set.
+	RefreshInterval time.Duration
 	// StartupWarnings are surfaced as warning toasts on first Init.
 	StartupWarnings []string
 	// Now is the injected clock (defaults to time.Now).
@@ -193,6 +197,16 @@ type Model struct {
 	stagedInit bool
 
 	width, height int
+
+	// auto-refresh: periodically re-pings every cluster so the status dots
+	// stay in sync with reality even without user input.
+	refreshInterval time.Duration
+	refreshPaused   bool
+	// lastRefresh marks when the most recent re-ping batch was dispatched
+	// (we don't wait for individual ping results — they trickle in via
+	// PingResultMsg, but the user-facing "X ago" wants the action time,
+	// not the slowest reply).
+	lastRefresh time.Time
 
 	startupWarn []string
 	now         func() time.Time
@@ -235,17 +249,26 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(columnDefs(), components.WithStyles(styles))
 
+	// no implicit auto-refresh on clusters: connectivity probes are a
+	// strictly user-driven action (`t`/`T`) and config-file edits are
+	// picked up by the host's config.Watcher subscription, not by polling.
+	refresh := opts.RefreshInterval
 	m := &Model{
-		clusters:    clusters,
-		cliName:     opts.CLIName,
-		statuses:    statuses,
-		errors:      map[string]string{},
-		table:       tbl,
-		toasts:      components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		pinger:      opts.Pinger,
-		editor:      editor,
-		pingTimeout: timeout,
-		editChoices: choices,
+		clusters:        clusters,
+		cliName:         opts.CLIName,
+		statuses:        statuses,
+		errors:          map[string]string{},
+		table:           tbl,
+		toasts:          components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		pinger:          opts.Pinger,
+		editor:          editor,
+		pingTimeout:     timeout,
+		editChoices:     choices,
+		refreshInterval: refresh,
+		// the initial config load just happened — anchor "X ago" to the
+		// construction time so the chrome shows "0s ago" right after entry
+		// instead of staying blank until the first watcher snapshot.
+		lastRefresh: now(),
 		startupWarn: append([]string(nil), opts.StartupWarnings...),
 		now:         now,
 		styles:      styles,
@@ -291,8 +314,45 @@ func (m *Model) Init() tea.Cmd {
 		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
 	}
 	m.startupWarn = nil
-	return nil
+	// fire the first ping batch immediately so statuses (and the chrome's
+	// "X ago" indicator) are populated on entry — without this nothing
+	// happens until the first tick fires `refreshInterval` later.
+	return tea.Batch(m.testAll(), m.AutoRefreshTick())
 }
+
+// RefreshTickMsg is the periodic auto-refresh tick for the clusters screen.
+type RefreshTickMsg struct{}
+
+// AutoRefreshTick returns a tea.Cmd that schedules the next refresh tick.
+// nil when auto-refresh is disabled.
+func (m *Model) AutoRefreshTick() tea.Cmd {
+	if m.refreshInterval <= 0 || m.pinger == nil {
+		return nil
+	}
+	return tea.Tick(m.refreshInterval, func(time.Time) tea.Msg {
+		return RefreshTickMsg{}
+	})
+}
+
+// HandleRefreshTick re-pings every cluster and reschedules. Skips the
+// re-ping (but keeps the ticker alive) while paused, so resuming is
+// instantaneous.
+func (m *Model) HandleRefreshTick() tea.Cmd {
+	if m.refreshInterval <= 0 || m.pinger == nil {
+		return nil
+	}
+	next := m.AutoRefreshTick()
+	if m.refreshPaused {
+		return next
+	}
+	return tea.Batch(m.testAll(), next)
+}
+
+// RefreshInterval exposes the configured tick (0 disables refresh).
+func (m *Model) RefreshInterval() time.Duration { return m.refreshInterval }
+
+// SetRefreshPaused toggles auto-refresh without stopping the ticker.
+func (m *Model) SetRefreshPaused(paused bool) { m.refreshPaused = paused }
 
 // Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
@@ -314,6 +374,10 @@ func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 func (m *Model) SetClusters(list []config.Cluster, cliName string) {
 	m.clusters = append([]config.Cluster(nil), list...)
 	m.cliName = cliName
+	// stamp time of the actual cluster-list refresh so the chrome's
+	// "X ago" indicator (RefreshOnEdit mode) shows when the file watcher
+	// last delivered a snapshot, not when the user last hit `T`.
+	m.lastRefresh = m.now()
 	keep := make(map[string]ConnectionStatus, len(list))
 	keepErr := make(map[string]string, len(list))
 	for _, c := range list {
@@ -404,6 +468,9 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case EditCompletedMsg:
 		m.handleEditCompleted(msg)
 		return m, nil
+	case RefreshTickMsg:
+		cmd := m.HandleRefreshTick()
+		return m, cmd
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -553,6 +620,10 @@ func (m *Model) testAll() tea.Cmd {
 	}
 	return tea.Batch(cmds...)
 }
+
+// LastRefresh returns the wall-clock time of the most recent testAll
+// dispatch (manual `T` or an auto-refresh tick).
+func (m *Model) LastRefresh() time.Time { return m.lastRefresh }
 
 func (m *Model) findCluster(name string) *config.Cluster {
 	for i := range m.clusters {

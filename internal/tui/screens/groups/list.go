@@ -107,9 +107,17 @@ type Model struct {
 
 	listInterval   time.Duration
 	detailInterval time.Duration
+	refreshPaused  bool
 
 	width, height int
 	loading       bool
+	// lastRefresh marks the wall-clock time of the most recent successful
+	// load. Drives the chrome's "X ago" indicator.
+	lastRefresh time.Time
+	// manualReload is set when the user pressed `r` and is consumed by
+	// handleGroupsLoaded to push a one-shot success toast (auto-refresh
+	// ticks stay silent).
+	manualReload bool
 
 	action Action
 	now    func() time.Time
@@ -162,10 +170,12 @@ func listColumns() []components.Column {
 	}
 }
 
-// Init dispatches the initial groups load.
+// Init dispatches the initial groups load and schedules the first
+// auto-refresh tick (when configured) — the recurring chain only sustains
+// itself once started.
 func (m *Model) Init() tea.Cmd {
 	m.loading = true
-	return loadGroupsCmd(m.svc, m.filterTopic)
+	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic), m.AutoRefreshTick())
 }
 
 // Action returns the current pending action.
@@ -303,7 +313,10 @@ func (m *Model) KeyHints() []layout.KeyHint {
 			layout.KeyHint{Key: "D", Label: "delete"},
 		)
 	}
-	hints = append(hints, layout.KeyHint{Key: "r", Label: "reload"})
+	hints = append(hints,
+		layout.KeyHint{Key: "r", Label: "reload"},
+		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
+	)
 	return hints
 }
 
@@ -383,6 +396,10 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case "enter":
 		return m.openDetail()
 	case "r":
+		if m.loading {
+			return m, nil
+		}
+		m.manualReload = true
 		cmd := m.refreshCmd()
 		return m, cmd
 	case "R":
@@ -412,7 +429,9 @@ func (m *Model) openDetail() (*Model, tea.Cmd) {
 	d.SetSize(m.width, m.height)
 	m.detail = d
 	m.mode = ModeDetail
-	return m, d.Init()
+	// also kick off the detail-refresh tick chain — it only sustains
+	// itself once started.
+	return m, tea.Batch(d.Init(), m.DetailRefreshTick())
 }
 
 func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
@@ -552,7 +571,13 @@ func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
+		m.manualReload = false
 		return
+	}
+	m.lastRefresh = m.now()
+	if m.manualReload {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d groups", len(msg.Groups)))
+		m.manualReload = false
 	}
 	m.groups = msg.Groups
 	m.refreshTable()
@@ -584,14 +609,50 @@ func (m *Model) handleListRefreshTick() tea.Cmd {
 	if m.listInterval <= 0 || m.mode != ModeList {
 		return nil
 	}
-	return tea.Batch(m.refreshCmd(), m.AutoRefreshTick())
+	next := m.AutoRefreshTick()
+	if m.refreshPaused || m.loading {
+		return next
+	}
+	return tea.Batch(m.refreshCmd(), next)
 }
 
 func (m *Model) handleDetailRefreshTick() tea.Cmd {
 	if m.detailInterval <= 0 || m.mode != ModeDetail || m.detail == nil {
 		return nil
 	}
-	return tea.Batch(m.detail.RefreshCmd(), m.DetailRefreshTick())
+	next := m.DetailRefreshTick()
+	if m.refreshPaused {
+		return next
+	}
+	return tea.Batch(m.detail.RefreshCmd(), next)
+}
+
+// RefreshInterval returns the effective auto-refresh tick for the active
+// sub-mode (list or detail). The host uses it to drive the chrome's
+// Refresh: indicator and the ctrl+r toggle.
+func (m *Model) RefreshInterval() time.Duration {
+	switch m.mode {
+	case ModeDetail:
+		return m.detailInterval
+	case ModeList, ModeReset:
+		return m.listInterval
+	}
+	return m.listInterval
+}
+
+// SetRefreshPaused toggles auto-refresh on the screen without stopping the
+// underlying ticker — flipping back to false resumes the regular cadence.
+func (m *Model) SetRefreshPaused(paused bool) { m.refreshPaused = paused }
+
+// LastRefresh returns the wall-clock time of the most recent successful
+// load for the active sub-mode — detail when the user is inspecting one
+// group, list otherwise. Mirrors RefreshInterval so the chrome's "auto Xs"
+// and "Y ago" stay in sync with each other.
+func (m *Model) LastRefresh() time.Time {
+	if m.mode == ModeDetail && m.detail != nil {
+		return m.detail.LastRefresh()
+	}
+	return m.lastRefresh
 }
 
 // AutoRefreshTick returns a [tea.Cmd] that emits a tick for the list refresh

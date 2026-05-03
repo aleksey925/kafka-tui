@@ -70,6 +70,10 @@ type DetailModel struct {
 	width, height int
 	loading       bool
 	loadErr       string
+	// lastRefresh marks the wall-clock time of the most recent successful
+	// detail load. Drives the chrome's "X ago" indicator while the user
+	// is in detail mode.
+	lastRefresh time.Time
 
 	action DetailAction
 	now    func() time.Time
@@ -308,10 +312,15 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 		return
 	}
 	d.loadErr = ""
+	d.lastRefresh = d.now()
 	d.desc = msg.Description
 	d.rows = msg.Rows
 	d.refreshTable()
 }
+
+// LastRefresh returns the wall-clock time of the most recent successful
+// detail load (zero before any load completes).
+func (d *DetailModel) LastRefresh() time.Time { return d.lastRefresh }
 
 // refreshTable rebuilds the partition rows according to the active sort mode.
 func (d *DetailModel) refreshTable() {

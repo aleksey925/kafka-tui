@@ -17,7 +17,7 @@ logging:
 
 refresh:
   # duration string ("5s", "30s") or "off" to disable
-  topics_list: off
+  topics_list: 30s
   groups_list: 30s
   group_detail: 5s
 

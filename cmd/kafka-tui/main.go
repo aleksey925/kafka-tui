@@ -74,13 +74,15 @@ func main() {
 // Bubble Tea program. Split out from main so deferred cleanup runs before
 // any os.Exit.
 func run(flags *cli.Flags) error {
-	loaded, err := config.Load(config.LoaderOptions{
+	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
 		CLIClusterName: flags.Inline.Name,
-	})
+	}
+	watcher, loaded, err := config.NewWatcher(loaderOpts, flags.Inline.Name, 0)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	defer func() { _ = watcher.Close() }()
 
 	logger, err := logging.Init(logging.Options{
 		Level:     loaded.Config.Logging.Level,
@@ -128,15 +130,16 @@ func run(flags *cli.Flags) error {
 		StartupWarnings: loaded.Warnings,
 		ReadOnly:        flags.Inline.ReadOnly,
 		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
-			fresh, err := config.Load(config.LoaderOptions{
-				ConfigPath:     flags.ConfigPath,
-				CLIClusterName: flags.Inline.Name,
-			})
+			fresh, err := config.Load(loaderOpts)
 			if err != nil {
 				return nil, nil, "", fmt.Errorf("reload config: %w", err)
 			}
 			list, cli := buildClusterList(fresh.Clusters, flags.Inline)
 			return fresh, list, cli, nil
+		},
+		ConfigSnapshots: watcher.Snapshots(),
+		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
+			return buildClusterList(c, flags.Inline)
 		},
 	}
 

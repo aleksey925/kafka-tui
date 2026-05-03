@@ -140,6 +140,13 @@ type Model struct {
 	width, height   int
 	loading         bool
 	refreshInterval time.Duration
+	refreshPaused   bool
+	// lastRefresh marks the wall-clock time of the most recent successful
+	// load. Drives the chrome's "X ago" indicator.
+	lastRefresh time.Time
+	// manualReload is set when the user pressed `r` and is consumed by
+	// handleLoaded to push a one-shot success toast (auto ticks stay silent).
+	manualReload bool
 
 	action Action
 
@@ -199,9 +206,12 @@ func New(opts Options) *Model {
 	}
 }
 
-// Init returns a tea command that loads the initial topics list.
+// Init returns a tea command that loads the initial topics list and
+// schedules the first auto-refresh tick (when configured). Without
+// scheduling here the recurring tick chain would never start, since
+// HandleRefreshTick only fires from within RefreshTickMsg handling.
 func (m *Model) Init() tea.Cmd {
-	return m.refreshCmd()
+	return tea.Batch(m.refreshCmd(), m.AutoRefreshTick())
 }
 
 // Action returns the current pending action.
@@ -316,7 +326,10 @@ func (m *Model) KeyHints() []layout.KeyHint {
 			layout.KeyHint{Key: "p", Label: "produce"},
 		)
 	}
-	hints = append(hints, layout.KeyHint{Key: "r", Label: "reload"})
+	hints = append(hints,
+		layout.KeyHint{Key: "r", Label: "reload"},
+		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
+	)
 	return hints
 }
 
@@ -398,6 +411,12 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		m.refreshTable()
 		return m, nil
 	case "r":
+		// skip duplicate loads — pressing `r` while a previous fetch is
+		// still in flight would just queue redundant RPCs.
+		if m.loading {
+			return m, nil
+		}
+		m.manualReload = true
 		cmd := m.refreshCmd()
 		return m, cmd
 	case "n", "p", "y", "D":
@@ -609,7 +628,13 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load topics: "+msg.Err.Error())
+		m.manualReload = false
 		return
+	}
+	m.lastRefresh = m.now()
+	if m.manualReload {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d topics", len(msg.Topics)))
+		m.manualReload = false
 	}
 	m.allTopics = msg.Topics
 	for _, w := range msg.Watermarks {
@@ -768,19 +793,33 @@ func (m *Model) AutoRefreshTick() tea.Cmd {
 	})
 }
 
-// HandleRefreshTick triggers a reload + reschedules another tick. If a
-// previous load is still in flight (`m.loading`), the refresh is skipped
-// — the next tick will pick it up. This avoids stacking concurrent loads
-// on a slow broker, which would otherwise drown the UI in repeated fetches.
+// HandleRefreshTick triggers a reload + reschedules another tick. The reload
+// itself is skipped while a previous load is in flight (`m.loading`) or the
+// host has paused auto-refresh via [Model.SetRefreshPaused]; the ticker
+// keeps running so resuming is instantaneous.
 func (m *Model) HandleRefreshTick() tea.Cmd {
 	if m.refreshInterval <= 0 {
 		return nil
 	}
-	if m.loading {
-		return m.AutoRefreshTick()
+	next := m.AutoRefreshTick()
+	if m.loading || m.refreshPaused {
+		return next
 	}
-	return tea.Batch(m.refreshCmd(), m.AutoRefreshTick())
+	return tea.Batch(m.refreshCmd(), next)
 }
+
+// RefreshInterval returns the screen's configured auto-refresh tick (0 if
+// auto-refresh is disabled in config).
+func (m *Model) RefreshInterval() time.Duration { return m.refreshInterval }
+
+// SetRefreshPaused toggles the auto-refresh pause flag. The host calls it
+// from the global ctrl+r handler so refresh state stays in sync with the
+// chrome's Refresh: indicator.
+func (m *Model) SetRefreshPaused(paused bool) { m.refreshPaused = paused }
+
+// LastRefresh returns the wall-clock time of the most recent successful
+// load, or zero when no load has completed yet.
+func (m *Model) LastRefresh() time.Time { return m.lastRefresh }
 
 // ----- Messages -----
 

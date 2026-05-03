@@ -87,4 +87,10 @@ type Bootstrap struct {
 	// returns a fresh snapshot. Wired by main.go from the original CLI
 	// flags. nil disables manual reload (`r` on the clusters screen).
 	ConfigReloader func() (*config.Loaded, []config.Cluster, string, error)
+	// ConfigSnapshots is the channel emitted by [config.Watcher] for every
+	// reload triggered by a filesystem event. nil disables auto-reload.
+	ConfigSnapshots <-chan config.Snapshot
+	// BuildClusterList re-applies the CLI inline cluster on top of a
+	// freshly-loaded clusters list. Wired together with ConfigSnapshots.
+	BuildClusterList func([]config.Cluster) ([]config.Cluster, string)
 }

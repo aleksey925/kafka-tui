@@ -79,7 +79,7 @@ func Defaults() Config {
 			MaxFiles:  5,
 		},
 		Refresh: RefreshConfig{
-			TopicsList:  "off",
+			TopicsList:  "30s",
 			GroupsList:  "30s",
 			GroupDetail: "5s",
 		},

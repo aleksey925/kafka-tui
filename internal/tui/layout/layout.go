@@ -25,6 +25,16 @@ const (
 	RefreshManual
 	// RefreshPaused: a modal/search is open and refresh is temporarily paused.
 	RefreshPaused
+	// RefreshOnEdit: the screen reloads itself in response to filesystem
+	// events (no periodic poll). Used by the clusters screen which wires
+	// into config.Watcher.
+	RefreshOnEdit
+	// RefreshNotApplicable: the screen is conceptually static (e.g. a
+	// single-message detail view, a form, a one-shot snapshot) — refresh
+	// just doesn't apply. Rendered as a dash so the user understands the
+	// row exists but isn't relevant here, vs RefreshOff which means
+	// "supported but turned off".
+	RefreshNotApplicable
 )
 
 // HeaderInfo describes everything required to render the top bar.
@@ -170,8 +180,17 @@ func refreshLabel(s theme.Styles, status StatusInfo) string {
 		return "manual"
 	case RefreshPaused:
 		return s.StatusWarn.Render("paused")
+	case RefreshOnEdit:
+		body := "on edit"
+		if !status.LastRefresh.IsZero() && !status.Now.IsZero() {
+			elapsed := max(0, status.Now.Sub(status.LastRefresh))
+			body += " · " + formatDuration(elapsed.Round(time.Second)) + " ago"
+		}
+		return body
 	case RefreshOff:
 		return "off"
+	case RefreshNotApplicable:
+		return "—"
 	default:
 		return "—"
 	}
@@ -201,8 +220,11 @@ func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
 	for r := range HeaderRows {
 		var line strings.Builder
 		for c := range cols {
+			// only emit a cell if it falls inside its own column slot —
+			// otherwise the row leaks the next column's content (a hint
+			// shown twice). Empty rows beyond rowsN stay blank padding.
 			idx := c*rowsN + r
-			if idx < len(cells) {
+			if r < rowsN && idx < len(cells) {
 				line.WriteString(cells[idx])
 			} else {
 				line.WriteString(strings.Repeat(" ", colW))

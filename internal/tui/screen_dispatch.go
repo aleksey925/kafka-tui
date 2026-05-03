@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -40,6 +42,24 @@ type screen interface {
 	// Breadcrumb is rendered in the top-right of the body frame, typically
 	// the selected row identifier. Empty hides it.
 	Breadcrumb() string
+	// RefreshInterval is the configured auto-refresh tick for this screen
+	// (0 when the screen has no auto-refresh). The host uses it to drive
+	// the chrome's Refresh: indicator and the ctrl+r toggle.
+	RefreshInterval() time.Duration
+	// SetRefreshPaused puts the screen's refresh ticker on pause without
+	// stopping it; flipping back to false resumes the regular cadence.
+	// No-op for screens without auto-refresh.
+	SetRefreshPaused(bool)
+	// LastRefresh returns the wall-clock time of the most recent successful
+	// load, or zero when no load has completed (or the screen has no
+	// refresh concept). Drives the chrome's "X ago" indicator.
+	LastRefresh() time.Time
+	// SupportsRefresh reports whether the screen is conceptually live
+	// data that could be refreshed (true: topics, groups, clusters) vs
+	// a static view (false: a single message, a form, a one-shot
+	// snapshot). The chrome shows "—" instead of "off" for the latter
+	// to make it clear refresh isn't applicable here.
+	SupportsRefresh() bool
 }
 
 type clustersScreen struct{ m *clusters.Model }
@@ -57,6 +77,10 @@ func (s *clustersScreen) WantsRawInput() bool                   { return false }
 func (s *clustersScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *clustersScreen) Title() string                         { return s.m.Title() }
 func (s *clustersScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *clustersScreen) RefreshInterval() time.Duration        { return s.m.RefreshInterval() }
+func (s *clustersScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
+func (s *clustersScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
+func (s *clustersScreen) SupportsRefresh() bool                 { return true }
 
 type topicsScreen struct{ m *topics.Model }
 
@@ -73,6 +97,10 @@ func (s *topicsScreen) WantsRawInput() bool                   { return s.m.Wants
 func (s *topicsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *topicsScreen) Title() string                         { return s.m.Title() }
 func (s *topicsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *topicsScreen) RefreshInterval() time.Duration        { return s.m.RefreshInterval() }
+func (s *topicsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
+func (s *topicsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
+func (s *topicsScreen) SupportsRefresh() bool                 { return true }
 
 type messagesScreen struct{ m *messages.Model }
 
@@ -89,6 +117,10 @@ func (s *messagesScreen) WantsRawInput() bool                   { return false }
 func (s *messagesScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *messagesScreen) Title() string                         { return s.m.Title() }
 func (s *messagesScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *messagesScreen) RefreshInterval() time.Duration        { return 0 }
+func (s *messagesScreen) SetRefreshPaused(bool)                 {}
+func (s *messagesScreen) LastRefresh() time.Time                { return time.Time{} }
+func (s *messagesScreen) SupportsRefresh() bool                 { return false }
 
 type produceScreen struct{ m *produce.Model }
 
@@ -105,6 +137,10 @@ func (s *produceScreen) WantsRawInput() bool                   { return s.m.Want
 func (s *produceScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *produceScreen) Title() string                         { return s.m.Title() }
 func (s *produceScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *produceScreen) RefreshInterval() time.Duration        { return 0 }
+func (s *produceScreen) SetRefreshPaused(bool)                 {}
+func (s *produceScreen) LastRefresh() time.Time                { return time.Time{} }
+func (s *produceScreen) SupportsRefresh() bool                 { return false }
 
 type groupsScreen struct{ m *groups.Model }
 
@@ -121,6 +157,10 @@ func (s *groupsScreen) WantsRawInput() bool                   { return s.m.Wants
 func (s *groupsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *groupsScreen) Title() string                         { return s.m.Title() }
 func (s *groupsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *groupsScreen) RefreshInterval() time.Duration        { return s.m.RefreshInterval() }
+func (s *groupsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
+func (s *groupsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
+func (s *groupsScreen) SupportsRefresh() bool                 { return true }
 
 type logsScreen struct{ m *logs.Model }
 
@@ -137,6 +177,10 @@ func (s *logsScreen) WantsRawInput() bool                   { return false }
 func (s *logsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *logsScreen) Title() string                         { return s.m.Title() }
 func (s *logsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *logsScreen) RefreshInterval() time.Duration        { return 0 }
+func (s *logsScreen) SetRefreshPaused(bool)                 {}
+func (s *logsScreen) LastRefresh() time.Time                { return time.Time{} }
+func (s *logsScreen) SupportsRefresh() bool                 { return false }
 
 type configsrcScreen struct{ m *configsrc.Model }
 
@@ -153,6 +197,10 @@ func (s *configsrcScreen) WantsRawInput() bool                   { return false 
 func (s *configsrcScreen) LatestFlash() (components.Toast, bool) { return components.Toast{}, false }
 func (s *configsrcScreen) Title() string                         { return s.m.Title() }
 func (s *configsrcScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *configsrcScreen) RefreshInterval() time.Duration        { return 0 }
+func (s *configsrcScreen) SetRefreshPaused(bool)                 {}
+func (s *configsrcScreen) LastRefresh() time.Time                { return time.Time{} }
+func (s *configsrcScreen) SupportsRefresh() bool                 { return false }
 
 type topicConfigsScreen struct{ m *topics.ConfigsModel }
 
@@ -169,3 +217,7 @@ func (s *topicConfigsScreen) WantsRawInput() bool                   { return fal
 func (s *topicConfigsScreen) LatestFlash() (components.Toast, bool) { return s.m.LatestFlash() }
 func (s *topicConfigsScreen) Title() string                         { return s.m.Title() }
 func (s *topicConfigsScreen) Breadcrumb() string                    { return s.m.Breadcrumb() }
+func (s *topicConfigsScreen) RefreshInterval() time.Duration        { return 0 }
+func (s *topicConfigsScreen) SetRefreshPaused(bool)                 {}
+func (s *topicConfigsScreen) LastRefresh() time.Time                { return time.Time{} }
+func (s *topicConfigsScreen) SupportsRefresh() bool                 { return false }
