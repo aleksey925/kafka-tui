@@ -397,7 +397,18 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (*Model, tea.Cmd, bool
 // contextual (INSERT for text/list, popup for segmented), `+`/`_` toggle
 // fullscreen, on Headers `=` adds a row and `-` removes. Letters/digits
 // are ignored — they only do work in INSERT.
+//
+// Priority: when a segmented popup is open, navigation keys (enter, arrows,
+// hjkl, tab) are routed to the popup *first*. esc and the fullscreen
+// toggles (`shift+-`/`_`) deliberately keep their NORMAL semantics and
+// fall through to the switch below, so esc cascade closes the popup via
+// handleEscNormal and `_` collapses fullscreen.
 func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	if m.form.PopupActive() && popupNavKey(key) {
+		f, cmd := m.form.Update(key)
+		m.form = f
+		return m, cmd
+	}
 	switch key.String() {
 	case "esc":
 		return m.handleEscNormal(key)
@@ -425,6 +436,19 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	}
 	// any other NORMAL-mode keystroke is ignored.
 	return m, nil
+}
+
+// popupNavKey reports whether key belongs to the segmented popup while it
+// is open. tab/shift+tab are included so the popup is fully modal — they'd
+// otherwise close it as a side effect of FocusNext/Prev. esc and the
+// fullscreen toggles are deliberately excluded so they keep their
+// NORMAL-mode meaning.
+func popupNavKey(key tea.KeyPressMsg) bool {
+	switch key.String() {
+	case "enter", "up", "down", "left", "right", "j", "k", "h", "l", "tab", "shift+tab":
+		return true
+	}
+	return false
 }
 
 // handleEscNormal implements the esc cascade: popup → close popup;

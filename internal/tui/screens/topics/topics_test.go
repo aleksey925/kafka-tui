@@ -245,7 +245,9 @@ func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 
 	_, _ = m.Update(keyPress("n"))
 
-	// fill in the name field (the focus starts at 'name')
+	// form opens in NORMAL — press enter to start typing into the focused
+	// `name` field, then fill it in.
+	_, _ = m.Update(keyPress("enter"))
 	for _, r := range "orders" {
 		_, _ = m.Update(keyPressRune(r))
 	}

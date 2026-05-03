@@ -467,6 +467,14 @@ func (m *Model) openCloneForm() {
 func (m *Model) handleCreateKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
+		// in INSERT, or while a segmented popup is open in NORMAL, esc is
+		// owned by the form (returns to NORMAL / closes the popup). Only a
+		// "plain" NORMAL esc closes the overlay.
+		if m.create.Mode() == FormInsert || m.create.Form().PopupActive() {
+			c, _ := m.create.Update(key)
+			m.create = c
+			return m, nil
+		}
 		m.create = nil
 		m.mode = ModeList
 		return m, nil
@@ -489,6 +497,11 @@ func (m *Model) handleCreateKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 func (m *Model) handleCloneKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
+		if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
+			c, _ := m.clone.Update(key)
+			m.clone = c
+			return m, nil
+		}
 		m.clone = nil
 		m.mode = ModeList
 		return m, nil
