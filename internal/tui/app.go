@@ -43,8 +43,9 @@ const (
 	ModeNormal Mode = iota
 	// ModeCommand: a `:` command bar is open.
 	ModeCommand
-	// ModeSearch: a `/` search bar is open. Routed to the active screen on
-	// submit; the root model only owns rendering.
+	// ModeSearch: a `/` filter prompt is open. Same chrome slot as the
+	// command bar; each keystroke is forwarded to the active screen as a
+	// live filter via [screen.SetSearch].
 	ModeSearch
 	// ModeHelp: full-screen help overlay is visible.
 	ModeHelp
@@ -96,7 +97,12 @@ type Model struct {
 	status  layout.StatusInfo
 	command layout.CommandBar
 	search  layout.CommandBar
-	hints   []layout.KeyHint
+	// searchOriginal is the screen's filter at the moment the prompt was
+	// (re)opened. Esc restores it; enter keeps whatever the buffer holds.
+	// Mirrors k9s — opening `/` over an existing filter is "edit", not
+	// "discard and re-enter".
+	searchOriginal string
+	hints          []layout.KeyHint
 
 	width, height int
 	autoRefresh   bool
@@ -251,9 +257,6 @@ func (m *Model) CommandBuffer() string { return m.command.Buffer }
 // CommandSuggestion returns the current command-bar suggestion (for tests).
 func (m *Model) CommandSuggestion() string { return m.command.Suggestion }
 
-// SearchBuffer returns the current search buffer (for tests).
-func (m *Model) SearchBuffer() string { return m.search.Buffer }
-
 // AutoRefresh reports whether auto-refresh is enabled (for tests).
 func (m *Model) AutoRefresh() bool { return m.autoRefresh }
 
@@ -396,15 +399,24 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.applySize()
 		return m, nil
 	case "/":
-		m.mode = ModeSearch
-		m.search = layout.CommandBar{Active: true, Prefix: '/'}
-		m.applySize()
+		m.openSearchPrompt()
 		return m, nil
 	case "?":
 		m.mode = ModeHelp
 		return m, nil
 	case "ctrl+r":
 		m.SetAutoRefresh(!m.autoRefresh)
+		return m, nil
+	}
+	// esc cascade: if the screen has a modal overlay open, esc belongs
+	// to it (close confirm/chooser/etc.), not to the filter-clear or pop
+	// path below. Capture the pre-state so we can also suppress the pop
+	// after the screen closes its overlay.
+	hadOverlay := m.active != nil && m.active.HasOverlay()
+	if key.String() == "esc" && !hadOverlay && m.active != nil && m.active.ActiveFilter() != "" {
+		// no overlay in the way — clear the screen-level filter first;
+		// next esc will pop. Mirrors k9s behavior.
+		m.active.SetSearch("")
 		return m, nil
 	}
 	// forward to active screen first; it may consume q/esc itself
@@ -424,8 +436,13 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			next := m.activeInit()
 			return m, next
 		case "esc":
-			// esc only pops; at the root it's a no-op so users don't quit
-			// the app by accident. ctrl+c remains the unconditional exit.
+			if hadOverlay {
+				// the screen just closed its overlay via the forwarded
+				// esc — don't double-act by also popping.
+				return m, nil
+			}
+			// at the root esc is a no-op so users don't quit the app by
+			// accident. ctrl+c remains the unconditional exit.
 			if m.router.Depth() > 1 {
 				m.popScreen()
 				next := m.activeInit()
@@ -479,27 +496,60 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// openSearchPrompt switches into ModeSearch and pre-fills the buffer with
+// the screen's currently-applied filter so `/` re-opens an existing filter
+// for editing instead of discarding it. esc on an empty edit restores
+// whatever was there before.
+func (m *Model) openSearchPrompt() {
+	m.mode = ModeSearch
+	m.searchOriginal = ""
+	if m.active != nil {
+		m.searchOriginal = m.active.ActiveFilter()
+	}
+	m.search = layout.CommandBar{Active: true, Prefix: '/', Buffer: m.searchOriginal}
+	m.applySize()
+}
+
+// handleSearchKey runs the host's k9s-style filter prompt: each keystroke
+// updates the buffer AND pushes the live query into the active screen so
+// rows filter as the user types. esc cancels the edit and restores the
+// previous filter (or clears it when there was none). Enter commits the
+// current buffer and dismisses the prompt.
 func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
+		// restore the filter that was active before the prompt opened —
+		// "/" then esc must be a no-op when used to inspect/edit, not a
+		// silent way to drop an applied filter.
+		if m.active != nil {
+			m.active.SetSearch(m.searchOriginal)
+		}
 		m.mode = ModeNormal
 		m.search = layout.CommandBar{}
+		m.searchOriginal = ""
 		m.applySize()
 		return m, nil
 	case "enter":
-		// search delegation lives on individual screens (Task 11+); the root
-		// model just collects input and returns to normal mode.
 		m.mode = ModeNormal
+		m.search = layout.CommandBar{}
+		m.searchOriginal = ""
 		m.applySize()
+		// filter stays applied — the active screen's table already has it.
 		return m, nil
 	case "backspace":
 		if n := len(m.search.Buffer); n > 0 {
 			m.search.Buffer = m.search.Buffer[:n-1]
 		}
+		if m.active != nil {
+			m.active.SetSearch(m.search.Buffer)
+		}
 		return m, nil
 	default:
 		if t := key.Text; t != "" {
 			m.search.Buffer += t
+		}
+		if m.active != nil {
+			m.active.SetSearch(m.search.Buffer)
 		}
 		return m, nil
 	}
@@ -542,11 +592,8 @@ func (m *Model) render() string {
 	)
 
 	bar := m.command
-	switch m.mode {
-	case ModeSearch:
+	if m.mode == ModeSearch {
 		bar = m.search
-	case ModeCommand, ModeNormal, ModeHelp:
-		// keep `m.command` (already empty in normal/help modes).
 	}
 	cmdBox := layout.CommandLine(m.styles, bar, m.width)
 

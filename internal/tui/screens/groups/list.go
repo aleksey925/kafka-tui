@@ -216,9 +216,17 @@ func (m *Model) Title() string {
 	case ModeList:
 		// fall through to the default list title below.
 	}
-	body := fmt.Sprintf("Consumer Groups [%d]", len(m.groups))
+	total := len(m.groups)
+	body := fmt.Sprintf("Consumer Groups [%d]", total)
 	if m.filterTopic != "" {
-		body = fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, len(m.groups))
+		body = fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, total)
+	}
+	if q := m.table.Search(); q != "" {
+		prefix := "Consumer Groups"
+		if m.filterTopic != "" {
+			prefix = "Consumer Groups · " + m.filterTopic
+		}
+		body = fmt.Sprintf("%s [%d/%d] /%s", prefix, m.table.FilteredCount(), total, q)
 	}
 	if m.loading {
 		body += " (loading…)"
@@ -274,6 +282,35 @@ func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
 // PendingGroup returns the group currently awaiting confirmation (tests).
 func (m *Model) PendingGroup() string { return m.pending.group }
+
+// SetSearch forwards a host-driven filter query to the active sub-screen's
+// table (list or detail).
+func (m *Model) SetSearch(query string) {
+	switch m.mode {
+	case ModeDetail:
+		if m.detail != nil {
+			m.detail.SetSearch(query)
+		}
+	case ModeList, ModeReset:
+		m.table.SetSearch(query)
+	}
+}
+
+// ActiveFilter returns the search query active on the visible sub-screen.
+func (m *Model) ActiveFilter() string {
+	if m.mode == ModeDetail && m.detail != nil {
+		return m.detail.ActiveFilter()
+	}
+	return m.table.Search()
+}
+
+// HasOverlay reports whether a modal (delete confirm or the multi-step
+// reset-offsets flow) sits on top of the list/detail view. Detail is a
+// regular sub-screen, not an overlay — esc there is "go back to list",
+// which the standard pop logic handles.
+func (m *Model) HasOverlay() bool {
+	return m.confirm != nil || m.mode == ModeReset
+}
 
 // SetSize updates width/height. Reserves chrome rows.
 func (m *Model) SetSize(w, h int) {

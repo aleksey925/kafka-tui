@@ -265,7 +265,9 @@ func (m *Model) Cursor() int { return m.table.Cursor() }
 func (m *Model) Title() string {
 	visible := len(m.visibleTopics())
 	body := fmt.Sprintf("Topics[%d]", visible)
-	if m.hiddenIntern > 0 {
+	if q := m.table.Search(); q != "" {
+		body = fmt.Sprintf("Topics[%d/%d] /%s", m.table.FilteredCount(), visible, q)
+	} else if m.hiddenIntern > 0 {
 		body = fmt.Sprintf("Topics[%d, +%d internal hidden]", visible, m.hiddenIntern)
 	}
 	if m.loading {
@@ -297,6 +299,19 @@ func (m *Model) CloneForm() *CloneForm { return m.clone }
 
 // CloneProgress returns the latest in-flight clone progress (zero when idle).
 func (m *Model) CloneProgress() kafka.CloneProgress { return m.progress }
+
+// SetSearch forwards a host-driven filter query to the underlying table.
+func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
+
+// ActiveFilter returns the table's current search query.
+func (m *Model) ActiveFilter() string { return m.table.Search() }
+
+// HasOverlay reports whether a modal (delete confirm or in-flight clone
+// progress popup) is on top of the list. Forms (create/clone) are
+// already handled via WantsRawInput, so they're not counted here.
+func (m *Model) HasOverlay() bool {
+	return m.confirm != nil || m.mode == ModeCloning
+}
 
 // SetSize updates width/height. Reserves chrome rows.
 func (m *Model) SetSize(w, h int) {

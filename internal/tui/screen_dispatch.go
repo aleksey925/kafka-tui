@@ -60,6 +60,24 @@ type screen interface {
 	// snapshot). The chrome shows "—" instead of "off" for the latter
 	// to make it clear refresh isn't applicable here.
 	SupportsRefresh() bool
+	// SetSearch applies a filter query to the screen's primary table.
+	// The host owns the search prompt (k9s-style, in the same slot as
+	// the command bar) and pushes each keystroke here so rows filter
+	// live. Empty string clears the filter. No-op for screens without a
+	// table (forms, snapshots).
+	SetSearch(query string)
+	// ActiveFilter returns the current search query the screen is
+	// filtering by, or empty when no filter is applied. The host uses
+	// it to give esc a "clear filter first, then pop" semantic.
+	ActiveFilter() string
+	// HasOverlay reports that the screen is showing a modal overlay
+	// (confirm dialog, edit chooser, in-flight progress popup, etc.) —
+	// not WantsRawInput-style forms (those are routed elsewhere) and
+	// not regular sub-screen modes that the user navigates back from.
+	// When true, the host yields esc to the screen so the overlay can
+	// close cleanly and skips both the filter-clear cascade and the
+	// screen pop.
+	HasOverlay() bool
 }
 
 type clustersScreen struct{ m *clusters.Model }
@@ -81,6 +99,9 @@ func (s *clustersScreen) RefreshInterval() time.Duration        { return s.m.Ref
 func (s *clustersScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *clustersScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *clustersScreen) SupportsRefresh() bool                 { return true }
+func (s *clustersScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *clustersScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *clustersScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
 
 type topicsScreen struct{ m *topics.Model }
 
@@ -101,6 +122,9 @@ func (s *topicsScreen) RefreshInterval() time.Duration        { return s.m.Refre
 func (s *topicsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *topicsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *topicsScreen) SupportsRefresh() bool                 { return true }
+func (s *topicsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *topicsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *topicsScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
 
 type messagesScreen struct{ m *messages.Model }
 
@@ -121,6 +145,9 @@ func (s *messagesScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *messagesScreen) SetRefreshPaused(bool)                 {}
 func (s *messagesScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *messagesScreen) SupportsRefresh() bool                 { return false }
+func (s *messagesScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *messagesScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *messagesScreen) HasOverlay() bool                      { return false }
 
 type produceScreen struct{ m *produce.Model }
 
@@ -141,6 +168,9 @@ func (s *produceScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *produceScreen) SetRefreshPaused(bool)                 {}
 func (s *produceScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *produceScreen) SupportsRefresh() bool                 { return false }
+func (s *produceScreen) SetSearch(string)                      {}
+func (s *produceScreen) ActiveFilter() string                  { return "" }
+func (s *produceScreen) HasOverlay() bool                      { return false }
 
 type groupsScreen struct{ m *groups.Model }
 
@@ -161,6 +191,9 @@ func (s *groupsScreen) RefreshInterval() time.Duration        { return s.m.Refre
 func (s *groupsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *groupsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *groupsScreen) SupportsRefresh() bool                 { return true }
+func (s *groupsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *groupsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *groupsScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
 
 type logsScreen struct{ m *logs.Model }
 
@@ -181,6 +214,9 @@ func (s *logsScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *logsScreen) SetRefreshPaused(bool)                 {}
 func (s *logsScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *logsScreen) SupportsRefresh() bool                 { return false }
+func (s *logsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *logsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *logsScreen) HasOverlay() bool                      { return false }
 
 type configsrcScreen struct{ m *configsrc.Model }
 
@@ -201,6 +237,9 @@ func (s *configsrcScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *configsrcScreen) SetRefreshPaused(bool)                 {}
 func (s *configsrcScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *configsrcScreen) SupportsRefresh() bool                 { return false }
+func (s *configsrcScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *configsrcScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *configsrcScreen) HasOverlay() bool                      { return false }
 
 type topicConfigsScreen struct{ m *topics.ConfigsModel }
 
@@ -221,3 +260,6 @@ func (s *topicConfigsScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *topicConfigsScreen) SetRefreshPaused(bool)                 {}
 func (s *topicConfigsScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *topicConfigsScreen) SupportsRefresh() bool                 { return false }
+func (s *topicConfigsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
+func (s *topicConfigsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
+func (s *topicConfigsScreen) HasOverlay() bool                      { return false }

@@ -194,6 +194,24 @@ func (t *Table) Search() string { return t.search }
 // SearchActive reports whether the `/` search prompt is open.
 func (t *Table) SearchActive() bool { return t.searchActive }
 
+// SetSearch replaces the search query and re-applies the filter without
+// touching the inline prompt state. Used by hosts that render the search
+// prompt themselves (the chrome's k9s-style command bar) and just want
+// the table to filter rows live as the user types.
+func (t *Table) SetSearch(query string) {
+	t.search = query
+	t.searchActive = false
+	t.rebuildView()
+}
+
+// FilteredCount returns the number of rows currently visible after the
+// search filter is applied (equal to TotalCount when no filter is set).
+func (t *Table) FilteredCount() int { return len(t.view) }
+
+// TotalCount returns the number of rows the table holds regardless of
+// the active filter.
+func (t *Table) TotalCount() int { return len(t.rows) }
+
 // SetHeight changes the visible body height. 0 disables scrolling.
 func (t *Table) SetHeight(rows int) {
 	t.height = rows
@@ -503,9 +521,9 @@ func (t *Table) View() string {
 	out := []string{header}
 	out = append(out, body...)
 
-	if t.searchActive || t.search != "" {
-		out = append(out, t.renderSearchLine())
-	}
+	// inline search line is intentionally not rendered — the host owns
+	// the prompt (k9s-style top bar) and the screen surfaces the filter
+	// + match count in the frame title.
 	if t.sortCol >= 0 && t.sortDir != SortNone {
 		dir := "asc"
 		if t.sortDir == SortDesc {
@@ -639,19 +657,6 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		prefix = "[" + mark + "] "
 	}
 	return gutter + prefix + strings.Join(cells, "  ")
-}
-
-func (t *Table) renderSearchLine() string {
-	prefix := t.styles.CommandHL.Render("/")
-	body := prefix + t.styles.Command.Render(t.search)
-	if !t.searchActive && len(t.matches) > 0 {
-		body += "  " + t.styles.StatusInfo.Render(
-			fmt.Sprintf("[%d/%d]", t.matchCursor+1, len(t.matches)),
-		)
-	} else if !t.searchActive && t.search != "" {
-		body += "  " + t.styles.StatusWarn.Render("no matches")
-	}
-	return body
 }
 
 func padCell(s string, width int, align lipgloss.Position) string {

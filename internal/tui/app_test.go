@@ -330,8 +330,12 @@ func TestModel_CommandTabCompletion__tab_then_enter(t *testing.T) {
 	assert.Equal(t, tui.ScreenGroups, m.Router().Active())
 }
 
-func TestModel_SearchMode(t *testing.T) {
-	m := tui.New(tui.Options{Initial: tui.ScreenTopics})
+func TestModel_SearchModeOpensPromptAndForwardsToScreen(t *testing.T) {
+	// k9s-style filter: `/` opens the host's prompt (same chrome slot
+	// as `:`) and pushes each keystroke into the active screen as a
+	// live search. esc cancels the filter, enter dismisses the prompt
+	// while keeping the filter applied.
+	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 100, Height: 30})
 
 	updated, _ := m.Update(keyPress("/"))
 	m = updated.(*tui.Model)
@@ -341,7 +345,6 @@ func TestModel_SearchMode(t *testing.T) {
 		updated, _ = m.Update(keyPressRune(ch))
 		m = updated.(*tui.Model)
 	}
-	assert.Equal(t, "abc", m.SearchBuffer())
 
 	updated, _ = m.Update(keyPress("enter"))
 	m = updated.(*tui.Model)

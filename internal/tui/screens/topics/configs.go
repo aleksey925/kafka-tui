@@ -143,6 +143,23 @@ func (m *ConfigsModel) Partitions() []kafka.PartitionDetail {
 // FocusPartitions reports whether the partition table currently has focus.
 func (m *ConfigsModel) FocusPartitions() bool { return m.focusParts }
 
+// SetSearch forwards a host-driven filter query to the focused sub-table.
+func (m *ConfigsModel) SetSearch(query string) {
+	if m.focusParts {
+		m.partTbl.SetSearch(query)
+		return
+	}
+	m.cfgTable.SetSearch(query)
+}
+
+// ActiveFilter returns the focused sub-table's current search query.
+func (m *ConfigsModel) ActiveFilter() string {
+	if m.focusParts {
+		return m.partTbl.Search()
+	}
+	return m.cfgTable.Search()
+}
+
 // SetSize updates width/height.
 func (m *ConfigsModel) SetSize(w, h int) {
 	m.width, m.height = w, h

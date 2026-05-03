@@ -39,6 +39,9 @@ func (s *fakeScreen) RefreshInterval() time.Duration { return 0 }
 func (s *fakeScreen) SetRefreshPaused(bool)          {}
 func (s *fakeScreen) LastRefresh() time.Time         { return time.Time{} }
 func (s *fakeScreen) SupportsRefresh() bool          { return false }
+func (s *fakeScreen) SetSearch(string)               {}
+func (s *fakeScreen) ActiveFilter() string           { return "" }
+func (s *fakeScreen) HasOverlay() bool               { return false }
 
 func keyMsg(s string) tea.KeyPressMsg {
 	if len(s) == 1 && s[0] >= ' ' && s[0] < 0x7f {

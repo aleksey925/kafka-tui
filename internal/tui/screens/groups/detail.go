@@ -163,6 +163,12 @@ func (d *DetailModel) ConsumeAction() DetailAction {
 	return a
 }
 
+// SetSearch forwards a host-driven filter query to the partition table.
+func (d *DetailModel) SetSearch(query string) { d.table.SetSearch(query) }
+
+// ActiveFilter returns the partition table's current search query.
+func (d *DetailModel) ActiveFilter() string { return d.table.Search() }
+
 // SetSize updates width/height.
 func (d *DetailModel) SetSize(w, h int) {
 	d.width, d.height = w, h

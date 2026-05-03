@@ -150,6 +150,9 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 // Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
 	body := fmt.Sprintf("Logs · %d lines", len(m.lines))
+	if m.search != "" {
+		body = fmt.Sprintf("Logs · %d matches / %d lines /%s", len(m.matches), len(m.lines), m.search)
+	}
 	if m.follow {
 		body += " ● LIVE"
 	}
@@ -158,6 +161,19 @@ func (m *Model) Title() string {
 
 // Breadcrumb returns the log file path (right-aligned in the frame).
 func (m *Model) Breadcrumb() string { return m.path }
+
+// SetSearch applies a host-driven filter query. The match-index list is
+// rebuilt right away so n/N navigation (and the title's "X matches" hint)
+// reflect the new query without waiting for the user to advance.
+func (m *Model) SetSearch(query string) {
+	m.search = query
+	m.searchActive = false
+	m.recomputeMatches()
+	m.matchCursor = 0
+}
+
+// ActiveFilter returns the current search query.
+func (m *Model) ActiveFilter() string { return m.search }
 
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
@@ -453,9 +469,9 @@ func (m *Model) View() string {
 	} else {
 		parts = append(parts, m.renderBody())
 	}
-	if m.searchActive || m.search != "" {
-		parts = append(parts, m.renderSearchLine())
-	}
+	// inline search line is intentionally not rendered — the host owns
+	// the prompt (k9s-style top bar) and the screen surfaces matches in
+	// the frame title.
 	return strings.Join(parts, "\n")
 }
 
@@ -555,19 +571,6 @@ func indexBoundary(s, sub string) int {
 
 func isLetter(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-}
-
-func (m *Model) renderSearchLine() string {
-	prefix := m.styles.CommandHL.Render("/")
-	body := prefix + m.styles.Command.Render(m.search)
-	if !m.searchActive && len(m.matches) > 0 {
-		body += "  " + m.styles.StatusInfo.Render(
-			fmt.Sprintf("[%d/%d]", m.matchCursor+1, len(m.matches)),
-		)
-	} else if !m.searchActive && m.search != "" {
-		body += "  " + m.styles.StatusWarn.Render("no matches")
-	}
-	return body
 }
 
 // ----- Messages -----

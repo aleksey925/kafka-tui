@@ -415,7 +415,11 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 
 // Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
-	return fmt.Sprintf("Clusters[%d]", len(m.clusters))
+	total := len(m.clusters)
+	if q := m.table.Search(); q != "" {
+		return fmt.Sprintf("Clusters[%d/%d] /%s", m.table.FilteredCount(), total, q)
+	}
+	return fmt.Sprintf("Clusters[%d]", total)
 }
 
 // Breadcrumb returns the selected cluster (right-aligned in the frame).
@@ -426,6 +430,17 @@ func (m *Model) Breadcrumb() string {
 	}
 	return row.ID
 }
+
+// SetSearch forwards a host-driven filter query to the underlying table.
+func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
+
+// ActiveFilter returns the table's current search query.
+func (m *Model) ActiveFilter() string { return m.table.Search() }
+
+// HasOverlay reports whether a modal (the global/project edit chooser) is
+// open. The host uses this to give esc to the chooser before falling
+// back to the filter-clear / pop cascade.
+func (m *Model) HasOverlay() bool { return m.editing }
 
 // SetSize updates width/height (called when the host receives WindowSizeMsg).
 func (m *Model) SetSize(w, h int) {

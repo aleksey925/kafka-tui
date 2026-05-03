@@ -103,6 +103,22 @@ func (m *Model) Breadcrumb() string {
 	return "config"
 }
 
+// SetSearch forwards a host-driven filter query to the currently focused
+// sub-table (config keys or per-cluster fields).
+func (m *Model) SetSearch(query string) {
+	if t := m.activeTable(); t != nil {
+		t.SetSearch(query)
+	}
+}
+
+// ActiveFilter returns the focused sub-table's current search query.
+func (m *Model) ActiveFilter() string {
+	if t := m.activeTable(); t != nil {
+		return t.Search()
+	}
+	return ""
+}
+
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h

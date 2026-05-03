@@ -193,7 +193,11 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 
 // Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
-	body := fmt.Sprintf("Messages · %s [%d]", m.topic, len(m.messages))
+	total := len(m.messages)
+	body := fmt.Sprintf("Messages · %s [%d]", m.topic, total)
+	if q := m.table.Search(); q != "" {
+		body = fmt.Sprintf("Messages · %s [%d/%d] /%s", m.topic, m.table.FilteredCount(), total, q)
+	}
 	if m.following {
 		body += " ● LIVE"
 	}
@@ -217,6 +221,24 @@ func (m *Model) Messages() []kafka.Message {
 	out := make([]kafka.Message, len(m.messages))
 	copy(out, m.messages)
 	return out
+}
+
+// SetSearch forwards a host-driven filter query to the underlying table.
+// In ModeDetail there's no table to search, so it's a no-op.
+func (m *Model) SetSearch(query string) {
+	if m.mode == ModeDetail {
+		return
+	}
+	m.table.SetSearch(query)
+}
+
+// ActiveFilter returns the list table's current search query (empty in
+// ModeDetail where there's no filter concept).
+func (m *Model) ActiveFilter() string {
+	if m.mode == ModeDetail {
+		return ""
+	}
+	return m.table.Search()
 }
 
 // SetSize updates width/height.
