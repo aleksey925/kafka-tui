@@ -13,10 +13,9 @@ type FrameOpts struct {
 	// Width and Height are the outer dimensions (including the border). The
 	// inner area is Width-2 by Height-2.
 	Width, Height int
-	// Title appears in the top border, left-aligned. Empty hides the slot.
+	// Title is centered inside the top border (k9s-style single title). Empty
+	// hides the slot.
 	Title string
-	// Breadcrumb appears in the top border, right-aligned. Empty hides it.
-	Breadcrumb string
 	// Focused renders the border with the focus color rather than the muted
 	// default.
 	Focused bool
@@ -37,7 +36,7 @@ func Frame(s theme.Styles, opts FrameOpts, body string) string {
 	bodyH := opts.Height - 2
 
 	border := frameBorderStyle(s, opts.Focused)
-	top := border.Render("╭" + frameTopLine(s, opts.Title, opts.Breadcrumb, inner) + "╮")
+	top := border.Render("╭" + frameTopLine(s, opts.Title, inner) + "╮")
 	bottom := border.Render("╰" + strings.Repeat("─", inner) + "╯")
 
 	lines := strings.Split(body, "\n")
@@ -62,37 +61,25 @@ func frameBorderStyle(s theme.Styles, focused bool) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(s.Palette.Muted)
 }
 
-// frameTopLine assembles the inner part of the top border line (between the
-// two corner runes). Layout: "─ <title> ─...─ <breadcrumb> ─". When there
-// isn't enough room for either decoration, drops it gracefully.
-func frameTopLine(s theme.Styles, title, breadcrumb string, inner int) string {
+// frameTopLine builds the inner part of the top border line (between the
+// two corner runes), centering the title inside continuous dashes:
+// "──── <title> ────". When the title doesn't fit, it's dropped and the
+// border collapses to a plain dash run.
+func frameTopLine(s theme.Styles, title string, inner int) string {
 	border := lipgloss.NewStyle().Foreground(s.Palette.Muted)
-	titleStyle := s.HelpTitle
-	bcStyle := s.StatusInfo
-
-	// Always one leading dash + corner gives room.
-	left := border.Render("─")
-	leftWidth := 1
-	if title != "" {
-		seg := " " + title + " "
-		if leftWidth+lipgloss.Width(seg)+1 <= inner {
-			left = border.Render("─") + titleStyle.Render(seg)
-			leftWidth = 1 + lipgloss.Width(seg)
-		}
+	if title == "" {
+		return border.Render(strings.Repeat("─", inner))
 	}
-
-	right := border.Render("─")
-	rightWidth := 1
-	if breadcrumb != "" {
-		seg := " " + breadcrumb + " "
-		if leftWidth+lipgloss.Width(seg)+rightWidth+1 <= inner {
-			right = bcStyle.Render(seg) + border.Render("─")
-			rightWidth = lipgloss.Width(seg) + 1
-		}
+	seg := " " + title + " "
+	segW := lipgloss.Width(seg)
+	if segW+2 > inner {
+		return border.Render(strings.Repeat("─", inner))
 	}
-
-	mid := max(inner-leftWidth-rightWidth, 0)
-	return left + border.Render(strings.Repeat("─", mid)) + right
+	left := (inner - segW) / 2
+	right := inner - segW - left
+	return border.Render(strings.Repeat("─", left)) +
+		s.HelpTitle.Render(seg) +
+		border.Render(strings.Repeat("─", right))
 }
 
 // padOrTruncate fits content into width: pads with spaces when shorter,

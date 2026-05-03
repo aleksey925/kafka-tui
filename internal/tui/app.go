@@ -569,16 +569,25 @@ func (m *Model) renderBody() string {
 }
 
 // frameOrRaw wraps body in the rounded frame when geometry is known; tests
-// that don't supply a window size receive the raw body unchanged.
+// that don't supply a window size receive the raw body unchanged. The title
+// is rendered centered in the top border (k9s-style); breadcrumb context,
+// if any, is folded into the title by the screen.
 func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
 	if m.width <= 4 || m.bodyHeight() < 1 {
 		return body
 	}
+	combined := title
+	if breadcrumb != "" {
+		if combined != "" {
+			combined += "  ·  " + breadcrumb
+		} else {
+			combined = breadcrumb
+		}
+	}
 	return layout.Frame(m.styles, layout.FrameOpts{
-		Width:      m.width,
-		Height:     m.bodyHeight() + frameInset,
-		Title:      title,
-		Breadcrumb: breadcrumb,
+		Width:  m.width,
+		Height: m.bodyHeight() + frameInset,
+		Title:  combined,
 	}, body)
 }
 
