@@ -63,7 +63,8 @@ func TestInit_LoadsTopicsAndShowsCounter(t *testing.T) {
 
 	assert.Len(t, m.AllTopics(), 2)
 	out := m.View()
-	assert.Contains(t, out, "2 topics")
+	// the count moved to the frame title, the body only renders the table.
+	assert.Contains(t, m.Title(), "Topics[2]")
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "beta")
 }
@@ -74,9 +75,8 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 	drive(t, m, m.Init())
 
-	out := m.View()
-	assert.Contains(t, out, "connection refused")
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
 func TestInternalToggle_HidesAndShowsInternalTopics(t *testing.T) {
@@ -104,7 +104,7 @@ func TestInternalToggle_HidesAndShowsInternalTopics(t *testing.T) {
 	assert.Contains(t, out, "__consumer_offsets")
 }
 
-func TestCounterLine_ShowsHiddenCount(t *testing.T) {
+func TestTitle_ShowsHiddenCount(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{
 		{Name: "topic-1"},
 		{Name: "__consumer_offsets", IsInternal: true},
@@ -113,7 +113,8 @@ func TestCounterLine_ShowsHiddenCount(t *testing.T) {
 	}, nil)
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
-	assert.Contains(t, m.View(), "1 topics, 3 internal hidden")
+	// hidden-internal counter lives in the frame title now.
+	assert.Contains(t, m.Title(), "Topics[1, +3 internal hidden]")
 }
 
 func TestEnter_RaisesMessagesAction(t *testing.T) {

@@ -110,7 +110,6 @@ type Model struct {
 
 	width, height int
 	loading       bool
-	loadErr       string
 
 	action Action
 	now    func() time.Time
@@ -207,10 +206,14 @@ func (m *Model) Title() string {
 	case ModeList:
 		// fall through to the default list title below.
 	}
+	body := fmt.Sprintf("Consumer Groups [%d]", len(m.groups))
 	if m.filterTopic != "" {
-		return fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, len(m.groups))
+		body = fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, len(m.groups))
 	}
-	return fmt.Sprintf("Consumer Groups [%d]", len(m.groups))
+	if m.loading {
+		body += " (loading…)"
+	}
+	return body
 }
 
 // Breadcrumb returns the selected row identifier (or sub-screen state).
@@ -548,11 +551,9 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
-		m.loadErr = msg.Err.Error()
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
 		return
 	}
-	m.loadErr = ""
 	m.groups = msg.Groups
 	m.refreshTable()
 }
@@ -690,25 +691,11 @@ func (m *Model) View() string {
 	case ModeList:
 		// fall through to default list rendering below.
 	}
-	parts := []string{m.headerLine(), m.table.View()}
+	parts := []string{m.table.View()}
 	if m.confirm != nil {
 		parts = append(parts, m.confirm.View(m.width))
 	}
 	return strings.Join(parts, "\n")
-}
-
-func (m *Model) headerLine() string {
-	body := fmt.Sprintf("%d groups", len(m.groups))
-	if m.filterTopic != "" {
-		body = fmt.Sprintf("Consumer Groups for: %s — %d groups", m.filterTopic, len(m.groups))
-	}
-	if m.loading {
-		body += "  (loading…)"
-	}
-	if m.loadErr != "" {
-		body += "  " + m.styles.StatusErr.Render("error: "+m.loadErr)
-	}
-	return m.styles.StatusInfo.Render(body)
 }
 
 // ----- Messages -----

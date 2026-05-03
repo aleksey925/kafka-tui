@@ -101,15 +101,13 @@ type Model struct {
 	mode   Mode
 	detail *DetailModel
 
-	follow         *kafka.FollowSession
-	following      bool
-	highlightUntil time.Time
+	follow    *kafka.FollowSession
+	following bool
 
 	gPrimed       bool
 	width, height int
 
 	loading bool
-	loadErr string
 
 	action Action
 	now    func() time.Time
@@ -199,6 +197,9 @@ func (m *Model) Title() string {
 	body := fmt.Sprintf("Messages · %s [%d]", m.topic, len(m.messages))
 	if m.following {
 		body += " ● LIVE"
+	}
+	if m.loading {
+		body += " (loading…)"
 	}
 	return body
 }
@@ -445,11 +446,9 @@ func (m *Model) cursorIndex() (int, bool) {
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
-		m.loadErr = msg.Err.Error()
 		m.toasts.Push(components.ToastError, "load messages: "+msg.Err.Error())
 		return
 	}
-	m.loadErr = ""
 	m.messages = msg.Messages
 	m.refreshTable()
 }
@@ -476,7 +475,6 @@ func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 	if len(msg.Messages) > 0 {
 		// follow yields newest records — prepend to keep newest-first ordering.
 		m.messages = append(msg.Messages, m.messages...)
-		m.highlightUntil = m.now().Add(3 * time.Second)
 		m.refreshTable()
 	}
 	if msg.Closed {
@@ -691,27 +689,7 @@ func (m *Model) View() string {
 	if m.mode == ModeDetail {
 		return m.detail.View(m.width, m.height)
 	}
-	parts := []string{m.headerLine(), m.table.View()}
-	return strings.Join(parts, "\n")
-}
-
-// headerLine summarizes the loaded window: count, follow indicator, "← NEW"
-// flash for 3s after follow chunks arrive.
-func (m *Model) headerLine() string {
-	body := fmt.Sprintf("%d messages on %s", len(m.messages), m.topic)
-	if m.following {
-		body += "  " + m.styles.HintKey.Render("● LIVE")
-	}
-	if m.loading {
-		body += "  (loading…)"
-	}
-	if m.loadErr != "" {
-		body += "  " + m.styles.StatusErr.Render("error: "+m.loadErr)
-	}
-	if !m.highlightUntil.IsZero() && m.now().Before(m.highlightUntil) {
-		body += "  " + m.styles.HintKey.Render("← NEW")
-	}
-	return m.styles.StatusInfo.Render(body)
+	return m.table.View()
 }
 
 // FormatTimestamp renders a message timestamp as `YYYY-MM-DD HH:MM:SS.mmm`

@@ -139,7 +139,6 @@ type Model struct {
 
 	width, height   int
 	loading         bool
-	loadErr         string
 	refreshInterval time.Duration
 
 	action Action
@@ -259,6 +258,9 @@ func (m *Model) Title() string {
 	body := fmt.Sprintf("Topics[%d]", visible)
 	if m.hiddenIntern > 0 {
 		body = fmt.Sprintf("Topics[%d, +%d internal hidden]", visible, m.hiddenIntern)
+	}
+	if m.loading {
+		body += " (loading…)"
 	}
 	return body
 }
@@ -606,11 +608,9 @@ func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
-		m.loadErr = msg.Err.Error()
 		m.toasts.Push(components.ToastError, "load topics: "+msg.Err.Error())
 		return
 	}
-	m.loadErr = ""
 	m.allTopics = msg.Topics
 	for _, w := range msg.Watermarks {
 		m.watermarks[w.Topic] = w.Watermarks
@@ -733,7 +733,7 @@ func (m *Model) View() string {
 		return m.renderCloningOverlay()
 	}
 
-	parts := []string{m.counterLine(), m.table.View()}
+	parts := []string{m.table.View()}
 	if m.confirm != nil {
 		parts = append(parts, m.confirm.View(m.width))
 	}
@@ -749,22 +749,6 @@ func (m *Model) renderCloningOverlay() string {
 	)
 	hint := m.styles.HintLabel.Render("esc — return to list (clone continues in background)")
 	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
-}
-
-func (m *Model) counterLine() string {
-	visible := len(m.visibleTopics())
-	hidden := m.hiddenIntern
-	body := fmt.Sprintf("%d topics", visible)
-	if hidden > 0 {
-		body += fmt.Sprintf(", %d internal hidden", hidden)
-	}
-	if m.loading {
-		body += " (loading…)"
-	}
-	if m.loadErr != "" {
-		body += "  " + m.styles.StatusErr.Render("error: "+m.loadErr)
-	}
-	return m.styles.StatusInfo.Render(body)
 }
 
 // refreshCmd dispatches a topic list reload.

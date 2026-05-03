@@ -21,34 +21,43 @@ type FrameOpts struct {
 	Focused bool
 }
 
-// Frame wraps body in a rounded box with title and breadcrumb embedded in
-// the top border. Body is split into lines and padded/truncated to fit the
-// inner rectangle.
+// FrameSidePadding is the number of blank columns inserted between each
+// vertical border (`│`) and the body content, on each side. Hosts sizing
+// screens for the inner area must subtract `2*FrameSidePadding + 2` from
+// the terminal width to account for borders + padding.
+const FrameSidePadding = 1
+
+// Frame wraps body in a rounded box with the title embedded in the top
+// border. Body is split into lines and padded/truncated to fit the inner
+// rectangle (terminal-width minus borders minus side padding).
 //
 // Geometry: top + (Height-2) body lines + bottom. Each body line is
-// '│' + content padded to (Width-2) + '│'. Lines exceeding the inner width
-// are left as-is (caller is expected to size the body to fit).
+// '│' + spaces(FrameSidePadding) + content + spaces(FrameSidePadding) +
+// '│'. Lines exceeding the inner width are left as-is (caller is expected
+// to size the body to fit).
 func Frame(s theme.Styles, opts FrameOpts, body string) string {
-	if opts.Width < 4 || opts.Height < 3 {
+	if opts.Width < 4+2*FrameSidePadding || opts.Height < 3 {
 		return body
 	}
-	inner := opts.Width - 2
+	innerEdge := opts.Width - 2             // space between vertical borders
+	inner := innerEdge - 2*FrameSidePadding // usable cell width
 	bodyH := opts.Height - 2
 
 	border := frameBorderStyle(s, opts.Focused)
-	top := border.Render("╭" + frameTopLine(s, opts.Title, inner) + "╮")
-	bottom := border.Render("╰" + strings.Repeat("─", inner) + "╯")
+	top := border.Render("╭" + frameTopLine(s, opts.Title, innerEdge) + "╮")
+	bottom := border.Render("╰" + strings.Repeat("─", innerEdge) + "╯")
 
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, opts.Height)
 	out = append(out, top)
 	side := border.Render("│")
+	pad := strings.Repeat(" ", FrameSidePadding)
 	for i := range bodyH {
 		var content string
 		if i < len(lines) {
 			content = lines[i]
 		}
-		out = append(out, side+padOrTruncate(content, inner)+side)
+		out = append(out, side+pad+padOrTruncate(content, inner)+pad+side)
 	}
 	out = append(out, bottom)
 	return strings.Join(out, "\n")

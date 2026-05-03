@@ -69,8 +69,8 @@ func TestInit_LoadsMessages(t *testing.T) {
 
 	// assert
 	require.Len(t, m.Messages(), 2)
+	assert.Contains(t, m.Title(), "Messages · orders [2]")
 	out := m.View()
-	assert.Contains(t, out, "2 messages on orders")
 	assert.Contains(t, out, `{"id":1}`)
 	assert.Contains(t, out, "plain")
 }
@@ -82,9 +82,8 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 	drive(t, m, m.Init())
 
-	out := m.View()
-	assert.Contains(t, out, "connection refused")
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
 func TestEsc_RaisesBackAction(t *testing.T) {

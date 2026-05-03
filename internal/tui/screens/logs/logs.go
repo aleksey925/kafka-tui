@@ -447,7 +447,7 @@ func (m *Model) trimLines() {
 
 // View renders the screen body.
 func (m *Model) View() string {
-	parts := []string{m.headerLine()}
+	var parts []string
 	if m.missing {
 		parts = append(parts, m.styles.StatusWarn.Render("No log file found at "+m.path))
 	} else {
@@ -457,17 +457,6 @@ func (m *Model) View() string {
 		parts = append(parts, m.renderSearchLine())
 	}
 	return strings.Join(parts, "\n")
-}
-
-func (m *Model) headerLine() string {
-	body := fmt.Sprintf("logs · %s · %d lines", m.path, len(m.lines))
-	if m.follow {
-		body += "  " + m.styles.HintKey.Render("● LIVE")
-	}
-	if m.loadErr != "" {
-		body += "  " + m.styles.StatusErr.Render("error: "+m.loadErr)
-	}
-	return m.styles.StatusInfo.Render(body)
 }
 
 func (m *Model) renderBody() string {

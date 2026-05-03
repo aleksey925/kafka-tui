@@ -62,7 +62,8 @@ func TestNew_LoadsExistingFileAndRendersLines(t *testing.T) {
 	out := m.View()
 	assert.Contains(t, out, "hello")
 	assert.Contains(t, out, "oops")
-	assert.Contains(t, out, "2 lines")
+	// line count moved to the frame title.
+	assert.Contains(t, m.Title(), "2 lines")
 }
 
 func TestNew_MissingFileShowsToast(t *testing.T) {
@@ -105,7 +106,8 @@ func TestF_TogglesFollowMode(t *testing.T) {
 	// assert
 	assert.True(t, m.Following())
 	require.NotNil(t, cmd)
-	assert.Contains(t, m.View(), "● LIVE")
+	// LIVE indicator lives in the frame title now.
+	assert.Contains(t, m.Title(), "● LIVE")
 
 	_, _ = m.Update(keyPress("f"))
 	assert.False(t, m.Following())

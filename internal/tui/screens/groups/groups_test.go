@@ -63,8 +63,8 @@ func TestInit_LoadsGroupsAndShowsCounter(t *testing.T) {
 	drive(t, m, m.Init())
 
 	assert.Len(t, m.Groups(), 2)
+	assert.Contains(t, m.Title(), "Consumer Groups [2]")
 	out := m.View()
-	assert.Contains(t, out, "2 groups")
 	assert.Contains(t, out, "g1")
 	assert.Contains(t, out, "g2")
 }
@@ -78,9 +78,8 @@ func TestInit_FilterTopicShowsHeader(t *testing.T) {
 
 	drive(t, m, m.Init())
 
-	out := m.View()
-	assert.Contains(t, out, "Consumer Groups for: orders")
-	assert.Contains(t, out, "g-orders")
+	assert.Contains(t, m.Title(), "Consumer Groups · orders")
+	assert.Contains(t, m.View(), "g-orders")
 	assert.Equal(t, "orders", m.FilterTopic())
 }
 
@@ -91,9 +90,8 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 	drive(t, m, m.Init())
 
-	out := m.View()
-	assert.Contains(t, out, "connection refused")
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
 func TestEnter_OpensDetail(t *testing.T) {

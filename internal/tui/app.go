@@ -714,9 +714,15 @@ func (m *Model) applySize() {
 	m.active.SetSize(w, h)
 }
 
-// frameInset is the height/width contributed by the body frame's top+bottom
-// border (2 rows) and left+right border (2 cols).
+// frameInset is the height contributed by the body frame's top+bottom
+// border (2 rows). Width contribution is computed via [frameWidthInset]
+// because the frame also reserves [layout.FrameSidePadding] columns on
+// each side.
 const frameInset = 2
+
+// frameWidthInset is the total horizontal space the frame consumes:
+// left border + left padding + right padding + right border.
+const frameWidthInset = 2 + 2*layout.FrameSidePadding
 
 // bodyHeight returns the inner height left for the active screen after the
 // chrome and the body frame border are subtracted. The command-prompt rows
@@ -735,9 +741,9 @@ func (m *Model) bodyHeight() int {
 }
 
 // bodyWidth returns the inner width inside the body frame (terminal width
-// minus the frame's left and right borders).
+// minus the frame's left/right borders and side padding).
 func (m *Model) bodyWidth() int {
-	w := m.width - frameInset
+	w := m.width - frameWidthInset
 	if w < 1 {
 		return 0
 	}
