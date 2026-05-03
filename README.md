@@ -1,63 +1,97 @@
 # kafka-tui
 
-A terminal UI client for Apache Kafka. Browse and manage topics, messages, and
-consumer groups with k9s-style navigation, hierarchical YAML configuration,
-Vault-backed secrets, and a read-only protection mode for production clusters.
+Terminal UI client for Apache Kafka. Browse and manage topics, messages, and consumer groups
+with k9s-style navigation, hierarchical YAML configuration, Vault-backed secrets, and
+read-only protection for production clusters.
 
-Built in Go on top of [Bubble Tea v2][bubbletea] and [franz-go][franz].
+Built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and
+[franz-go](https://github.com/twmb/franz-go).
 
-[bubbletea]: https://github.com/charmbracelet/bubbletea
-[franz]: https://github.com/twmb/franz-go
+- [Why kafka-tui?](#why-kafka-tui)
+- [Features](#features)
+- [Installation](#installation)
+- [How to Use](#how-to-use)
+  - [Quick Start](#quick-start)
+  - [Configuration](#configuration)
+  - [Placeholders](#placeholders)
+- [Development](#development)
+
+## Why kafka-tui?
+
+- **Runs anywhere** — a single static binary that works the same on your laptop, in a Docker
+  container, or over SSH on a production jump-host. No JVM, no Electron, no browser. When
+  you need to inspect a topic on a locked-down server, you copy the binary in and you're done.
+- **Lives next to your editor** — modern editors like [Zed](https://zed.dev/) let you bind
+  console tools to tasks, so kafka-tui opens in a terminal pane right inside the editor —
+  effectively another editor window. Same idea works in tmux, WezTerm, Kitty splits, or any
+  terminal multiplexer you already use.
+- **Keyboard-first, k9s-style** — fuzzy search, vim-like navigation, follow-mode, copy /
+  save / open-in-`$EDITOR` on any value. No clicking through tabs to read a message.
+
+### Example: Zed task
+
+Drop this into `.zed/tasks.json` to launch kafka-tui from the command palette
+(`task: spawn` → `kafka-tui`):
+
+```json
+[
+  {
+    "label": "kafka-tui",
+    "command": "kafka-tui",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  }
+]
+```
+
+The task opens in Zed's integrated terminal as a regular pane — split it, move it, close it
+like any other editor window.
 
 ## Features
 
-- Cluster picker with colored status (`✓ ok` / `✗ failed` / `? unknown` /
-  `◐ checking…`) and per-cluster `[RO]` read-only enforcement.
-- Topic list with configurable columns, fuzzy search, sorting, internal-topic
-  toggle, and create / clone / delete flows.
-- Message browser with follow-mode, partition filters, jump-by-offset and
-  jump-by-timestamp (`g o`, `g t`, `g p`), JSON / raw / hex value views, and
-  copy / save / open-in-`$EDITOR` actions.
-- Producer form with compression dropdown, dynamic headers, history
-  (`Ctrl+P/N`), prefill-from-last, and resend-from-message.
-- Consumer groups list with lazy lag aggregation, per-topic filtering, detail
-  view, and a 4-step (or one-shot `Shift+R` express) reset offsets flow.
-- Hierarchical config: global (`~/.kafka-tui/`) and project (`.kafka-tui/`
-  found by walking up from `cwd`, like `.git`) layers, plus an explicit
-  `--config` override.
-- Placeholders in any string field: `${env:VAR}`, `${env:VAR:-default}`,
-  `${file:/path}`, `${vault:path#key}`, `${vault:path}`.
-- Vault KV v2 integration with token resolution
-  (`config → $VAULT_TOKEN → ~/.vault-token`).
-- File watcher with 500 ms debounce for live config reloads.
-- Clipboard with OSC 52 (SSH-friendly), native (`pbcopy` / `xclip` /
-  `wl-copy`), or both in parallel.
-- Logs viewer in the TUI (`:logs`) with follow-mode and colored levels;
-  rotating log files via `lumberjack`-style sizing.
+- Cluster picker with colored health status and per-cluster `[RO]` read-only enforcement
+- Topic list with configurable columns, fuzzy search, sorting, and create / clone / delete flows
+- Message browser with follow-mode, partition filters, jump-by-offset / timestamp / partition,
+  JSON / raw / hex value views, and copy / save / open-in-`$EDITOR`
+- Producer form with compression, dynamic headers, history, prefill-from-last, and resend-from-message
+- Consumer groups list with lazy lag aggregation, detail view, and 4-step (or express) reset offsets flow
+- Hierarchical YAML config: global (`~/.kafka-tui/`) and project (`<repo>/.kafka-tui/`) layers
+- Placeholders in any string field: `${env:...}`, `${file:...}`, `${vault:...}`
+- Vault KV v2 integration with token resolution chain
+- Live config reload via fsnotify watcher (500 ms debounce)
+- Clipboard via OSC 52 (SSH-friendly), native (`pbcopy` / `xclip` / `wl-copy`), or both
+- In-app log viewer (`:logs`) with follow-mode and colored levels
 
 ## Installation
 
-Requires Go 1.25+.
+Download the latest release from [releases](https://github.com/aleksey925/kafka-tui/releases) and install it manually
+or you can run the following commands to install the latest version to `~/.local/bin`:
+
+```bash
+VERSION=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/aleksey925/kafka-tui/releases/latest | sed 's/.*\/v//')
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -#L "https://github.com/aleksey925/kafka-tui/releases/download/v${VERSION}/kafka-tui_${VERSION}_${OS}_${ARCH}.tar.gz" | tar xz -C ~/.local/bin kafka-tui
+```
+
+Also, you can build it from source:
 
 ```bash
 git clone https://github.com/aleksey925/kafka-tui.git
 cd kafka-tui
-make install              # builds and copies the binary to ~/.local/bin
+make install  # copies to ~/.local/bin
 ```
 
-Or build directly from source:
+Make sure `~/.local/bin` is in your PATH:
 
 ```bash
-make build                # produces ./dist/kafka-tui
-go install ./cmd/kafka-tui
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-A snapshot release with all platform binaries can be produced via
-`make snapshot` (requires [`goreleaser`][goreleaser]).
+## How to Use
 
-[goreleaser]: https://goreleaser.com
-
-## Quick start
+### Quick Start
 
 The fastest way in is to provide brokers inline:
 
@@ -86,61 +120,80 @@ clusters:
       ca_file: /etc/ssl/certs/kafka-ca.pem
 ```
 
-Then launch with no flags — the cluster picker opens; `Enter` connects.
+Then launch with no flags — the cluster picker opens, `Enter` connects:
 
 ```bash
 kafka-tui
 ```
 
-## CLI flags
+Annotated `config.yaml` and `clusters.yaml` samples live in [`examples/`](examples/).
 
-| Flag                                                       | Purpose                                                 |
-| ---------------------------------------------------------- | ------------------------------------------------------- |
-| `--version`                                                | Print version and exit.                                 |
-| `--logs`                                                   | Open the log file in `$PAGER` and exit.                 |
-| `--logs-dir`                                               | Print the log directory and exit.                       |
-| `--config <path>`                                          | Use a single file/directory; disables hierarchy lookup. |
-| `--cluster <name>`                                         | Pre-select a cluster from `clusters.yaml`.              |
-| `--brokers a:9092,b:9092`                                  | Define an inline cluster (skips the picker).            |
-| `--color red\|yellow\|green\|gray\|white`                  | Color for the inline cluster.                           |
-| `--read-only`                                              | Mark the inline cluster as read-only.                   |
-| `--tls`                                                    | Enable TLS on the inline cluster.                       |
-| `--tls-ca`, `--tls-cert`, `--tls-key`, `--tls-skip-verify` | TLS sub-options (require `--tls`).                      |
-| `--sasl-mechanism`, `--sasl-username`, `--sasl-password`   | SASL options (require `--brokers`).                     |
+> When `--brokers` is given and a cluster of the same name also exists in `clusters.yaml`, the CLI
+> cluster wins for the session and a warning toast notes the collision.
 
-When `--brokers` is given and a cluster of the same name also exists in
-`clusters.yaml`, the CLI cluster wins for the session and a warning toast
-notes the collision.
-
-## Configuration
+### Configuration
 
 Two files are read from each layer:
 
-- `config.yaml` — UI behavior (logging, refresh intervals, columns,
-  produce / clipboard / vault settings).
-- `clusters.yaml` — cluster definitions (brokers, color, `read_only`, SASL,
-  TLS).
+| File            | Purpose                                                                         |
+| --------------- | ------------------------------------------------------------------------------- |
+| `config.yaml`   | UI behavior (logging, refresh intervals, columns, produce / clipboard / vault). |
+| `clusters.yaml` | Cluster definitions (brokers, color, `read_only`, SASL, TLS).                   |
 
 Layers, lowest priority first:
 
 1. **Global** — `~/.kafka-tui/{config,clusters}.yaml`
-2. **Project** — `<repo>/.kafka-tui/{config,clusters}.yaml`, located by
-   walking up from `cwd` (same lookup rule as `.git`).
+2. **Project** — `<repo>/.kafka-tui/{config,clusters}.yaml`, located by walking up from `cwd`
+   (same lookup rule as `.git`)
 
 Merge rules:
 
-- Scalars in the project layer override the global layer.
-- Lists are replaced wholesale (e.g. `topics.columns`).
-- Cluster lists are merged by `name`; per-field overrides apply within a
-  matching entry.
+- Scalars in the project layer override the global layer
+- Lists are replaced wholesale (e.g. `topics.columns`)
+- Cluster lists are merged by `name`; per-field overrides apply within a matching entry
 
-`:config sources` opens an in-app screen showing which file each field came
-from.
+`:config sources` opens an in-app screen showing which file each field came from. Annotated
+samples covering all fields below live in [`examples/`](examples/).
+
+#### `config.yaml` — UI behavior
+
+| Section     | Field                         | Description                                                                                                           |
+| ----------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `logging`   | `level`                       | Log level: `debug` / `info` / `warn` / `error`.                                                                       |
+|             | `file`                        | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                   |
+|             | `max_size_mb`, `max_files`    | Rotation thresholds for the log file.                                                                                 |
+| `refresh`   | `topics_list`                 | Auto-refresh interval for the topics screen. Duration (`5s`, `30s`) or `off`.                                         |
+|             | `groups_list`, `group_detail` | Same, for consumer-group screens.                                                                                     |
+| `topics`    | `columns`                     | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`. |
+| `groups`    | `columns`                     | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                              |
+| `messages`  | `columns`                     | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                               |
+| `produce`   | `history_size`                | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                |
+|             | `default_compression`         | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                |
+| `clipboard` | `method`                      | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                          |
+| `vault`     | `address`                     | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere.                                     |
+|             | `token`                       | Vault token. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).                      |
+
+Lists (`columns`) replace wholesale across layers; everything else is merged scalar-by-scalar.
+
+#### `clusters.yaml` — cluster definitions
+
+| Field       | Required | Description                                                                                                             |
+| ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `name`      | yes      | Identifier shown in the picker and used as the merge key across layers.                                                 |
+| `brokers`   | yes      | List of `host:port` bootstrap brokers.                                                                                  |
+| `color`     | no       | Tint for the picker and chrome: `red` / `yellow` / `green` / `gray` / `white`.                                          |
+| `read_only` | no       | When `true`, blocks all destructive actions (produce, delete, reset offsets).                                           |
+| `sasl`      | no       | `mechanism` (`PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`), `username`, `password`.                                      |
+| `tls`       | no       | `ca_file` / `ca`, `cert_file` / `cert`, `key_file` / `key`, `skip_verify`. Empty `tls: {}` enables TLS with system CAs. |
+
+TLS is auto-detected: presence of `tls:` (even empty) enables it; SASL without `tls` means
+`SASL_PLAINTEXT`. Specifying both inline content (`cert: |`) and a `*_file` path for the same key
+is rejected at startup.
 
 ### Placeholders
 
-Any string field may contain one or more placeholders. Resolution runs in
-two phases: `env` and `file` first, then `vault`.
+Any string field may contain one or more placeholders. Resolution runs in two phases: `env` and
+`file` first, then `vault`. Nested placeholders are rejected.
 
 | Placeholder           | Description                              |
 | --------------------- | ---------------------------------------- |
@@ -150,58 +203,40 @@ two phases: `env` and `file` first, then `vault`.
 | `${vault:path}`       | Read the whole KV v2 secret as a map.    |
 | `${vault:path#key}`   | Read a single field from a KV v2 secret. |
 
-Nested placeholders are rejected. A resolution error at startup aborts
-launch (lazy exclusion for inactive clusters is deferred work).
-
-### Examples
-
-The `examples/` directory contains annotated `config.yaml` and `clusters.yaml`
-samples covering placeholders, TLS, SASL, and read-only flags.
-
-## Hotkeys
-
-A non-exhaustive cheat sheet — `?` opens the in-app help overlay with the
-full set, including screen-specific bindings.
-
-| Key                    | Action                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `:`                    | Open command bar (`:topics`, `:groups`, `:clusters`, `:cluster <name>`, `:logs`, `:config sources`). |
-| `/`                    | Fuzzy search on the active screen.                                                                   |
-| `?`                    | Toggle help overlay.                                                                                 |
-| `Ctrl+R`               | Toggle auto-refresh.                                                                                 |
-| `Esc` / `q`            | Pop screen / quit at the root.                                                                       |
-| `j` / `k` / `Ctrl+u/d` | Navigate tables vim-style.                                                                           |
-| `gg` / `G`             | Jump to top / bottom.                                                                                |
-| `s` / `S`              | Cycle sort column / direction.                                                                       |
-| `Space`                | Multi-select row.                                                                                    |
-| `f`                    | Follow mode (messages / logs).                                                                       |
-| `[` / `]`              | Load earlier / later messages.                                                                       |
-| `g o` / `g t` / `g p`  | Jump by offset / timestamp / partition.                                                              |
-| `1` / `2` / `3`        | Value view: JSON / Raw / Hex.                                                                        |
-| `y k/v/h/a`            | Copy key / value / headers / all.                                                                    |
-| `R` / `Shift+R`        | Reset consumer group offsets (4-step / express).                                                     |
-
-Read-only clusters block destructive actions (`n`, `D`, `y`, `p`, `r`,
-`R`, `Shift+R`).
+Vault token resolution: `config → $VAULT_TOKEN → ~/.vault-token`.
 
 ## Development
 
-```bash
-make deps       # go mod tidy + vendor
-make build      # build to ./dist/kafka-tui
-make test       # full test suite
-make race       # tests with -race
-make cover      # coverage report (HTML via `go tool cover -html=coverage.out`)
-make lint       # prek-managed pre-commit hooks (golangci-lint, gofmt, etc.)
-```
+### Prerequisites
 
-Tests use the in-process `kfake` broker (`github.com/twmb/franz-go/pkg/kfake`)
-rather than testcontainers, so the suite runs without Docker. Persistent
-state uses `modernc.org/sqlite` to avoid CGO.
+- [mise](https://mise.jdx.dev/getting-started.html#installing-mise-cli) for managing toolchains
 
-The project layout and screen-development conventions are documented in
-`CLAUDE.md`.
+### Set up environment
 
-## License
+- install toolchains and deps
 
-MIT.
+  ```bash
+  mise trust && mise install
+  make deps
+  ```
+
+- verify the setup by running tests
+
+  ```bash
+  make test
+  ```
+
+### Build
+
+Two options:
+
+- `make build` — builds the binary into `dist/`.
+- `make install` — builds and installs the binary to `~/.local/bin`.
+  Ensure this directory is in your `PATH`:
+
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
+
+A snapshot release with all platform binaries can be produced via `make snapshot`
+(requires [`goreleaser`](https://goreleaser.com)).
