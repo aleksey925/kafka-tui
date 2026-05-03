@@ -164,17 +164,6 @@ const (
 	ModeInsert
 )
 
-// String returns the mode label used in tests and the [EDIT] hint badge.
-func (m Mode) String() string {
-	switch m {
-	case ModeNormal:
-		return "NORMAL"
-	case ModeInsert:
-		return "INSERT"
-	}
-	return "?"
-}
-
 // DefaultHistorySize matches the `produce.history_size` config default (§3.2).
 const DefaultHistorySize = 10
 
@@ -304,10 +293,17 @@ func (m *Model) Fullscreen() bool { return m.fullscreen }
 func (m *Model) Mode() Mode { return m.mode }
 
 // setMode flips between NORMAL and INSERT, keeping form editing state in
-// sync (caret rendering follows from `editing`).
+// sync (caret rendering follows from `editing`). The focused field also
+// gains an `[EDIT]` suffix in INSERT so the active mode is visible right
+// next to the field being edited.
 func (m *Model) setMode(target Mode) {
 	m.mode = target
 	m.form.SetEditing(target == ModeInsert)
+	if target == ModeInsert {
+		m.form.SetFocusedSuffix("[EDIT]")
+	} else {
+		m.form.SetFocusedSuffix("")
+	}
 }
 
 // setFullscreen toggles between mode A and mode B. In mode B the segmented
@@ -690,6 +686,8 @@ func (m *Model) recordHistory(spec kafka.ProduceSpec) {
 // clear resets every field back to its default state (ctrl+r).
 func (m *Model) clear() {
 	m.form = m.buildForm()
+	// re-apply mode to the fresh form so caret/[EDIT] match m.mode.
+	m.setMode(m.mode)
 	m.err = ""
 	m.histPos = -1
 	m.histBuf = nil
@@ -717,6 +715,7 @@ func (m *Model) historyStep(delta int) {
 	if pos < 0 {
 		// ctrl+n stepped past the newest — reset to the empty form.
 		m.form = m.buildForm()
+		m.setMode(m.mode)
 		return
 	}
 	m.applyEntry(m.histBuf[pos], false)
@@ -799,8 +798,7 @@ func (m *Model) View() string {
 	default:
 		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  esc cancel"
 	}
-	badge := m.styles.HintKey.Render("[" + m.mode.String() + "]")
-	hint := badge + " " + m.styles.HintLabel.Render(hintText)
+	hint := m.styles.HintLabel.Render(hintText)
 
 	parts := []string{header}
 	if m.err != "" {

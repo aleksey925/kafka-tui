@@ -224,6 +224,26 @@ func TestForm_TextSetValueResetsCursor(t *testing.T) {
 	assert.Equal(t, 5, f.CursorAt("k")) // cursor pinned to end of new value
 }
 
+func TestForm_EmptyTextRendersDashWhenNotEditing(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+		{Key: "v", Label: "Value", Kind: components.FieldTextarea},
+	})
+	f.SetEditing(false)
+	out := f.View()
+	// both fields are empty and not in caret mode → dash placeholder
+	assert.Contains(t, out, "—")
+
+	// once value is set, the dash is gone
+	f.SetValue("k", "hello")
+	out = f.View()
+	assert.Contains(t, out, "hello")
+	// the textarea is still empty so one dash remains; setting both removes all
+	f.SetValue("v", "world")
+	out = f.View()
+	assert.NotContains(t, out, "—")
+}
+
 func TestForm_SetEditingHidesCursorBackground(t *testing.T) {
 	f := components.NewForm([]components.Field{
 		{Key: "k", Kind: components.FieldText, Value: "abcd"},

@@ -787,16 +787,54 @@ func TestInsert_PlusIsLiteralInTextarea(t *testing.T) {
 	assert.False(t, m.Fullscreen())
 }
 
-func TestModeBadge_ShownInHint(t *testing.T) {
+func TestEditSuffix_ShownNextToFocusedFieldInInsert(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 	m.SetSize(120, 30)
-	out := m.View()
-	assert.Contains(t, out, "[NORMAL]")
 
+	// in NORMAL there is no [EDIT] tag anywhere
+	out := m.View()
+	assert.NotContains(t, out, "[EDIT]")
+
+	// entering INSERT on Key surfaces [EDIT] next to that field's label
 	m.Form().FocusKey("key")
 	_, _ = m.Update(keyPress("enter"))
 	out = m.View()
-	assert.Contains(t, out, "[INSERT]")
+	assert.Contains(t, out, "[EDIT]")
+	keyLineHasTag := false
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, "Key") && strings.Contains(line, "[EDIT]") {
+			keyLineHasTag = true
+			break
+		}
+	}
+	assert.True(t, keyLineHasTag, "[EDIT] tag must sit on the same line as the focused field's label")
+
+	// leaving INSERT removes the tag
+	_, _ = m.Update(keyPress("esc"))
+	out = m.View()
+	assert.NotContains(t, out, "[EDIT]")
+}
+
+func TestEditSuffix_PreservedAcrossFormRebuilds(t *testing.T) {
+	hist := newFakeHistory()
+	hist.Add(produce.Entry{Topic: "orders", Value: []byte("v1")})
+	m := produce.New(produce.Options{
+		Service: newFakeService(), Topic: "orders", History: hist,
+	})
+	m.SetSize(120, 30)
+	m.Form().FocusKey("key")
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, produce.ModeInsert, m.Mode())
+
+	// ctrl+r rebuilds the form; mode must stay INSERT and [EDIT] must remain
+	_, _ = m.Update(keyPress("ctrl+r"))
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+	assert.Contains(t, m.View(), "[EDIT]")
+
+	// ctrl+n past the newest history slot also rebuilds; same invariant
+	_, _ = m.Update(keyPress("ctrl+n"))
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+	assert.Contains(t, m.View(), "[EDIT]")
 }
 
 // ----- helpers -----

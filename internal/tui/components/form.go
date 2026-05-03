@@ -58,6 +58,8 @@ type Form struct {
 	focus   int
 	editing bool
 
+	focusedSuffix string
+
 	styles theme.Styles
 }
 
@@ -211,6 +213,11 @@ func (f *Form) FocusPrev() {
 // SetEditing toggles whether text-like fields render their caret. Screens
 // implementing modal editing flip this when entering/leaving INSERT.
 func (f *Form) SetEditing(on bool) { f.editing = on }
+
+// SetFocusedSuffix sets a short tag rendered next to the focused field's
+// label (e.g. "[EDIT]"). Empty string hides it. Hosting screens use this to
+// surface mode/state locally on the active field.
+func (f *Form) SetFocusedSuffix(s string) { f.focusedSuffix = s }
 
 // Editing reports the current editing state.
 func (f *Form) Editing() bool { return f.editing }
@@ -386,6 +393,9 @@ func (f *Form) renderField(fld Field, focused bool) string {
 		labelStyle = f.styles.HintKey
 	}
 	header := labelStyle.Render(label)
+	if focused && f.focusedSuffix != "" {
+		header += " " + f.styles.HintKey.Render(f.focusedSuffix)
+	}
 
 	body := ""
 	caretOn := focused && f.editing
@@ -414,6 +424,9 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 	}
 	if !multiline {
 		if !focused || !caretOn {
+			if value == "" {
+				return "    " + s.HintLabel.Render("—")
+			}
 			return "    " + s.Command.Render(value)
 		}
 		return "    " + renderLineWithCursor(s, s.Command, "", runes, cursor)
@@ -421,6 +434,9 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 	// multiline: split by \n, indent each, draw the cursor inside the line
 	// that contains the cursor at the right column.
 	if !focused || !caretOn {
+		if value == "" {
+			return "    " + s.HintLabel.Render("—")
+		}
 		lines := strings.Split(value, "\n")
 		for i, line := range lines {
 			lines[i] = "    " + line
