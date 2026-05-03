@@ -476,7 +476,29 @@ func (m *Model) handleInsert(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	}
 	f, cmd := m.form.Update(key)
 	m.form = f
+	// invariant for list editing: while INSERT is on a list, never let it
+	// drop to zero rows — backspace on the only empty row would otherwise
+	// leave the user "in INSERT but with nothing to edit". Re-seed an
+	// empty row so they can keep typing without a surprise mode change.
+	// Only `backspace` can shrink a list at the form level; other keys
+	// can't, so don't pay the check cost on every keystroke.
+	if key.String() == "backspace" {
+		m.ensureListNotEmpty()
+	}
 	return m, cmd
+}
+
+// ensureListNotEmpty re-creates an empty row when the focused list became
+// empty as a side effect of editing in INSERT. Only the explicit Enter on
+// an empty row exits INSERT — implicit removals (ctrl+x, backspace on the
+// last empty row) keep the user typing.
+func (m *Model) ensureListNotEmpty() {
+	if m.mode != ModeInsert || m.form.FocusedField().Kind != components.FieldList {
+		return
+	}
+	if _, _, ok := m.form.FocusedListEntry(); !ok {
+		m.form.AppendListRow()
+	}
 }
 
 // handleInsertTab implements the textarea-vs-single-line tab split: in a
@@ -529,9 +551,10 @@ func (m *Model) handleInsertEnter(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 
 // handleInsertListShortcut covers the headers-only `ctrl+n` / `ctrl+x`
 // shortcuts in INSERT: `ctrl+n` (new) jumps to the end of the list and
-// starts a new empty row; `ctrl+x` (cut) deletes the focused row (and
-// exits INSERT if the list becomes empty). Returns ok=true when the key
-// was consumed. These take priority over the global history shortcut
+// starts a new empty row; `ctrl+x` (cut) deletes the focused row, then
+// re-seeds an empty row when the list becomes empty so the user keeps
+// editing instead of being kicked into NORMAL. Returns ok=true when the
+// key was consumed. These take priority over the global history shortcut
 // when the focused field is a list.
 func (m *Model) handleInsertListShortcut(key tea.KeyPressMsg) (consumed bool) {
 	switch key.String() {
@@ -540,10 +563,7 @@ func (m *Model) handleInsertListShortcut(key tea.KeyPressMsg) (consumed bool) {
 		return true
 	case "ctrl+x":
 		m.form.RemoveListRow()
-		if _, _, ok := m.form.FocusedListEntry(); !ok {
-			// list became empty — leave INSERT, nothing left to edit.
-			m.setMode(ModeNormal)
-		}
+		m.ensureListNotEmpty()
 		return true
 	}
 	return false

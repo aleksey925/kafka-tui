@@ -769,7 +769,7 @@ func TestHeadersInsert_CtrlXDeletesFocusedRow(t *testing.T) {
 	assert.Equal(t, produce.ModeInsert, m.Mode(), "stays in INSERT while list is non-empty")
 }
 
-func TestHeadersInsert_CtrlXOnLastRowExitsToNormal(t *testing.T) {
+func TestHeadersInsert_CtrlXOnLastRowReseedsEmptyAndStaysInsert(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 	m.Form().SetList("headers", []string{"only=row"})
 	m.Form().FocusKey("headers")
@@ -777,8 +777,29 @@ func TestHeadersInsert_CtrlXOnLastRowExitsToNormal(t *testing.T) {
 
 	_, _ = m.Update(keyPress("ctrl+x"))
 	got, _ := m.Form().Field("headers")
-	assert.Empty(t, got.List)
-	assert.Equal(t, produce.ModeNormal, m.Mode())
+	// list is re-seeded with an empty row so the user can keep typing —
+	// only an explicit Enter on an empty row exits INSERT.
+	assert.Equal(t, []string{""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+}
+
+func TestHeadersInsert_BackspaceEmptyingLastRowKeepsInsert(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().SetList("headers", []string{"x=1"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT on the only row
+
+	// erase the row character by character; the last backspace removes the
+	// now-empty row and would normally leave the list at zero — but the
+	// invariant re-seeds an empty row so we stay in INSERT.
+	for range "x=1" {
+		_, _ = m.Update(keyPress("backspace"))
+	}
+	_, _ = m.Update(keyPress("backspace"))
+
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
 }
 
 func TestHeadersInsert_PlusUnderscoreAreLiterals(t *testing.T) {
