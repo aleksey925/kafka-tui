@@ -184,6 +184,105 @@ func TestClient_TopicSize__kfake(t *testing.T) {
 	assert.GreaterOrEqual(t, size, int64(0))
 }
 
+func TestClient_TopicWatermarksBatch__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	for _, name := range []string{"alpha", "beta"} {
+		require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+			Name:              name,
+			Partitions:        1,
+			ReplicationFactor: 1,
+		}))
+	}
+	require.NoError(t, c.kc.ProduceSync(ctx,
+		&kgo.Record{Topic: "alpha", Value: []byte("a1")},
+		&kgo.Record{Topic: "alpha", Value: []byte("a2")},
+		&kgo.Record{Topic: "beta", Value: []byte("b1")},
+	).FirstErr())
+
+	wm, err := c.TopicWatermarksBatch(ctx, "alpha", "beta")
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, wm["alpha"].Count())
+	assert.EqualValues(t, 1, wm["beta"].Count())
+}
+
+func TestClient_TopicWatermarksBatch__empty(t *testing.T) {
+	t.Parallel()
+	c := newKfakeClient(t)
+	out, err := c.TopicWatermarksBatch(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+func TestClient_TopicSizesBatch__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	for _, name := range []string{"sz-1", "sz-2"} {
+		require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+			Name:              name,
+			Partitions:        1,
+			ReplicationFactor: 1,
+		}))
+	}
+
+	sizes, err := c.TopicSizesBatch(ctx, "sz-1", "sz-2")
+	require.NoError(t, err)
+	// kfake may report zero sizes; we just need both keys present (or
+	// absent uniformly) and the call to succeed without error.
+	_, ok1 := sizes["sz-1"]
+	_, ok2 := sizes["sz-2"]
+	assert.Equal(t, ok1, ok2, "kfake should be consistent across topics")
+}
+
+func TestClient_DescribeTopicConfigsBatch__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	cleanup := "compact"
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "with-cfg",
+		Partitions:        1,
+		ReplicationFactor: 1,
+		Configs:           map[string]string{ConfigCleanupPolicy: cleanup},
+	}))
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "no-cfg",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+
+	cfgs, err := c.DescribeTopicConfigsBatch(ctx, "with-cfg", "no-cfg")
+	require.NoError(t, err)
+	require.Contains(t, cfgs, "with-cfg")
+	require.Contains(t, cfgs, "no-cfg")
+	var found bool
+	for _, cfg := range cfgs["with-cfg"] {
+		if cfg.Key == ConfigCleanupPolicy && cfg.Value == cleanup {
+			found = true
+		}
+	}
+	assert.True(t, found, "cleanup.policy should be returned for the explicit topic")
+}
+
+func TestClient_DescribeTopicConfigsBatch__empty(t *testing.T) {
+	t.Parallel()
+	c := newKfakeClient(t)
+	out, err := c.DescribeTopicConfigsBatch(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
 func TestClient_CloneTopic__kfake(t *testing.T) {
 	t.Parallel()
 

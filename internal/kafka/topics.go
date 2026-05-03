@@ -275,33 +275,150 @@ func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 // implied message count (sum of high-low). Used by the topics list and by
 // the messages screen for windowing.
 func (c *Client) TopicWatermarks(ctx context.Context, topic string) (TopicWatermarks, error) {
-	starts, err := c.adm.ListStartOffsets(ctx, topic)
+	all, err := c.TopicWatermarksBatch(ctx, topic)
 	if err != nil {
-		return TopicWatermarks{}, fmt.Errorf("kafka: list start offsets %q: %w", topic, err)
+		// preserve the topic name in the error message — the batch
+		// helper drops it because it serves multiple topics, but the
+		// singular caller benefits from the per-topic context in logs.
+		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks for %q: %w", topic, err)
 	}
-	ends, err := c.adm.ListEndOffsets(ctx, topic)
-	if err != nil {
-		return TopicWatermarks{}, fmt.Errorf("kafka: list end offsets %q: %w", topic, err)
-	}
-
-	startMap := starts[topic]
-	endMap := ends[topic]
-	w := TopicWatermarks{Partitions: make(map[int32]PartitionWatermarks, len(endMap))}
-	for p, e := range endMap {
-		if e.Err != nil {
-			continue
-		}
-		s, ok := startMap[p]
-		if !ok || s.Err != nil {
-			continue
-		}
-		pw := PartitionWatermarks{Low: s.Offset, High: e.Offset}
-		w.Partitions[p] = pw
-		if pw.High > pw.Low {
-			w.MessageCount += pw.High - pw.Low
-		}
+	w, ok := all[topic]
+	if !ok {
+		return TopicWatermarks{Partitions: map[int32]PartitionWatermarks{}}, nil
 	}
 	return w, nil
+}
+
+// TopicWatermarksBatch fetches per-partition low/high watermarks for many
+// topics in two RPCs total (one ListStartOffsets, one ListEndOffsets) and
+// folds them into the same shape as [Client.TopicWatermarks]. Topics with
+// per-topic broker errors are silently dropped from the result map. An
+// empty topics list returns an empty map without contacting the broker.
+func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]TopicWatermarks, error) {
+	out := make(map[string]TopicWatermarks, len(topics))
+	if len(topics) == 0 {
+		return out, nil
+	}
+	starts, err := c.adm.ListStartOffsets(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: list start offsets: %w", err)
+	}
+	ends, err := c.adm.ListEndOffsets(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: list end offsets: %w", err)
+	}
+	for _, t := range topics {
+		startMap := starts[t]
+		endMap := ends[t]
+		if len(endMap) == 0 {
+			continue
+		}
+		w := TopicWatermarks{Partitions: make(map[int32]PartitionWatermarks, len(endMap))}
+		for p, e := range endMap {
+			if e.Err != nil {
+				continue
+			}
+			s, ok := startMap[p]
+			if !ok || s.Err != nil {
+				continue
+			}
+			pw := PartitionWatermarks{Low: s.Offset, High: e.Offset}
+			w.Partitions[p] = pw
+			if pw.High > pw.Low {
+				w.MessageCount += pw.High - pw.Low
+			}
+		}
+		out[t] = w
+	}
+	return out, nil
+}
+
+// TopicSizesBatch returns total on-disk size (bytes) per topic. The whole
+// fetch is two RPCs: one Metadata to learn each topic's partitions, then a
+// single DescribeAllLogDirs covering every (topic, partition) pair. An
+// empty topics list returns an empty map without contacting the broker.
+func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error) {
+	out := make(map[string]int64, len(topics))
+	if len(topics) == 0 {
+		return out, nil
+	}
+	md, err := c.freshMetadata(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: metadata: %w", err)
+	}
+	set := kadm.TopicsSet{}
+	for _, t := range topics {
+		td, ok := md.Topics[t]
+		if !ok || td.Err != nil {
+			continue
+		}
+		for p := range td.Partitions {
+			set.Add(t, p)
+		}
+	}
+	if len(set) == 0 {
+		return out, nil
+	}
+	dirs, err := c.adm.DescribeAllLogDirs(ctx, set)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: describe log dirs: %w", err)
+	}
+	for _, perBroker := range dirs {
+		for _, dir := range perBroker {
+			if dir.Err != nil {
+				continue
+			}
+			for topic, parts := range dir.Topics {
+				for _, p := range parts {
+					if p.Size > 0 {
+						out[topic] += p.Size
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// DescribeTopicConfigsBatch fetches the UI-relevant configs (cleanup.policy,
+// retention.ms, min.insync.replicas) for many topics in a single RPC and
+// returns them keyed by topic name. Per-topic errors inside the batch
+// response (e.g. ACL denied for one topic only) are silently dropped from
+// the result. An empty topics list returns an empty map without contacting
+// the broker.
+func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]TopicConfig, error) {
+	out := make(map[string][]TopicConfig, len(topics))
+	if len(topics) == 0 {
+		return out, nil
+	}
+	rs, err := c.adm.DescribeTopicConfigs(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: describe configs: %w", err)
+	}
+	wanted := []string{ConfigCleanupPolicy, ConfigRetentionMs, ConfigMinInSyncReplica}
+	for _, r := range rs {
+		if r.Err != nil {
+			continue
+		}
+		byName := make(map[string]kadm.Config, len(r.Configs))
+		for _, cfg := range r.Configs {
+			byName[cfg.Key] = cfg
+		}
+		picked := make([]TopicConfig, 0, len(wanted))
+		for _, key := range wanted {
+			cfg, ok := byName[key]
+			if !ok {
+				continue
+			}
+			picked = append(picked, TopicConfig{
+				Key:    cfg.Key,
+				Value:  cfg.MaybeValue(),
+				Source: cfg.Source.String(),
+			})
+		}
+		out[r.Name] = picked
+	}
+	return out, nil
 }
 
 // CreateTopicSpec describes the topic to create.

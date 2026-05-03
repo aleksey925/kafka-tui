@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -37,6 +38,12 @@ type Service interface {
 	CreateTopic(ctx context.Context, spec kafka.CreateTopicSpec) error
 	DeleteTopic(ctx context.Context, topic string) error
 	CloneTopic(ctx context.Context, src, dst string, opts kafka.CloneOptions) (<-chan kafka.CloneProgress, error)
+
+	// Batch fetchers used by the list view to render the full row in
+	// O(1) RPCs (per category) regardless of topic count.
+	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.TopicWatermarks, error)
+	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error)
+	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]kafka.TopicConfig, error)
 }
 
 // Action describes the screen's pending intent for the host (router).
@@ -94,7 +101,7 @@ type Options struct {
 }
 
 // DefaultColumns is used when config does not override.
-var DefaultColumns = []string{"name", "partitions", "replicas", "messages"}
+var DefaultColumns = []string{"name", "partitions", "replicas", "cleanup_policy", "messages", "size"}
 
 // Model is the topics list screen.
 type Model struct {
@@ -112,6 +119,11 @@ type Model struct {
 	watermarks map[string]kafka.TopicWatermarks
 	sizes      map[string]int64
 	configs    map[string][]kafka.TopicConfig
+
+	// shownWarnings deduplicates batch-fetch warnings across refresh ticks
+	// so a permanent ACL/feature failure doesn't spam a toast every 5s.
+	// Reset when the screen is reinstantiated (e.g. cluster switch).
+	shownWarnings map[string]struct{}
 
 	table   *components.Table
 	toasts  *components.Toasts
@@ -179,6 +191,7 @@ func New(opts Options) *Model {
 		watermarks:      map[string]kafka.TopicWatermarks{},
 		sizes:           map[string]int64{},
 		configs:         map[string][]kafka.TopicConfig{},
+		shownWarnings:   map[string]struct{}{},
 		table:           tbl,
 		toasts:          components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		now:             now,
@@ -602,6 +615,20 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 	for _, w := range msg.Watermarks {
 		m.watermarks[w.Topic] = w.Watermarks
 	}
+	for _, s := range msg.Sizes {
+		m.sizes[s.Topic] = s.Size
+	}
+	for _, c := range msg.Configs {
+		m.configs[c.Topic] = c.Configs
+	}
+	for _, w := range msg.Warnings {
+		// dedupe across ticks — a permanent failure should warn once.
+		if _, seen := m.shownWarnings[w]; seen {
+			continue
+		}
+		m.shownWarnings[w] = struct{}{}
+		m.toasts.Push(components.ToastWarning, w)
+	}
 	m.refreshTable()
 	if m.focusTopic != "" {
 		m.table.GoToID(m.focusTopic)
@@ -757,10 +784,16 @@ func (m *Model) AutoRefreshTick() tea.Cmd {
 	})
 }
 
-// HandleRefreshTick triggers a reload + reschedules another tick.
+// HandleRefreshTick triggers a reload + reschedules another tick. If a
+// previous load is still in flight (`m.loading`), the refresh is skipped
+// — the next tick will pick it up. This avoids stacking concurrent loads
+// on a slow broker, which would otherwise drown the UI in repeated fetches.
 func (m *Model) HandleRefreshTick() tea.Cmd {
 	if m.refreshInterval <= 0 {
 		return nil
+	}
+	if m.loading {
+		return m.AutoRefreshTick()
 	}
 	return tea.Batch(m.refreshCmd(), m.AutoRefreshTick())
 }
@@ -771,13 +804,32 @@ func (m *Model) HandleRefreshTick() tea.Cmd {
 type TopicsLoadedMsg struct {
 	Topics     []kafka.TopicSummary
 	Watermarks []TopicWatermarkResult
-	Err        error
+	Sizes      []TopicSizeResult
+	Configs    []TopicConfigResult
+	// Warnings carries human-readable summaries of whole-category batch-RPC
+	// failures (e.g. broker rejected DescribeConfigs entirely). Per-topic
+	// errors inside an otherwise-successful batch are silently dropped.
+	Warnings []string
+	Err      error
 }
 
 // TopicWatermarkResult pairs a topic with its watermarks for batch loading.
 type TopicWatermarkResult struct {
 	Topic      string
 	Watermarks kafka.TopicWatermarks
+}
+
+// TopicSizeResult pairs a topic with its on-disk size in bytes.
+type TopicSizeResult struct {
+	Topic string
+	Size  int64
+}
+
+// TopicConfigResult pairs a topic with its resolved configs (cleanup.policy,
+// retention.ms, etc.) so the list view can render them inline.
+type TopicConfigResult struct {
+	Topic   string
+	Configs []kafka.TopicConfig
 }
 
 // TopicMutatedMsg reports the result of a create / delete / clone op.
@@ -795,26 +847,116 @@ type CloneProgressMsg struct {
 // RefreshTickMsg is the periodic auto-refresh tick.
 type RefreshTickMsg struct{}
 
-// loadCmd refreshes the topics list and per-topic watermarks. Watermarks are
-// fetched lazily so the "messages" column can render incrementally.
+// loadCmd refreshes the topics list along with per-topic watermarks, sizes,
+// and configs so the list view can render the full row up-front. Each
+// category is one batch RPC against the broker (kadm folds the wire-level
+// fan-out across brokers itself); the three batches run concurrently so
+// the wall-clock load time is bound by the slowest single RPC, not by
+// topic count. A whole-category failure is surfaced as one warning toast.
 func loadCmd(svc Service) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		topics, err := svc.ListTopics(ctx)
 		if err != nil {
 			return TopicsLoadedMsg{Err: err}
 		}
-		watermarks := make([]TopicWatermarkResult, 0, len(topics))
-		for _, t := range topics {
-			w, werr := svc.TopicWatermarks(ctx, t.Name)
-			if werr != nil {
-				continue
-			}
-			watermarks = append(watermarks, TopicWatermarkResult{Topic: t.Name, Watermarks: w})
+		names := make([]string, len(topics))
+		for i, t := range topics {
+			names[i] = t.Name
 		}
-		return TopicsLoadedMsg{Topics: topics, Watermarks: watermarks}
+
+		var (
+			wmMap                map[string]kafka.TopicWatermarks
+			sizeMap              map[string]int64
+			cfgMap               map[string][]kafka.TopicConfig
+			wmErr, szErr, cfgErr error
+			wg                   sync.WaitGroup
+		)
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			wmMap, wmErr = svc.TopicWatermarksBatch(ctx, names...)
+		}()
+		go func() {
+			defer wg.Done()
+			sizeMap, szErr = svc.TopicSizesBatch(ctx, names...)
+		}()
+		go func() {
+			defer wg.Done()
+			cfgMap, cfgErr = svc.DescribeTopicConfigsBatch(ctx, names...)
+		}()
+		wg.Wait()
+
+		return TopicsLoadedMsg{
+			Topics:     topics,
+			Watermarks: flattenWatermarks(wmMap, topics),
+			Sizes:      flattenSizes(sizeMap, topics),
+			Configs:    flattenConfigs(cfgMap, topics),
+			Warnings: batchFetchWarnings(
+				batchFetchStat{name: "watermarks", err: wmErr},
+				batchFetchStat{name: "size", err: szErr},
+				batchFetchStat{name: "configs", err: cfgErr},
+			),
+		}
 	}
+}
+
+func flattenWatermarks(m map[string]kafka.TopicWatermarks, topics []kafka.TopicSummary) []TopicWatermarkResult {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]TopicWatermarkResult, 0, len(m))
+	for _, t := range topics {
+		if w, ok := m[t.Name]; ok {
+			out = append(out, TopicWatermarkResult{Topic: t.Name, Watermarks: w})
+		}
+	}
+	return out
+}
+
+func flattenSizes(m map[string]int64, topics []kafka.TopicSummary) []TopicSizeResult {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]TopicSizeResult, 0, len(m))
+	for _, t := range topics {
+		if s, ok := m[t.Name]; ok {
+			out = append(out, TopicSizeResult{Topic: t.Name, Size: s})
+		}
+	}
+	return out
+}
+
+func flattenConfigs(m map[string][]kafka.TopicConfig, topics []kafka.TopicSummary) []TopicConfigResult {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]TopicConfigResult, 0, len(m))
+	for _, t := range topics {
+		if c, ok := m[t.Name]; ok {
+			out = append(out, TopicConfigResult{Topic: t.Name, Configs: c})
+		}
+	}
+	return out
+}
+
+type batchFetchStat struct {
+	name string
+	err  error
+}
+
+// batchFetchWarnings turns batch-level errors into user-facing toasts. A
+// single batch RPC failure means *all* per-topic data in that category is
+// missing, so we always surface it (no thresholding needed).
+func batchFetchWarnings(stats ...batchFetchStat) []string {
+	var out []string
+	for _, s := range stats {
+		if s.err != nil {
+			out = append(out, fmt.Sprintf("%s unavailable: %s", s.name, s.err.Error()))
+		}
+	}
+	return out
 }
 
 func deleteCmd(svc Service, topic string) tea.Cmd {

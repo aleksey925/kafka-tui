@@ -47,7 +47,9 @@ func TestNew_DefaultColumns(t *testing.T) {
 	assert.Contains(t, out, "Name")
 	assert.Contains(t, out, "Partitions")
 	assert.Contains(t, out, "Replicas")
+	assert.Contains(t, out, "Cleanup")
 	assert.Contains(t, out, "Messages")
+	assert.Contains(t, out, "Size")
 }
 
 func TestInit_LoadsTopicsAndShowsCounter(t *testing.T) {
@@ -613,6 +615,30 @@ func (f *fakeService) DescribeTopicConfigs(_ context.Context, topic string) ([]k
 
 func (f *fakeService) DescribeAllTopicConfigs(_ context.Context, topic string) ([]kafka.TopicConfig, error) {
 	return f.configs[topic], nil
+}
+
+func (f *fakeService) TopicWatermarksBatch(_ context.Context, names ...string) (map[string]kafka.TopicWatermarks, error) {
+	out := make(map[string]kafka.TopicWatermarks, len(names))
+	for _, t := range names {
+		out[t] = kafka.TopicWatermarks{}
+	}
+	return out, nil
+}
+
+func (f *fakeService) TopicSizesBatch(_ context.Context, names ...string) (map[string]int64, error) {
+	out := make(map[string]int64, len(names))
+	for _, t := range names {
+		out[t] = 0
+	}
+	return out, nil
+}
+
+func (f *fakeService) DescribeTopicConfigsBatch(_ context.Context, names ...string) (map[string][]kafka.TopicConfig, error) {
+	out := make(map[string][]kafka.TopicConfig, len(names))
+	for _, t := range names {
+		out[t] = f.configs[t]
+	}
+	return out, nil
 }
 
 func (f *fakeService) TopicPartitions(_ context.Context, topic string) ([]kafka.PartitionDetail, error) {
