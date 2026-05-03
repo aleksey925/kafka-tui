@@ -307,13 +307,20 @@ func KeyHints(s theme.Styles, hints []KeyHint) string {
 	return b.String()
 }
 
-// CommandLine renders the command bar prompt (or empty string when inactive).
-func CommandLine(s theme.Styles, c CommandBar) string {
+// CommandRows is the height a rendered command/search prompt occupies when
+// active (top border + body + bottom border). Hosts always reserve this many
+// rows so the body geometry stays stable when the prompt opens.
+const CommandRows = 3
+
+// CommandLine renders the command bar prompt as a focused, bordered single-
+// row box. Returns an empty (but `CommandRows`-tall) blank slot when the
+// bar is inactive so the body doesn't shift when the prompt appears.
+func CommandLine(s theme.Styles, c CommandBar, width int) string {
 	if !c.Active {
-		return ""
+		return blankRows(CommandRows, width)
 	}
 	prefix := string(c.Prefix)
-	body := s.CommandHL.Render(prefix) + s.Command.Render(c.Buffer)
+	body := s.CommandHL.Render(prefix) + " " + s.Command.Render(c.Buffer)
 	if c.Suggestion != "" {
 		ghost := strings.TrimPrefix(c.Suggestion, strings.ToLower(c.Buffer))
 		if ghost != "" {
@@ -323,7 +330,31 @@ func CommandLine(s theme.Styles, c CommandBar) string {
 	if c.Error != "" {
 		body += "  " + s.StatusErr.Render(c.Error)
 	}
-	return body
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(s.Palette.Accent).
+		Padding(0, 1)
+	if width > 4 {
+		// account for the box's two side borders + 2 cols of padding when
+		// sizing the inner content so it spans the terminal width.
+		box = box.Width(width - 2)
+	}
+	return box.Render(body)
+}
+
+// blankRows returns n blank lines, each padded to width so the geometry is
+// stable when the command bar isn't visible.
+func blankRows(n, width int) string {
+	pad := ""
+	if width > 0 {
+		pad = strings.Repeat(" ", width)
+	}
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = pad
+	}
+	return strings.Join(rows, "\n")
 }
 
 // formatDuration prints durations like "5s", "30s", "2m" — short and readable.

@@ -339,7 +339,8 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	routeCmd := m.routeActiveAction()
 	if cmd == nil && routeCmd == nil {
 		switch key.String() {
-		case "q", "esc":
+		case "q":
+			// `q` quits at the root, otherwise pops a screen.
 			if m.router.Depth() <= 1 {
 				m.quit = true
 				return m, tea.Quit
@@ -347,6 +348,15 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.popScreen()
 			next := m.activeInit()
 			return m, next
+		case "esc":
+			// esc only pops; at the root it's a no-op so users don't quit
+			// the app by accident. ctrl+c remains the unconditional exit.
+			if m.router.Depth() > 1 {
+				m.popScreen()
+				next := m.activeInit()
+				return m, next
+			}
+			return m, nil
 		}
 	}
 	return m, teaBatch(cmd, routeCmd)
@@ -452,36 +462,19 @@ func (m *Model) render() string {
 		m.width,
 	)
 
-	cmd := ""
+	bar := m.command
 	switch m.mode {
-	case ModeCommand:
-		cmd = layout.CommandLine(m.styles, m.command)
 	case ModeSearch:
-		cmd = layout.CommandLine(m.styles, m.search)
-	case ModeNormal, ModeHelp:
-		// no prompt rendered in these modes.
+		bar = m.search
+	case ModeCommand, ModeNormal, ModeHelp:
+		// keep `m.command` (already empty in normal/help modes).
 	}
-	// always reserve the prompt row so the body doesn't shift when the
-	// command bar opens. blank when inactive.
-	cmdLine := padLineToWidth(cmd, m.width)
+	cmdBox := layout.CommandLine(m.styles, bar, m.width)
 
 	body := m.renderBody()
 	flash := layout.FlashLine(m.styles, m.flash, m.width)
 
-	return strings.Join([]string{header, cmdLine, body, flash}, "\n")
-}
-
-// padLineToWidth returns line padded with spaces so the rendered output
-// equals width (used to keep the prompt row's height stable).
-func padLineToWidth(line string, width int) string {
-	if width <= 0 {
-		return line
-	}
-	w := lipgloss.Width(line)
-	if w >= width {
-		return line
-	}
-	return line + strings.Repeat(" ", width-w)
+	return strings.Join([]string{header, cmdBox, body, flash}, "\n")
 }
 
 // flashTickMsg triggers a re-render so a non-sticky toast that has just
@@ -707,8 +700,9 @@ const frameInset = 2
 
 // chromeRows is the total height of the rows the host paints above and
 // below the body frame: the multi-pane header, the always-reserved command
-// prompt row, and the global flash bar.
-const chromeRows = layout.HeaderRows + 1 + 1
+// prompt box (3 rows for its top/body/bottom borders), and the global
+// flash bar.
+const chromeRows = layout.HeaderRows + layout.CommandRows + 1
 
 // bodyHeight returns the inner height left for the active screen after the
 // chrome and the body frame border are subtracted.

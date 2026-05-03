@@ -1,6 +1,7 @@
 package layout_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +99,7 @@ func TestCommandLine_RendersBufferAndError(t *testing.T) {
 		Active: true,
 		Prefix: ':',
 		Buffer: "topics",
-	})
+	}, 60)
 	assert.Contains(t, out, ":")
 	assert.Contains(t, out, "topics")
 
@@ -107,13 +108,19 @@ func TestCommandLine_RendersBufferAndError(t *testing.T) {
 		Prefix: ':',
 		Buffer: "foo",
 		Error:  "unknown",
-	})
+	}, 60)
 	assert.Contains(t, withErr, "unknown")
 }
 
-func TestCommandLine_InactiveIsEmpty(t *testing.T) {
+func TestCommandLine_InactiveReservesBlankRows(t *testing.T) {
 	s := theme.DefaultStyles()
-	assert.Empty(t, layout.CommandLine(s, layout.CommandBar{}))
+
+	out := layout.CommandLine(s, layout.CommandBar{}, 40)
+
+	// inactive prompt still occupies CommandRows blank lines so the body
+	// geometry stays stable when the bar opens or closes.
+	assert.Len(t, strings.Split(out, "\n"), layout.CommandRows)
+	assert.NotContains(t, out, ":")
 }
 
 func TestStatus_DurationFormatting(t *testing.T) {
