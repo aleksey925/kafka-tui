@@ -164,8 +164,8 @@ func listColumns() []components.Column {
 	return []components.Column{
 		{Title: "Group", Flex: true, MinWidth: 24, Sortable: true},
 		{Title: "State", Width: 12, Sortable: true},
-		{Title: "Members", Width: 8, Align: lipgloss.Right, Sortable: true},
-		{Title: "Total Lag", Width: 12, Align: lipgloss.Right, Sortable: true},
+		{Title: "Members", Width: 8, Sortable: true},
+		{Title: "Total Lag", Width: 12, Sortable: true},
 		{Title: "Coordinator", Width: 14, Sortable: true},
 	}
 }

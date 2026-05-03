@@ -18,7 +18,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -1059,21 +1058,21 @@ func columnSpec(key string) components.Column {
 	case "name":
 		return components.Column{Title: "Name", Flex: true, MinWidth: 24, Sortable: true}
 	case "partitions":
-		return components.Column{Title: "Partitions", Width: 10, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Partitions", Width: 10, Sortable: true}
 	case "replicas":
-		return components.Column{Title: "Replicas", Width: 8, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Replicas", Width: 8, Sortable: true}
 	case "messages":
-		return components.Column{Title: "Messages", Width: 12, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Messages", Width: 12, Sortable: true}
 	case "size":
-		return components.Column{Title: "Size", Width: 10, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Size", Width: 10, Sortable: true}
 	case "cleanup_policy":
 		return components.Column{Title: "Cleanup", Width: 12, Sortable: true}
 	case "retention_ms":
 		return components.Column{Title: "Retention", Width: 14, Sortable: true}
 	case "min_isr":
-		return components.Column{Title: "MinISR", Width: 7, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "MinISR", Width: 7, Sortable: true}
 	case "internal":
-		return components.Column{Title: "Int", Width: 4, Align: lipgloss.Center, Sortable: false}
+		return components.Column{Title: "Int", Width: 4, Sortable: false}
 	default:
 		return components.Column{Title: key, Width: 10}
 	}

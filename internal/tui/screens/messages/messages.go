@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -719,9 +718,9 @@ func columnSpec(key string) components.Column {
 	case "timestamp":
 		return components.Column{Title: "Timestamp", Width: 23, Sortable: true}
 	case "partition":
-		return components.Column{Title: "Partition", Width: 9, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Partition", Width: 9, Sortable: true}
 	case "offset":
-		return components.Column{Title: "Offset", Width: 10, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Offset", Width: 10, Sortable: true}
 	case "key":
 		return components.Column{Title: "Key", Width: 32, Sortable: true}
 	case "value":
