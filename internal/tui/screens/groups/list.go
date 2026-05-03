@@ -300,7 +300,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 			layout.KeyHint{Key: "D", Label: "delete"},
 		)
 	}
-	hints = append(hints, layout.KeyHint{Key: "r", Label: "refresh"})
+	hints = append(hints, layout.KeyHint{Key: "r", Label: "reload"})
 	return hints
 }
 

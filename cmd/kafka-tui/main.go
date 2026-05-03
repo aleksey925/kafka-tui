@@ -127,6 +127,17 @@ func run(flags *cli.Flags) error {
 		Pager:           produce.DefaultPagerOpener(),
 		StartupWarnings: loaded.Warnings,
 		ReadOnly:        flags.Inline.ReadOnly,
+		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
+			fresh, err := config.Load(config.LoaderOptions{
+				ConfigPath:     flags.ConfigPath,
+				CLIClusterName: flags.Inline.Name,
+			})
+			if err != nil {
+				return nil, nil, "", fmt.Errorf("reload config: %w", err)
+			}
+			list, cli := buildClusterList(fresh.Clusters, flags.Inline)
+			return fresh, list, cli, nil
+		},
 	}
 
 	model := tui.New(tui.Options{

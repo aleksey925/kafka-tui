@@ -190,7 +190,7 @@ func DefaultKeyHints() []layout.KeyHint {
 		{Key: ":", Label: "command"},
 		{Key: "/", Label: "search"},
 		{Key: "?", Label: "help"},
-		{Key: "ctrl+r", Label: "refresh"},
+		{Key: "ctrl+r", Label: "auto-refresh"},
 		{Key: "q", Label: "back/quit"},
 	}
 }
@@ -320,10 +320,12 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.mode = ModeCommand
 		m.command = layout.CommandBar{Active: true, Prefix: ':'}
+		m.applySize()
 		return m, nil
 	case "/":
 		m.mode = ModeSearch
 		m.search = layout.CommandBar{Active: true, Prefix: '/'}
+		m.applySize()
 		return m, nil
 	case "?":
 		m.mode = ModeHelp
@@ -367,6 +369,7 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = ModeNormal
 		m.command = layout.CommandBar{}
+		m.applySize()
 		return m, nil
 	case "enter":
 		cmd, err := ParseCommand(m.command.Buffer)
@@ -376,6 +379,7 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = ModeNormal
 		m.command = layout.CommandBar{}
+		m.applySize()
 		next := m.replaceScreen(cmd.Screen, cmd.Arg)
 		return m, next
 	case "tab":
@@ -407,11 +411,13 @@ func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = ModeNormal
 		m.search = layout.CommandBar{}
+		m.applySize()
 		return m, nil
 	case "enter":
 		// search delegation lives on individual screens (Task 11+); the root
 		// model just collects input and returns to normal mode.
 		m.mode = ModeNormal
+		m.applySize()
 		return m, nil
 	case "backspace":
 		if n := len(m.search.Buffer); n > 0 {
@@ -474,7 +480,12 @@ func (m *Model) render() string {
 	body := m.renderBody()
 	flash := layout.FlashLine(m.styles, m.flash, m.width)
 
-	return strings.Join([]string{header, cmdBox, body, flash}, "\n")
+	parts := []string{header}
+	if cmdBox != "" {
+		parts = append(parts, cmdBox)
+	}
+	parts = append(parts, body, flash)
+	return strings.Join(parts, "\n")
 }
 
 // flashTickMsg triggers a re-render so a non-sticky toast that has just
@@ -698,16 +709,16 @@ func (m *Model) applySize() {
 // border (2 rows) and left+right border (2 cols).
 const frameInset = 2
 
-// chromeRows is the total height of the rows the host paints above and
-// below the body frame: the multi-pane header, the always-reserved command
-// prompt box (3 rows for its top/body/bottom borders), and the global
-// flash bar.
-const chromeRows = layout.HeaderRows + layout.CommandRows + 1
-
 // bodyHeight returns the inner height left for the active screen after the
-// chrome and the body frame border are subtracted.
+// chrome and the body frame border are subtracted. The command-prompt rows
+// only count when the bar is active — when closed, the body uses the full
+// screen below the header.
 func (m *Model) bodyHeight() int {
-	h := m.height - chromeRows - frameInset
+	chrome := layout.HeaderRows + 1 // header + flash bar
+	if m.mode == ModeCommand || m.mode == ModeSearch {
+		chrome += layout.CommandRows
+	}
+	h := m.height - chrome - frameInset
 	if h < 1 {
 		return 0
 	}
@@ -790,7 +801,30 @@ func (m *Model) routeClustersAction(s *clustersScreen) tea.Cmd {
 	if a.Connect != "" {
 		return m.connectCluster(a.Connect)
 	}
+	if a.Reload {
+		m.reloadClusters(s)
+	}
 	return nil
+}
+
+// reloadClusters re-reads config files via Bootstrap.ConfigReloader and
+// pushes the fresh list into the clusters screen. Errors are surfaced
+// through the screen's toast queue (which the global flash bar promotes).
+func (m *Model) reloadClusters(s *clustersScreen) {
+	if m.boot == nil || m.boot.ConfigReloader == nil {
+		s.m.Toasts().Push(components.ToastWarning, "reload not configured")
+		return
+	}
+	loaded, list, cli, err := m.boot.ConfigReloader()
+	if err != nil {
+		s.m.Toasts().Push(components.ToastError, "reload: "+err.Error())
+		return
+	}
+	m.boot.Loaded = loaded
+	m.boot.Clusters = list
+	m.boot.CLIName = cli
+	s.m.SetClusters(list, cli)
+	s.m.Toasts().Push(components.ToastSuccess, fmt.Sprintf("reloaded %d clusters", len(list)))
 }
 
 func (m *Model) routeTopicsAction(s *topicsScreen) tea.Cmd {

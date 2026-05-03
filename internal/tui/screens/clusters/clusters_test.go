@@ -205,7 +205,7 @@ func TestShiftT_TestAllClusters(t *testing.T) {
 	assert.Equal(t, clusters.StatusOK, m.Status("b"))
 }
 
-func TestR_RefreshesAllStatuses(t *testing.T) {
+func TestT_TestsAllStatuses(t *testing.T) {
 	probed := 0
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
@@ -217,9 +217,19 @@ func TestR_RefreshesAllStatuses(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("r"))
+	_, cmd := m.Update(keyPress("T"))
 	drive(t, m, cmd)
 	assert.Equal(t, 2, probed)
+}
+
+func TestR_RaisesReloadAction(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "a", Brokers: []string{"x"}},
+		},
+	})
+	_, _ = m.Update(keyPress("r"))
+	assert.True(t, m.ConsumeAction().Reload, "r must request a config reload")
 }
 
 func TestE_OpensChooserWhenBothPathsExist(t *testing.T) {
@@ -307,7 +317,18 @@ func TestEditChooser_EscapeCancels(t *testing.T) {
 	assert.False(t, m.EditingChooser())
 }
 
-func TestEsc_RaisesQuitAction(t *testing.T) {
+func TestQ_RaisesQuitAction(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "a", Brokers: []string{"x"}},
+			{Name: "b", Brokers: []string{"y"}},
+		},
+	})
+	_, _ = m.Update(keyPress("q"))
+	assert.True(t, m.ConsumeAction().Quit)
+}
+
+func TestEsc_DoesNotQuitFromRoot(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
 			{Name: "a", Brokers: []string{"x"}},
@@ -315,7 +336,7 @@ func TestEsc_RaisesQuitAction(t *testing.T) {
 		},
 	})
 	_, _ = m.Update(keyPress("esc"))
-	assert.True(t, m.ConsumeAction().Quit)
+	assert.False(t, m.ConsumeAction().Quit, "esc on the root screen must be a no-op")
 }
 
 func TestView_RendersTableWithMarkers(t *testing.T) {
@@ -398,8 +419,8 @@ func TestKeyHints_ContainExpectedLabels(t *testing.T) {
 	got := strings.Join(labels, ",")
 	assert.Contains(t, got, "connect")
 	assert.Contains(t, got, "test")
+	assert.Contains(t, got, "reload")
 	assert.Contains(t, got, "edit")
-	assert.Contains(t, got, "refresh")
 	assert.Contains(t, got, "search")
 }
 

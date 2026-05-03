@@ -313,11 +313,12 @@ func KeyHints(s theme.Styles, hints []KeyHint) string {
 const CommandRows = 3
 
 // CommandLine renders the command bar prompt as a focused, bordered single-
-// row box. Returns an empty (but `CommandRows`-tall) blank slot when the
-// bar is inactive so the body doesn't shift when the prompt appears.
+// row box, or returns an empty string when the bar is inactive. Hosts must
+// account for the `CommandRows` height only when [CommandBar.Active] is
+// true so the body uses the full screen otherwise.
 func CommandLine(s theme.Styles, c CommandBar, width int) string {
 	if !c.Active {
-		return blankRows(CommandRows, width)
+		return ""
 	}
 	prefix := string(c.Prefix)
 	body := s.CommandHL.Render(prefix) + " " + s.Command.Render(c.Buffer)
@@ -341,20 +342,6 @@ func CommandLine(s theme.Styles, c CommandBar, width int) string {
 		box = box.Width(width - 2)
 	}
 	return box.Render(body)
-}
-
-// blankRows returns n blank lines, each padded to width so the geometry is
-// stable when the command bar isn't visible.
-func blankRows(n, width int) string {
-	pad := ""
-	if width > 0 {
-		pad = strings.Repeat(" ", width)
-	}
-	rows := make([]string, n)
-	for i := range rows {
-		rows[i] = pad
-	}
-	return strings.Join(rows, "\n")
 }
 
 // formatDuration prints durations like "5s", "30s", "2m" — short and readable.

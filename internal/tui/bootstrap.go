@@ -83,4 +83,8 @@ type Bootstrap struct {
 	ReadOnly bool
 	// Now is the injected clock. Defaults to time.Now.
 	Now func() time.Time
+	// ConfigReloader re-reads config.yaml/clusters.yaml from disk and
+	// returns a fresh snapshot. Wired by main.go from the original CLI
+	// flags. nil disables manual reload (`r` on the clusters screen).
+	ConfigReloader func() (*config.Loaded, []config.Cluster, string, error)
 }

@@ -565,14 +565,15 @@ func (t *Table) computeWidths() []int {
 		widths[t.sortCol] += 2
 	}
 	if t.width > 0 && len(flexIdxs) > 0 {
-		// "  " separator between columns, plus the multi-select prefix
-		// "[ ] " (4 cols) when applicable.
+		// row layout: 2-col cursor gutter + optional multi-select prefix
+		// "[ ] " (4 cols) + per-column "  " separators.
 		separators := 2 * (len(t.columns) - 1)
+		gutter := 2
 		prefix := 0
 		if t.selectable {
 			prefix = 4
 		}
-		leftover := t.width - fixedTotal - separators - prefix
+		leftover := t.width - fixedTotal - separators - gutter - prefix
 		if leftover > 0 {
 			share := leftover / len(flexIdxs)
 			extra := leftover % len(flexIdxs)
@@ -600,7 +601,13 @@ func (t *Table) renderHeader(widths []int) string {
 		}
 		cells[i] = padCell(title, widths[i], c.Align)
 	}
-	return t.styles.HelpTitle.Render(strings.Join(cells, "  "))
+	// align the header with row content: 2 cols for the cursor arrow gutter,
+	// plus the multi-select prefix when enabled.
+	gutter := "  "
+	if t.selectable {
+		gutter += "    "
+	}
+	return t.styles.HelpTitle.Render(gutter + strings.Join(cells, "  "))
 }
 
 func (t *Table) renderRow(viewIdx int, widths []int) string {
@@ -614,6 +621,15 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		cells[i] = padCell(v, widths[i], c.Align)
 	}
+	// 2-col gutter on the left: a styled arrow on the cursor row, blank
+	// elsewhere. Inversion of the whole row colored cell glyphs (status
+	// dots, swatches) awkwardly, so we use a discrete pointer instead.
+	var gutter string
+	if viewIdx == t.cursor {
+		gutter = t.styles.HintKey.Render("▶ ")
+	} else {
+		gutter = "  "
+	}
 	prefix := ""
 	if t.selectable {
 		mark := " "
@@ -622,16 +638,7 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		prefix = "[" + mark + "] "
 	}
-	line := prefix + strings.Join(cells, "  ")
-	if viewIdx == t.cursor {
-		// pad the cursor row to the table width so the inverted background
-		// covers the full row, k9s-style.
-		if t.width > lipgloss.Width(line) {
-			line += strings.Repeat(" ", t.width-lipgloss.Width(line))
-		}
-		return t.styles.Cursor.Render(line)
-	}
-	return line
+	return gutter + prefix + strings.Join(cells, "  ")
 }
 
 func (t *Table) renderSearchLine() string {

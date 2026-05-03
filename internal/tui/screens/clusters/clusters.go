@@ -132,8 +132,11 @@ type Action struct {
 	// Connect names the cluster the user wants to switch to. The host is
 	// expected to push the topics screen.
 	Connect string
-	// Quit signals the user pressed esc/q with no other screen below.
+	// Quit signals the user pressed q with no other screen below.
 	Quit bool
+	// Reload asks the host to re-read the config files and feed a fresh
+	// cluster list back via [Model.SetClusters].
+	Reload bool
 }
 
 // Options configure a [Model].
@@ -304,6 +307,37 @@ func (m *Model) ConsumeAction() Action {
 // Status returns the current status of the named cluster (or [StatusUnknown]).
 func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 
+// SetClusters replaces the cluster list (used by the host after a reload).
+// Connectivity statuses are preserved by name; missing clusters drop out;
+// new ones get [StatusUnknown]. The cursor stays on the same cluster name
+// when possible.
+func (m *Model) SetClusters(list []config.Cluster, cliName string) {
+	m.clusters = append([]config.Cluster(nil), list...)
+	m.cliName = cliName
+	keep := make(map[string]ConnectionStatus, len(list))
+	keepErr := make(map[string]string, len(list))
+	for _, c := range list {
+		if s, ok := m.statuses[c.Name]; ok {
+			keep[c.Name] = s
+		} else {
+			keep[c.Name] = StatusUnknown
+		}
+		if e, ok := m.errors[c.Name]; ok {
+			keepErr[c.Name] = e
+		}
+	}
+	m.statuses = keep
+	m.errors = keepErr
+	prevID := ""
+	if row, ok := m.table.SelectedRow(); ok {
+		prevID = row.ID
+	}
+	m.refreshTable()
+	if prevID != "" {
+		m.table.GoToID(prevID)
+	}
+}
+
 // Toasts exposes the toast queue (mostly for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
@@ -345,9 +379,10 @@ func (m *Model) SetSize(w, h int) {
 func (m *Model) KeyHints() []layout.KeyHint {
 	return []layout.KeyHint{
 		{Key: "enter", Label: "connect"},
-		{Key: "t/T", Label: "test/all"},
+		{Key: "t", Label: "test"},
+		{Key: "T", Label: "test all"},
+		{Key: "r", Label: "reload"},
 		{Key: "e", Label: "edit"},
-		{Key: "r", Label: "refresh"},
 		{Key: "/", Label: "search"},
 	}
 }
@@ -399,14 +434,21 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case "t":
 		cmd := m.testCurrent()
 		return m, cmd
-	case "T", "r":
+	case "T":
 		cmd := m.testAll()
 		return m, cmd
+	case "r":
+		// re-read config from disk; host will SetClusters on success.
+		m.action.Reload = true
+		return m, nil
 	case "e":
 		cmd := m.openEditChooser()
 		return m, cmd
-	case "esc", "q":
+	case "q":
 		m.action.Quit = true
+		return m, nil
+	case "esc":
+		// no-op on the root screen — esc must not quit the app.
 		return m, nil
 	}
 	tbl, _ := m.table.Update(key)
@@ -565,20 +607,13 @@ func (m *Model) refreshTable() {
 }
 
 func (m *Model) rowValues(c config.Cluster) []string {
-	// the leading dot is now driven by connectivity status (k9s-style),
-	// not the user-configured cluster color. The user color is rendered as
-	// a thin vertical bar prefixed to the name cell so it stays a visual
-	// tag rather than a status light.
+	// the leading dot reflects connectivity status (green/yellow/red/gray),
+	// not the user-configured cluster color — the dot was previously
+	// confusing because users read it as a status light.
 	statusDot := lipgloss.NewStyle().
 		Foreground(statusColor(m.styles, m.statuses[c.Name])).
 		Render("●")
 	name := c.Name
-	if c.Color != "" {
-		bar := lipgloss.NewStyle().
-			Foreground(m.styles.Palette.ClusterColor(c.Color)).
-			Render("▎")
-		name = bar + " " + c.Name
-	}
 	flags := []string{}
 	if c.ReadOnly {
 		flags = append(flags, "[RO]")
