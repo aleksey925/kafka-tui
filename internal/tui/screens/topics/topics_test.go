@@ -310,6 +310,43 @@ func TestCloneForm_CtrlSStartsCloneAndShowsProgress(t *testing.T) {
 	assert.Equal(t, topics.ModeList, m.CurrentMode())
 }
 
+func TestCloneForm_PartialProgressRendersOverlayAndEscReturns(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
+	// emit one in-flight progress, then a Done so the test doesn't wait on
+	// a real Kafka clone. We keep ourselves in the in-flight render via the
+	// first, then assert on it before letting the next msg pump close out.
+	svc.clonePartial = []kafka.CloneProgress{
+		{Total: 100, Copied: 30},
+		{Total: 100, Copied: 100, Done: true},
+	}
+	m := topics.New(topics.Options{Service: svc})
+	m.SetSize(120, 30)
+	drive(t, m, m.Init())
+
+	_, _ = m.Update(keyPress("y"))
+	_, cmd := m.Update(keyPress("ctrl+s"))
+	// pump the cloneStartedMsg so we land on the first clonePollCmd.
+	step1 := cmd()
+	require.NotNil(t, step1)
+	_, cmd = m.Update(step1)
+	// the next cmd reads the first partial-progress message.
+	step2 := cmd()
+	_, _ = m.Update(step2)
+
+	require.Equal(t, topics.ModeCloning, m.CurrentMode(), "must remain cloning before Done arrives")
+
+	// renderCloningOverlay surfaces the labels.
+	out := m.View()
+	assert.Contains(t, out, "Cloning…")
+	assert.Contains(t, out, "30")
+	assert.Contains(t, out, "100")
+	assert.Contains(t, out, "esc")
+
+	// esc on the cloning overlay returns to the list (handleCloningKey).
+	_, _ = m.Update(keyPress("esc"))
+	assert.Equal(t, topics.ModeList, m.CurrentMode())
+}
+
 func TestRefresh_RKeyReloadsTopics(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
 	m := topics.New(topics.Options{Service: svc})
@@ -560,6 +597,11 @@ type fakeService struct {
 	configs  map[string][]kafka.TopicConfig
 	parts    map[string][]kafka.PartitionDetail
 	cloneErr error
+	// clonePartial, when non-nil, is the sequence of progress events to
+	// emit in order from the channel returned by CloneTopic. Callers MUST
+	// terminate it with a Done=true event; otherwise tests will hang on
+	// the channel close path.
+	clonePartial []kafka.CloneProgress
 }
 
 func newFakeService(topicsList []kafka.TopicSummary, listErr error) *fakeService {
@@ -676,9 +718,18 @@ func (f *fakeService) CloneTopic(_ context.Context, src, dst string, _ kafka.Clo
 	f.mu.Lock()
 	f.cloned = append(f.cloned, clonedPair{src: src, dst: dst})
 	err := f.cloneErr
+	partial := append([]kafka.CloneProgress(nil), f.clonePartial...)
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if len(partial) > 0 {
+		ch := make(chan kafka.CloneProgress, len(partial))
+		for _, p := range partial {
+			ch <- p
+		}
+		close(ch)
+		return ch, nil
 	}
 	ch := make(chan kafka.CloneProgress, 1)
 	ch <- kafka.CloneProgress{Total: 0, Copied: 0, Done: true}

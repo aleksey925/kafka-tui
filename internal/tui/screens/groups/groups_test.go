@@ -826,3 +826,31 @@ func keyPress(name string) tea.KeyPressMsg {
 	}
 	return tea.KeyPressMsg{}
 }
+
+func TestReset_ViewRendersStrategyStepWithSelection(t *testing.T) {
+	r := newResetModel(t)
+
+	out := r.View()
+
+	assert.Contains(t, out, "Choose strategy")
+	assert.Contains(t, out, "earliest")
+	assert.Contains(t, out, "latest")
+	assert.Contains(t, out, "shift")
+	assert.Contains(t, out, "timestamp")
+	assert.Contains(t, out, "specific")
+	// the default-selected strategy carries the filled marker.
+	assert.Contains(t, out, "(•)")
+}
+
+func TestReset_ViewRendersParamsStepWithForm(t *testing.T) {
+	r := newResetModel(t)
+	// pick "shift" and advance into params via the strategy handler.
+	r, _ = r.Update(keyPress("j"))
+	r, _ = r.Update(keyPress("j"))
+	require.Equal(t, kafka.ResetShift, r.Strategy())
+	r, _ = r.Update(keyPress("enter"))
+	require.Equal(t, groups.StepParams, r.Step())
+
+	out := r.View()
+	assert.Contains(t, out, "Parameters", "params step header must surface")
+}

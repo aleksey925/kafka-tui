@@ -148,3 +148,18 @@ func TestStatus_DurationFormatting(t *testing.T) {
 		})
 	}
 }
+
+func TestHeader_NarrowTerminalUsesCompactFallback(t *testing.T) {
+	out := layout.Header(
+		theme.DefaultStyles(),
+		layout.HeaderInfo{Cluster: "alpha", ReadOnly: true},
+		layout.StatusInfo{},
+		nil,
+		layout.Build{},
+		20, // < 40 forces compact path
+	)
+	assert.Contains(t, out, "kafka-tui")
+	assert.Contains(t, out, "alpha")
+	assert.Contains(t, out, "[RO]")
+	assert.NotContains(t, out, "Cluster", "compact header must not include the multi-row labels")
+}

@@ -447,3 +447,24 @@ func lookPathOnly(names ...string) clipboard.LookPath {
 func mapEnv(env map[string]string) func(string) string {
 	return func(name string) string { return env[name] }
 }
+
+func TestDefaultNative_ReturnsUsableInstance(t *testing.T) {
+	n := clipboard.DefaultNative()
+	require.NotNil(t, n)
+}
+
+func TestDefaultOSC52_CloseIsIdempotent(t *testing.T) {
+	o := clipboard.DefaultOSC52()
+	require.NotNil(t, o)
+	require.NoError(t, o.Close())
+	require.NoError(t, o.Close(), "Close on a never-acquired writer must be a no-op")
+}
+
+func TestOSC52_Close_ReleasesAcquiredWriter(t *testing.T) {
+	var buf bytes.Buffer
+	o := clipboard.NewOSC52(clipboard.OSC52Options{Writer: &buf})
+	require.NoError(t, o.Copy(context.Background(), "hi"))
+
+	// Close on an injected (non-owned) writer must not surface an error.
+	require.NoError(t, o.Close())
+}

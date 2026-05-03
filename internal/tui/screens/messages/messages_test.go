@@ -659,3 +659,47 @@ func keyPress(name string) tea.KeyPressMsg {
 func keyPressRune(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
+
+func TestDetailView_RendersHeaderAndBlocks(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Partition: 3, Offset: 42,
+		Timestamp: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		Key:       []byte("k1"),
+		Value:     []byte(`{"hello":"world"}`),
+		Headers: []kafka.Header{
+			{Key: "trace-id", Value: []byte("abc")},
+		},
+	}})
+	m.SetSize(120, 30)
+	_, _ = m.Update(keyPress("enter"))
+
+	out := m.View()
+
+	// header line — topic, partition, offset, timestamp, position counter.
+	assert.Contains(t, out, "orders")
+	assert.Contains(t, out, "partition 3")
+	assert.Contains(t, out, "offset 42")
+	assert.Contains(t, out, "2026-05-01")
+	assert.Contains(t, out, "1/1")
+
+	// block titles include byte counts and counts.
+	assert.Contains(t, out, "Key (2 bytes)")
+	assert.Contains(t, out, "Headers (1)")
+	// header value rendered with trace-id key.
+	assert.Contains(t, out, "trace-id")
+	// value block carries the formatted JSON content.
+	assert.Contains(t, out, "hello")
+	assert.Contains(t, out, "world")
+}
+
+func TestDetailView_EmptyKeyAndHeadersRenderEmptyMarker(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte("value-only"),
+	}})
+	m.SetSize(80, 20)
+	_, _ = m.Update(keyPress("enter"))
+
+	out := m.View()
+	assert.Contains(t, out, "(empty)", "empty key + headers must show the empty marker")
+	assert.Contains(t, out, "value-only")
+}

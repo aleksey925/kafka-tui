@@ -1,6 +1,7 @@
 package logs_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,4 +328,34 @@ func keyPress(name string) tea.KeyPressMsg {
 func textKey(text string) tea.KeyPressMsg {
 	r := rune(text[0])
 	return tea.KeyPressMsg{Code: r, Text: text}
+}
+
+func TestNavigation_CtrlDPagesDownAndCtrlUPagesUp(t *testing.T) {
+	// arrange
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	path := writeLog(t, strings.Join(lines, "\n"))
+	m := logs.New(logs.Options{Path: path})
+	m.SetSize(80, 12) // bodyHeight ≈ 12-2(chrome) -> non-trivial pageStep
+	drive(t, m, m.Init())
+
+	// the viewer starts at the tail; jump to the top first so ctrl+d has
+	// somewhere to advance into.
+	for range 2 {
+		m, _ = m.Update(keyPress("g"))
+	}
+	require.Equal(t, 0, m.Cursor())
+
+	m, _ = m.Update(ctrlKey('d'))
+	cursorAfterDown := m.Cursor()
+	require.Positive(t, cursorAfterDown, "ctrl+d must move cursor down")
+
+	m, _ = m.Update(ctrlKey('u'))
+	assert.Less(t, m.Cursor(), cursorAfterDown, "ctrl+u must move cursor up")
+}
+
+func ctrlKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
 }

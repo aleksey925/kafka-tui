@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
 func TestToasts_PushAndLen(t *testing.T) {
@@ -113,4 +115,38 @@ func TestToast_StickyForErrors(t *testing.T) {
 
 	tt = components.Toast{Level: components.ToastInfo, Lifetime: 3 * time.Second}
 	assert.False(t, tt.Sticky())
+}
+
+func TestToasts_LatestReturnsMostRecent(t *testing.T) {
+	q := components.NewToasts()
+	q.Push(components.ToastInfo, "first")
+	q.Push(components.ToastSuccess, "second")
+
+	got, ok := q.Latest()
+	require.True(t, ok)
+	assert.Equal(t, "second", got.Message)
+}
+
+func TestToasts_LatestEmptyReturnsFalse(t *testing.T) {
+	q := components.NewToasts()
+	_, ok := q.Latest()
+	assert.False(t, ok)
+}
+
+func TestToasts_LatestPrunesExpiredBeforeReturning(t *testing.T) {
+	now := time.Now()
+	clk := &now
+	q := components.NewToasts(components.WithToastClock(func() time.Time { return *clk }))
+	q.PushWithLifetime(components.ToastInfo, "stale", 100*time.Millisecond)
+
+	*clk = now.Add(time.Second)
+	_, ok := q.Latest()
+	assert.False(t, ok, "expired non-sticky toast must not be returned")
+}
+
+func TestWithToastStyles_AppliesPalette(t *testing.T) {
+	// just exercise the option's body — render should still work.
+	q := components.NewToasts(components.WithToastStyles(theme.DefaultStyles()))
+	q.Push(components.ToastInfo, "x")
+	assert.NotEmpty(t, q.View())
 }

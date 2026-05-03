@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
 func TestConfirm_PendingByDefault(t *testing.T) {
@@ -61,4 +62,9 @@ func TestConfirm_ViewCenteredAtWidth(t *testing.T) {
 	// the placed string has trailing spaces or a centered box; just sanity-check
 	// that it renders something non-empty.
 	assert.NotEmpty(t, out)
+}
+
+func TestWithConfirmStyles_AppliesPalette(t *testing.T) {
+	c := components.NewConfirm("Title", "Body", components.WithConfirmStyles(theme.DefaultStyles()))
+	assert.NotEmpty(t, c.View(40))
 }

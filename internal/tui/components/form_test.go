@@ -1,11 +1,13 @@
 package components_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
 func TestForm_TabFocusCyclesForwardAndBackward(t *testing.T) {
@@ -528,4 +530,169 @@ func TestFieldKindString(t *testing.T) {
 	assert.Equal(t, "list", components.FieldList.String())
 	assert.Equal(t, "textarea", components.FieldTextarea.String())
 	assert.Equal(t, "segmented", components.FieldSegmented.String())
+}
+
+func TestForm_FieldsReturnsDefensiveCopy(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "v"},
+	})
+
+	got := f.Fields()
+	got[0].Value = "mutated"
+
+	original, _ := f.Field("k")
+	assert.Equal(t, "v", original.Value, "mutating returned slice must not affect form state")
+}
+
+func TestForm_FocusedListEntry(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList, List: []string{"a=1", "b=2"}},
+	})
+
+	val, idx, ok := f.FocusedListEntry()
+
+	assert.True(t, ok)
+	assert.Equal(t, "a=1", val)
+	assert.Equal(t, 0, idx)
+}
+
+func TestForm_FocusedListEntry_NonListFieldReturnsFalse(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "v"},
+	})
+
+	_, _, ok := f.FocusedListEntry()
+	assert.False(t, ok)
+}
+
+func TestForm_FocusedListEntry_EmptyListReturnsFalse(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList, List: nil},
+	})
+
+	_, _, ok := f.FocusedListEntry()
+	assert.False(t, ok)
+}
+
+func TestForm_ValidateFocusedListEntry_RunsValidator(t *testing.T) {
+	bad := errors.New("invalid")
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList,
+			List: []string{"oops"},
+			Validator: func(string) error { return bad },
+		},
+	})
+
+	assert.ErrorIs(t, f.ValidateFocusedListEntry(), bad)
+}
+
+func TestForm_ValidateFocusedListEntry_EmptyEntryIsSkipped(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList,
+			List: []string{""},
+			Validator: func(string) error { return errors.New("must not be called") },
+		},
+	})
+
+	assert.NoError(t, f.ValidateFocusedListEntry())
+}
+
+func TestForm_ValidateFocusedListEntry_NoValidatorIsNoop(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList, List: []string{"x"}},
+	})
+
+	assert.NoError(t, f.ValidateFocusedListEntry())
+}
+
+func TestForm_RenderField_ReturnsFieldStringByKey(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "topic", Label: "Topic", Kind: components.FieldText, Value: "orders"},
+	})
+
+	out := f.RenderField("topic")
+
+	assert.Contains(t, out, "Topic")
+	assert.Contains(t, out, "orders")
+}
+
+func TestForm_RenderField_MissingKeyReturnsEmpty(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "K", Kind: components.FieldText},
+	})
+
+	assert.Empty(t, f.RenderField("missing"))
+}
+
+func TestForm_InsertAtCursor_TextField(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "K", Kind: components.FieldText, Value: "ab"},
+	})
+
+	f.InsertAtCursor("XY")
+
+	got, _ := f.Field("k")
+	assert.Equal(t, "abXY", got.Value)
+}
+
+func TestForm_InsertAtCursor_ListField(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList, List: []string{"abc"}},
+	})
+
+	f.InsertAtCursor("Z")
+
+	got, _ := f.Field("h")
+	assert.Equal(t, []string{"abcZ"}, got.List)
+}
+
+func TestForm_InsertAtCursor_NoopOnDropdown(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldDropdown,
+			Value: "none", Options: []string{"none", "gzip"}},
+	})
+
+	f.InsertAtCursor("anything")
+
+	got, _ := f.Field("c")
+	assert.Equal(t, "none", got.Value)
+}
+
+func TestForm_SetSegmentedPopup_OpenAndClose(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "none", Options: []string{"none", "gzip"}},
+	})
+
+	f.SetSegmentedPopup("c", true)
+	assert.True(t, f.PopupActive())
+
+	f.SetSegmentedPopup("c", false)
+	assert.False(t, f.PopupActive())
+}
+
+func TestForm_SetFocusedSuffixAndEditing(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+	})
+
+	assert.True(t, f.Editing(), "form starts in editing mode")
+
+	f.SetEditing(false)
+	assert.False(t, f.Editing())
+
+	// suffix appears next to focused field's label.
+	f.SetFocusedSuffix("[EDIT]")
+	assert.Contains(t, f.View(), "[EDIT]")
+}
+
+func TestForm_WithFormStyles_OverridesPalette(t *testing.T) {
+	custom := theme.DefaultStyles()
+	f := components.NewForm(
+		[]components.Field{{Key: "k", Label: "K", Kind: components.FieldText}},
+		components.WithFormStyles(custom),
+	)
+
+	// the form must construct with the override applied without panicking.
+	assert.NotEmpty(t, f.View())
 }

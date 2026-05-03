@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
 func TestTable_NavigationJK(t *testing.T) {
@@ -439,4 +440,57 @@ func keyPressMsg(name string) tea.KeyPressMsg {
 
 func keyPressRune(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+func TestTable_FilteredCount_AndTotalCount(t *testing.T) {
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(5))
+
+	assert.Equal(t, 5, tbl.TotalCount())
+	assert.Equal(t, 5, tbl.FilteredCount())
+
+	tbl.SetSearch("row-2")
+	assert.Equal(t, 5, tbl.TotalCount(), "TotalCount must ignore filter")
+	assert.Equal(t, 1, tbl.FilteredCount())
+}
+
+func TestTable_SetSearch_LiveFiltersAndClears(t *testing.T) {
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(4))
+
+	tbl.SetSearch("row-3")
+	row, ok := tbl.SelectedRow()
+	require.True(t, ok)
+	assert.Equal(t, "row-3", row.ID)
+
+	tbl.SetSearch("")
+	assert.Equal(t, 4, tbl.FilteredCount(), "empty query restores full view")
+}
+
+func TestTable_SetHeight_AndSetTotalWidth_DontPanic(t *testing.T) {
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(20))
+
+	tbl.SetHeight(5)
+	tbl.SetTotalWidth(80)
+
+	assert.Contains(t, tbl.View(), "row-0")
+}
+
+func TestTable_TruncateCellsLongerThanColumnWidth(t *testing.T) {
+	cols := []components.Column{{Title: "name", Width: 6}}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "x", Values: []string{"verylongvalue"}},
+	})
+
+	out := tbl.View()
+	// truncated cell ends with the ellipsis rune.
+	assert.Contains(t, out, "…")
+}
+
+func TestTable_WithStyles_ConstructsWithoutPanic(t *testing.T) {
+	tbl := components.NewTable(simpleColumns(), components.WithStyles(theme.DefaultStyles()))
+	tbl.SetRows(simpleRows(2))
+	assert.NotEmpty(t, tbl.View())
 }

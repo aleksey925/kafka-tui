@@ -9,6 +9,7 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
 func TestHelp_RendersTitleAndSections(t *testing.T) {
@@ -60,4 +61,9 @@ func TestHelp_HeightAddsVerticalPadding(t *testing.T) {
 	out := h.View(0, 10)
 	lines := strings.Split(out, "\n")
 	assert.GreaterOrEqual(t, len(lines), 10)
+}
+
+func TestWithHelpStyles_AppliesPalette(t *testing.T) {
+	h := components.NewHelp(nil, "", components.WithHelpStyles(theme.DefaultStyles()))
+	assert.NotNil(t, h)
 }

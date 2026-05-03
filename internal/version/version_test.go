@@ -37,6 +37,17 @@ func TestBuildInfo_Display(t *testing.T) {
 	}
 }
 
+func TestNewBuildInfo_PopulatesVersionAndCommitFromBuild(t *testing.T) {
+	// vcsRevision reads the calling binary's debug build info — which under
+	// `go test` may or may not contain `vcs.revision` depending on whether
+	// the test binary was built from a clean tree. Either way, the version
+	// passes through verbatim and the commit field is at most `shortHashLen`.
+	bi := NewBuildInfo("9.9.9")
+
+	assert.Equal(t, "9.9.9", bi.Version)
+	assert.LessOrEqual(t, len(bi.Commit), shortHashLen)
+}
+
 func TestExtractRevision(t *testing.T) {
 	tests := []struct {
 		name     string
