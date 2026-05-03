@@ -448,18 +448,18 @@ func TestFollow_StartReceivesChunkAndPrependsToList(t *testing.T) {
 	assert.Equal(t, []byte("new"), m.Messages()[0].Value)
 }
 
-func TestFormatTimestamp_SameDayUsesShortForm(t *testing.T) {
+func TestFormatTimestamp_AlwaysIncludesFullDate(t *testing.T) {
 	now := time.Date(2026, 4, 28, 14, 0, 0, 0, time.UTC)
 	ts := time.Date(2026, 4, 28, 9, 30, 15, 250_000_000, time.UTC)
-	got := messages.FormatTimestamp(ts, now)
-	assert.Equal(t, "09:30:15.250", got)
-}
+	// timestamps come from the broker in UTC and are rendered in the
+	// local timezone — compute the expected string the same way so the
+	// test is portable across hosts.
+	wantSame := ts.Local().Format("2006-01-02 15:04:05.000")
+	assert.Equal(t, wantSame, messages.FormatTimestamp(ts, now))
 
-func TestFormatTimestamp_OtherDayIncludesDate(t *testing.T) {
-	now := time.Date(2026, 4, 28, 0, 0, 0, 0, time.UTC)
-	ts := time.Date(2026, 3, 15, 14, 5, 0, 0, time.UTC)
-	got := messages.FormatTimestamp(ts, now)
-	assert.Equal(t, "03-15 14:05:00", got)
+	older := time.Date(2026, 3, 15, 14, 5, 0, 0, time.UTC)
+	wantOlder := older.Local().Format("2006-01-02 15:04:05.000")
+	assert.Equal(t, wantOlder, messages.FormatTimestamp(older, now))
 }
 
 func TestFormatTimestamp_ZeroReturnsDash(t *testing.T) {

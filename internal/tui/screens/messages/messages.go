@@ -50,7 +50,7 @@ const (
 )
 
 // DefaultColumns is used when config does not override.
-var DefaultColumns = []string{"timestamp", "partition", "offset", "key", "value"}
+var DefaultColumns = []string{"timestamp", "partition", "offset", "key", "headers", "value"}
 
 // DefaultPageSize is the number of messages fetched on initial load and per
 // `[`/`]` window step.
@@ -650,26 +650,40 @@ func (m *Model) cellFor(col string, msg kafka.Message) string {
 	case "value":
 		return PreviewLine(msg.Value, valuePreviewWidth(m.width))
 	case "headers":
-		return strconv.Itoa(len(msg.Headers))
+		return headersPreview(msg.Headers)
 	default:
 		return ""
 	}
 }
 
-// valuePreviewWidth picks how many runes fit in the value column given the
-// terminal width. Falls back to a sensible default when width is unknown.
+// headersPreview renders message headers as a compact "k=v, k=v" line for
+// the table cell. Empty headers render as "—" so the column is easy to
+// scan visually. Values are passed through strconv.Quote so binary bytes
+// (NUL, ANSI escapes, etc.) can't break the terminal output for the row.
+func headersPreview(headers []kafka.Header) string {
+	if len(headers) == 0 {
+		return "—"
+	}
+	parts := make([]string, 0, len(headers))
+	for _, h := range headers {
+		parts = append(parts, h.Key+"="+strconv.Quote(string(h.Value)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// valuePreviewWidth picks how many runes the value preview should request
+// before the table component takes over and truncates flex columns to fit.
+// Since the value column is flex, this is a loose upper bound — we just
+// want PreviewLine to strip control chars and not blow up on huge JSON
+// payloads. Falls back to a sensible default when width is unknown.
 func valuePreviewWidth(termWidth int) int {
 	if termWidth <= 0 {
 		return 60
 	}
-	// reserved space for: ts(13), partition(3), offset(8), key(32) plus 4
-	// inter-column gaps of 2 chars each.
-	const reserved = 13 + 3 + 8 + 32 + 4*2
-	w := termWidth - reserved - 4
-	if w < 20 {
+	if termWidth < 40 {
 		return 20
 	}
-	return w
+	return termWidth
 }
 
 // View renders the screen body.
@@ -700,24 +714,16 @@ func (m *Model) headerLine() string {
 	return m.styles.StatusInfo.Render(body)
 }
 
-// FormatTimestamp implements §7.3 timestamp formatting:
-//
-//	HH:MM:SS.mmm  for the current day in the same location
-//	MM-DD HH:MM:SS for any other day
-func FormatTimestamp(ts, now time.Time) string {
+// FormatTimestamp renders a message timestamp as `YYYY-MM-DD HH:MM:SS.mmm`
+// in the local timezone. The full date is always shown so users can tell
+// "today" from "an hour ago" without checking the system clock. Kafka
+// timestamps come from the broker in UTC, so we convert to Local for
+// display.
+func FormatTimestamp(ts, _ time.Time) string {
 	if ts.IsZero() {
 		return "—"
 	}
-	if sameDay(ts, now) {
-		return ts.Format("15:04:05.000")
-	}
-	return ts.Format("01-02 15:04:05")
-}
-
-func sameDay(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.Date()
-	return ay == by && am == bm && ad == bd
+	return ts.Local().Format("2006-01-02 15:04:05.000")
 }
 
 // ----- column helpers -----
@@ -733,9 +739,9 @@ func buildColumns(keys []string) []components.Column {
 func columnSpec(key string) components.Column {
 	switch key {
 	case "timestamp":
-		return components.Column{Title: "Timestamp", Width: 13, Sortable: true}
+		return components.Column{Title: "Timestamp", Width: 23, Sortable: true}
 	case "partition":
-		return components.Column{Title: "P", Width: 3, Align: lipgloss.Right, Sortable: true}
+		return components.Column{Title: "Partition", Width: 9, Align: lipgloss.Right, Sortable: true}
 	case "offset":
 		return components.Column{Title: "Offset", Width: 10, Align: lipgloss.Right, Sortable: true}
 	case "key":
@@ -743,7 +749,7 @@ func columnSpec(key string) components.Column {
 	case "value":
 		return components.Column{Title: "Value", Flex: true, MinWidth: 20, Sortable: false}
 	case "headers":
-		return components.Column{Title: "H", Width: 3, Sortable: true}
+		return components.Column{Title: "Headers", Width: 28, Sortable: false}
 	default:
 		return components.Column{Title: key, Width: 10}
 	}
