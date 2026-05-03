@@ -93,15 +93,283 @@ func TestForm_DropdownNavigatesWithJK(t *testing.T) {
 	assert.Equal(t, "lz4", got.Value)
 }
 
+func TestForm_TextCursorArrowsAndMidStringInsert(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "abc"},
+	})
+	// cursor initialized to end of preset value
+	assert.Equal(t, 3, f.CursorAt("k"))
+
+	// move left twice → between 'a' and 'b'
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	assert.Equal(t, 1, f.CursorAt("k"))
+
+	// insert 'X' between 'a' and 'b'
+	f, _ = f.Update(keyPressRune('X'))
+	got, _ := f.Field("k")
+	assert.Equal(t, "aXbc", got.Value)
+	assert.Equal(t, 2, f.CursorAt("k"))
+
+	// right to end-1, then home/end
+	f, _ = f.Update(keyPressMsg("end"))
+	assert.Equal(t, 4, f.CursorAt("k"))
+	f, _ = f.Update(keyPressMsg("home"))
+	assert.Equal(t, 0, f.CursorAt("k"))
+}
+
+func TestForm_TextCursorBackspaceAndDelete(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Kind: components.FieldText, Value: "hello"},
+	})
+	// cursor at end → backspace removes 'o'
+	f, _ = f.Update(keyPressMsg("backspace"))
+	got, _ := f.Field("k")
+	assert.Equal(t, "hell", got.Value)
+	assert.Equal(t, 4, f.CursorAt("k"))
+
+	// move to position 1, delete forward removes 'e'
+	f, _ = f.Update(keyPressMsg("home"))
+	f, _ = f.Update(keyPressMsg("right"))
+	f, _ = f.Update(keyPressMsg("delete"))
+	got, _ = f.Field("k")
+	assert.Equal(t, "hll", got.Value)
+	assert.Equal(t, 1, f.CursorAt("k"))
+
+	// backspace from position 1 removes 'h'
+	f, _ = f.Update(keyPressMsg("backspace"))
+	got, _ = f.Field("k")
+	assert.Equal(t, "ll", got.Value)
+	assert.Equal(t, 0, f.CursorAt("k"))
+
+	// further backspace at start is a no-op
+	f, _ = f.Update(keyPressMsg("backspace"))
+	got, _ = f.Field("k")
+	assert.Equal(t, "ll", got.Value)
+}
+
+func TestForm_TextCursorIgnoresOutOfBoundsArrows(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Kind: components.FieldText, Value: "ab"},
+	})
+	f, _ = f.Update(keyPressMsg("right"))
+	assert.Equal(t, 2, f.CursorAt("k")) // already at end, stays
+
+	f, _ = f.Update(keyPressMsg("home"))
+	f, _ = f.Update(keyPressMsg("left"))
+	assert.Equal(t, 0, f.CursorAt("k")) // already at start, stays
+}
+
+func TestForm_TextareaEnterInsertsAtCursor(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Kind: components.FieldTextarea, Value: "abcd"},
+	})
+	// cursor at end, then move 2 left (between 'b' and 'c')
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("enter"))
+	got, _ := f.Field("v")
+	assert.Equal(t, "ab\ncd", got.Value)
+	assert.Equal(t, 3, f.CursorAt("v"))
+}
+
+func TestForm_TextareaUpDownPreservesColumn(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Kind: components.FieldTextarea, Value: "abcdef\nghi\njklmno"},
+	})
+	// cursor at end (rune index 17). end of last line, col 6.
+	assert.Equal(t, 17, f.CursorAt("v"))
+
+	// up: previous line "ghi" has length 3, col clamps from 6 to 3.
+	f, _ = f.Update(keyPressMsg("up"))
+	// position = start of "ghi" (7) + 3 = 10
+	assert.Equal(t, 10, f.CursorAt("v"))
+
+	// up again: "abcdef" is long enough, col stays at 3.
+	f, _ = f.Update(keyPressMsg("up"))
+	assert.Equal(t, 3, f.CursorAt("v"))
+
+	// up at top → no-op
+	f, _ = f.Update(keyPressMsg("up"))
+	assert.Equal(t, 3, f.CursorAt("v"))
+
+	// down restores down to "ghi" col 3
+	f, _ = f.Update(keyPressMsg("down"))
+	assert.Equal(t, 10, f.CursorAt("v"))
+}
+
+func TestForm_TextareaHomeEndAreLineAware(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Kind: components.FieldTextarea, Value: "abc\ndef\nghi"},
+	})
+	// cursor at end of value (11). go up to middle line.
+	f, _ = f.Update(keyPressMsg("up"))
+	// home: start of "def" (rune index 4)
+	f, _ = f.Update(keyPressMsg("home"))
+	assert.Equal(t, 4, f.CursorAt("v"))
+	// end: just before the trailing \n of "def" (rune index 7)
+	f, _ = f.Update(keyPressMsg("end"))
+	assert.Equal(t, 7, f.CursorAt("v"))
+}
+
+func TestForm_TextSetValueResetsCursor(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Kind: components.FieldText, Value: "abc"},
+	})
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	assert.Equal(t, 1, f.CursorAt("k"))
+
+	f.SetValue("k", "hello")
+	assert.Equal(t, 5, f.CursorAt("k")) // cursor pinned to end of new value
+}
+
+func TestForm_SetEditingHidesCursorBackground(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Kind: components.FieldText, Value: "abcd"},
+	})
+	// Cursor renders as a reverse-video rune (foreground=bg, background=
+	// accent). The accent-as-background SGR is the only place a background
+	// color appears in this view, so its presence/absence is a reliable
+	// proxy for "is the cursor drawn?".
+	const cursorBgSGR = "48;2;209;138;69" // theme.Accent rgb as background
+	editing := f.View()
+	assert.Contains(t, editing, cursorBgSGR)
+
+	f.SetEditing(false)
+	plain := f.View()
+	assert.NotContains(t, plain, cursorBgSGR)
+}
+
+func TestForm_SegmentedArrowKeysCycleValue(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "none", Options: []string{"none", "gzip", "snappy", "lz4"}},
+	})
+	f, _ = f.Update(keyPressMsg("right"))
+	got, _ := f.Field("c")
+	assert.Equal(t, "gzip", got.Value)
+
+	f, _ = f.Update(keyPressMsg("right"))
+	f, _ = f.Update(keyPressMsg("right"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "lz4", got.Value)
+
+	f, _ = f.Update(keyPressMsg("right"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "none", got.Value) // wraps
+
+	f, _ = f.Update(keyPressMsg("left"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "lz4", got.Value)
+
+	// up/down also cycle (consistent with FieldDropdown)
+	f, _ = f.Update(keyPressMsg("down"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "none", got.Value)
+	f, _ = f.Update(keyPressMsg("up"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "lz4", got.Value)
+}
+
+func TestForm_SegmentedEnterTogglesPopup(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "none", Options: []string{"none", "gzip", "snappy"}},
+	})
+	assert.False(t, f.PopupActive())
+
+	f, _ = f.Update(keyPressMsg("enter"))
+	assert.True(t, f.PopupActive())
+
+	// arrow keys still cycle live while popup is open
+	f, _ = f.Update(keyPressMsg("down"))
+	got, _ := f.Field("c")
+	assert.Equal(t, "gzip", got.Value)
+
+	f, _ = f.Update(keyPressMsg("enter"))
+	assert.False(t, f.PopupActive())
+	got, _ = f.Field("c")
+	assert.Equal(t, "gzip", got.Value) // confirmed
+}
+
+func TestForm_SegmentedEscRevertsAndClosesPopup(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "snappy", Options: []string{"none", "gzip", "snappy", "lz4"}},
+	})
+	f, _ = f.Update(keyPressMsg("enter"))
+	f, _ = f.Update(keyPressMsg("down"))
+	f, _ = f.Update(keyPressMsg("down"))
+	got, _ := f.Field("c")
+	assert.Equal(t, "none", got.Value) // wrapped past lz4
+
+	f, _ = f.Update(keyPressMsg("esc"))
+	assert.False(t, f.PopupActive())
+	got, _ = f.Field("c")
+	assert.Equal(t, "snappy", got.Value) // reverted
+}
+
+func TestForm_SegmentedTabClosesPopup(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "gzip", Options: []string{"none", "gzip"}},
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+	})
+	f, _ = f.Update(keyPressMsg("enter"))
+	assert.True(t, f.PopupActive())
+
+	f, _ = f.Update(keyPressMsg("tab"))
+	assert.Equal(t, 1, f.Focused())
+	// after focus moves, the segmented field's popup must be closed.
+	f.FocusKey("c")
+	assert.False(t, f.PopupActive())
+}
+
+func TestForm_SegmentedRendersCompactInlineWhenFocused(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "snappy", Options: []string{"none", "gzip", "snappy"}},
+	})
+	out := f.View()
+	assert.Contains(t, out, "◂ snappy ▸")
+}
+
+func TestForm_SegmentedRendersListWhenPopupOpen(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "gzip", Options: []string{"none", "gzip", "snappy"}},
+	})
+	f, _ = f.Update(keyPressMsg("enter"))
+	out := f.View()
+	for _, opt := range []string{"none", "gzip", "snappy"} {
+		assert.Contains(t, out, opt)
+	}
+	assert.Contains(t, out, "(•) gzip")
+}
+
+func TestForm_SegmentedRendersPlainWhenUnfocused(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "gzip", Options: []string{"none", "gzip"}},
+	})
+	out := f.View()
+	assert.Contains(t, out, "gzip")
+	assert.NotContains(t, out, "◂") // unfocused does not show the slider chrome
+}
+
 func TestForm_ListAddTypeDelete(t *testing.T) {
 	f := components.NewForm([]components.Field{
 		{Key: "headers", Label: "Headers", Kind: components.FieldList},
 	})
-	f, _ = f.Update(keyPressMsg("ctrl+a"))
+	// add/remove are no longer keystrokes at the form level — hosting
+	// screens drive them via AppendListRow / RemoveListRow.
+	f.AppendListRow()
 	for _, ch := range "key1" {
 		f, _ = f.Update(keyPressRune(ch))
 	}
-	f, _ = f.Update(keyPressMsg("ctrl+a"))
+	f.AppendListRow()
 	for _, ch := range "key2" {
 		f, _ = f.Update(keyPressRune(ch))
 	}
@@ -109,9 +377,9 @@ func TestForm_ListAddTypeDelete(t *testing.T) {
 	got, _ := f.Field("headers")
 	assert.Equal(t, []string{"key1", "key2"}, got.List)
 
-	// move cursor up and delete
+	// move cursor up to "key1" and remove it
 	f, _ = f.Update(keyPressMsg("up"))
-	f, _ = f.Update(keyPressMsg("ctrl+d"))
+	f.RemoveListRow()
 
 	got, _ = f.Field("headers")
 	assert.Equal(t, []string{"key2"}, got.List)
@@ -124,6 +392,73 @@ func TestForm_ListBackspaceEditsCurrentEntry(t *testing.T) {
 	f, _ = f.Update(keyPressMsg("backspace"))
 	got, _ := f.Field("h")
 	assert.Equal(t, []string{"ab"}, got.List)
+}
+
+func TestForm_ListBackspaceOnEmptyEntryRemovesIt(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Kind: components.FieldList, List: []string{"a", "", "c"}},
+	})
+	// focus on second (empty) entry
+	f, _ = f.Update(keyPressMsg("down"))
+	f, _ = f.Update(keyPressMsg("backspace"))
+	got, _ := f.Field("h")
+	assert.Equal(t, []string{"a", "c"}, got.List)
+}
+
+func TestForm_ListInRowCursorEditing(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Kind: components.FieldList, List: []string{"abcd"}},
+	})
+	// cursor initialized at end of "abcd"
+	assert.Equal(t, 4, f.ListEntryCursor("h"))
+
+	// move left twice, insert 'X' between 'b' and 'c'
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressRune('X'))
+	got, _ := f.Field("h")
+	assert.Equal(t, []string{"abXcd"}, got.List)
+	assert.Equal(t, 3, f.ListEntryCursor("h"))
+
+	// home, then delete forward removes 'a'
+	f, _ = f.Update(keyPressMsg("home"))
+	f, _ = f.Update(keyPressMsg("delete"))
+	got, _ = f.Field("h")
+	assert.Equal(t, []string{"bXcd"}, got.List)
+}
+
+func TestForm_ListUpDownResetsEntryCursorToEnd(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Kind: components.FieldList, List: []string{"abc", "defghi"}},
+	})
+	// move left twice on "abc"
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	assert.Equal(t, 1, f.ListEntryCursor("h"))
+
+	// move down to "defghi" — cursor lands at end (6)
+	f, _ = f.Update(keyPressMsg("down"))
+	assert.Equal(t, 6, f.ListEntryCursor("h"))
+}
+
+func TestForm_ListSetListResetsEntryCursor(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Kind: components.FieldList, List: []string{"abc"}},
+	})
+	f, _ = f.Update(keyPressMsg("left"))
+	assert.Equal(t, 2, f.ListEntryCursor("h"))
+
+	f.SetList("h", []string{"hello"})
+	assert.Equal(t, 5, f.ListEntryCursor("h"))
+}
+
+func TestForm_ListRendersAffordances(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Kind: components.FieldList, List: []string{"a"}},
+	})
+	out := f.View()
+	assert.Contains(t, out, "add row")
+	assert.Contains(t, out, "remove row")
 }
 
 func TestForm_SetValueAndSetList(t *testing.T) {
@@ -172,4 +507,5 @@ func TestFieldKindString(t *testing.T) {
 	assert.Equal(t, "dropdown", components.FieldDropdown.String())
 	assert.Equal(t, "list", components.FieldList.String())
 	assert.Equal(t, "textarea", components.FieldTextarea.String())
+	assert.Equal(t, "segmented", components.FieldSegmented.String())
 }

@@ -124,10 +124,12 @@ type Model struct {
 	histPos  int // -1 = no history slot active
 	histBuf  []Entry
 
-	form    *components.Form
-	toasts  *components.Toasts
-	err     string
-	sending bool
+	form       *components.Form
+	toasts     *components.Toasts
+	err        string
+	sending    bool
+	fullscreen bool
+	mode       Mode
 
 	width, height int
 	action        Action
@@ -136,15 +138,42 @@ type Model struct {
 	styles theme.Styles
 }
 
-// Field keys.
+// Field keys. Topic is intentionally not a form field — it's fixed by the
+// caller (header shows "Produce → <topic>") and shouldn't be editable
+// from inside the produce form.
 const (
-	fieldTopic       = "topic"
 	fieldPartition   = "partition"
 	fieldCompression = "compression"
 	fieldKey         = "key"
 	fieldHeaders     = "headers"
 	fieldValue       = "value"
 )
+
+// Mode tracks vim-style edit modes for the produce form. NORMAL is the
+// default — keys act as commands and field navigation; INSERT is entered
+// via Enter on a text-like field and turns keys into literal input.
+type Mode int
+
+const (
+	// ModeNormal — commands and navigation. Letters/digits are ignored,
+	// `tab`/`shift+tab` move between fields, `enter` enters INSERT (or
+	// opens a popup on segmented fields).
+	ModeNormal Mode = iota
+	// ModeInsert — typing inserts into the focused field. `tab` in
+	// textarea inserts `\t`; `esc` returns to NORMAL.
+	ModeInsert
+)
+
+// String returns the mode label used in tests and the [EDIT] hint badge.
+func (m Mode) String() string {
+	switch m {
+	case ModeNormal:
+		return "NORMAL"
+	case ModeInsert:
+		return "INSERT"
+	}
+	return "?"
+}
 
 // DefaultHistorySize matches the `produce.history_size` config default (§3.2).
 const DefaultHistorySize = 10
@@ -178,6 +207,7 @@ func New(opts Options) *Model {
 		styles:   styles,
 	}
 	m.form = m.buildForm()
+	m.form.SetEditing(false) // NORMAL by default — caret hidden
 
 	if opts.PrefillFromMessage != nil {
 		m.applyMessage(*opts.PrefillFromMessage, true)
@@ -193,12 +223,11 @@ func New(opts Options) *Model {
 // and by ctrl+r to reset the entire form.
 func (m *Model) buildForm() *components.Form {
 	fields := []components.Field{
-		{Key: fieldTopic, Label: "Topic", Kind: components.FieldText, Value: m.topic},
 		{Key: fieldPartition, Label: "Partition (auto/<n>)", Kind: components.FieldText, Value: "auto"},
 		{
 			Key:     fieldCompression,
 			Label:   "Compression",
-			Kind:    components.FieldDropdown,
+			Kind:    components.FieldSegmented,
 			Options: compressionOptions(),
 			Value:   string(kafka.CompressionNone),
 		},
@@ -220,7 +249,9 @@ func compressionOptions() []string {
 // Init satisfies the screen contract — nothing to load asynchronously.
 func (m *Model) Init() tea.Cmd { return nil }
 
-// Topic returns the topic the form is currently bound to.
+// Topic returns the topic the form is currently bound to. Topic isn't an
+// editable form field — it's set on construction or updated by resend /
+// history prefill.
 func (m *Model) Topic() string { return m.topic }
 
 // Form exposes the underlying form component (for tests).
@@ -253,7 +284,9 @@ func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 // KeyHints returns the screen-specific hints shown at the bottom row.
 func (m *Model) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
+		{Key: "enter", Label: "edit"},
 		{Key: "tab", Label: "next field"},
+		{Key: "+/_", Label: "fullscreen"},
 		{Key: "ctrl+s", Label: "send"},
 		{Key: "ctrl+shift+s", Label: "send & keep"},
 		{Key: "ctrl+e", Label: "$EDITOR"},
@@ -262,6 +295,27 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "esc", Label: "cancel"},
 	}
 	return hints
+}
+
+// Fullscreen reports whether the form is currently in fullscreen mode.
+func (m *Model) Fullscreen() bool { return m.fullscreen }
+
+// Mode returns the current edit mode (NORMAL / INSERT).
+func (m *Model) Mode() Mode { return m.mode }
+
+// setMode flips between NORMAL and INSERT, keeping form editing state in
+// sync (caret rendering follows from `editing`).
+func (m *Model) setMode(target Mode) {
+	m.mode = target
+	m.form.SetEditing(target == ModeInsert)
+}
+
+// setFullscreen toggles between mode A and mode B. In mode B the segmented
+// Compression field is forced into expanded popup view (vertical list); in
+// mode A it returns to the compact slider.
+func (m *Model) setFullscreen(on bool) {
+	m.fullscreen = on
+	m.form.SetSegmentedPopup(fieldCompression, on)
 }
 
 // Update routes incoming messages.
@@ -283,30 +337,214 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
+	// list shortcuts on Headers in INSERT take priority over global ones
+	// (e.g. ctrl+n means "add row" here, not "history next").
+	if m.mode == ModeInsert && m.form.FocusedField().Kind == components.FieldList {
+		if m.handleInsertListShortcut(key) {
+			return m, nil
+		}
+	}
+	// mode-agnostic global shortcuts work in both NORMAL and INSERT.
+	if mm, cmd, ok := m.handleGlobalShortcut(key); ok {
+		return mm, cmd
+	}
+	if m.mode == ModeInsert {
+		return m.handleInsert(key)
+	}
+	return m.handleNormal(key)
+}
+
+// handleGlobalShortcut covers send/clear/history/editor — they should fire
+// regardless of mode so the user doesn't need to esc-into-NORMAL just to
+// send. Returns ok=true when the key was consumed.
+func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (*Model, tea.Cmd, bool) {
 	switch key.String() {
-	case "esc":
-		m.action.Back = true
-		return m, nil
 	case "ctrl+s":
-		return m.send(true)
+		mm, cmd := m.send(true)
+		return mm, cmd, true
 	case "ctrl+shift+s":
-		return m.send(false)
+		mm, cmd := m.send(false)
+		return mm, cmd, true
 	case "ctrl+e":
 		m.openEditor()
-		return m, nil
+		return m, nil, true
 	case "ctrl+r":
 		m.clear()
-		return m, nil
+		return m, nil, true
 	case "ctrl+p":
 		m.historyStep(+1)
-		return m, nil
+		return m, nil, true
 	case "ctrl+n":
 		m.historyStep(-1)
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+// handleNormal is the default mode: tab/shift+tab navigate, enter is
+// contextual (INSERT for text/list, popup for segmented), `+`/`_` toggle
+// fullscreen, on Headers `=` adds a row and `-` removes. Letters/digits
+// are ignored — they only do work in INSERT.
+func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		return m.handleEscNormal(key)
+	case "+", "_", "shift++", "shift+-":
+		// fullscreen toggle — `+` is shift+`=` (and `_` is shift+`-`) on
+		// US/RU layouts; the kitty-protocol `shift++` / `shift+-` strings
+		// also mapped here for completeness.
+		m.setFullscreen(!m.fullscreen)
 		return m, nil
+	case "tab", "down":
+		m.form.FocusNext()
+		return m, nil
+	case "shift+tab", "up":
+		m.form.FocusPrev()
+		return m, nil
+	case "enter":
+		return m.enterInsertOnFocused(key)
+	}
+	// segmented fields are "interactive without INSERT" — left/right and
+	// hjkl cycle the value live, so let the form handle them in NORMAL.
+	if m.form.FocusedField().Kind == components.FieldSegmented {
+		f, cmd := m.form.Update(key)
+		m.form = f
+		return m, cmd
+	}
+	// any other NORMAL-mode keystroke is ignored.
+	return m, nil
+}
+
+// handleEscNormal implements the esc cascade: popup → close popup;
+// fullscreen → split; otherwise → close form.
+func (m *Model) handleEscNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	if m.form.PopupActive() && !m.fullscreen {
+		f, cmd := m.form.Update(key)
+		m.form = f
+		return m, cmd
+	}
+	if m.fullscreen {
+		m.setFullscreen(false)
+		return m, nil
+	}
+	m.action.Back = true
+	return m, nil
+}
+
+// enterInsertOnFocused decides what `enter` does in NORMAL based on the
+// focused field's kind. Segmented opens a popup (its native behavior);
+// list with no rows gets a fresh empty row first; everything else flips
+// the mode flag and lets INSERT handle the next keystroke.
+func (m *Model) enterInsertOnFocused(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	fld := m.form.FocusedField()
+	switch fld.Kind {
+	case components.FieldSegmented:
+		f, cmd := m.form.Update(key)
+		m.form = f
+		return m, cmd
+	case components.FieldList:
+		if len(fld.List) == 0 {
+			m.form.AppendListRow()
+		}
+		m.setMode(ModeInsert)
+		return m, nil
+	default:
+		m.setMode(ModeInsert)
+		return m, nil
+	}
+}
+
+// handleInsert is INSERT mode: typing inserts into the focused field;
+// special keys (tab, shift+tab, enter, esc) implement commit / navigate /
+// newline / leave-mode semantics.
+func (m *Model) handleInsert(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		// if the segmented popup is open, esc reverts/closes it but stays
+		// in INSERT; otherwise it returns to NORMAL on the same field.
+		if m.form.PopupActive() {
+			f, cmd := m.form.Update(key)
+			m.form = f
+			return m, cmd
+		}
+		m.setMode(ModeNormal)
+		return m, nil
+	case "tab":
+		return m.handleInsertTab()
+	case "shift+tab":
+		m.form.FocusPrev()
+		m.setMode(ModeNormal)
+		return m, nil
+	case "enter":
+		return m.handleInsertEnter(key)
 	}
 	f, cmd := m.form.Update(key)
 	m.form = f
 	return m, cmd
+}
+
+// handleInsertTab implements the textarea-vs-single-line tab split: in a
+// textarea the tab is inserted as a literal `\t`; everywhere else it
+// commits and navigates to the next field, returning to NORMAL.
+func (m *Model) handleInsertTab() (*Model, tea.Cmd) {
+	if m.form.FocusedField().Kind == components.FieldTextarea {
+		m.form.InsertAtCursor("\t")
+		return m, nil
+	}
+	m.form.FocusNext()
+	m.setMode(ModeNormal)
+	return m, nil
+}
+
+// handleInsertEnter implements the per-kind Enter semantics in INSERT:
+//   - textarea: insert newline at cursor (stay in INSERT).
+//   - list (Headers): chained-entry idiom — Enter on a non-empty row
+//     commits and adds a fresh empty row to keep filling; Enter on an
+//     empty row exits to NORMAL (signals "done adding").
+//   - single-line text: commit and return to NORMAL on the same field.
+func (m *Model) handleInsertEnter(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+	fld := m.form.FocusedField()
+	switch fld.Kind {
+	case components.FieldTextarea:
+		f, cmd := m.form.Update(key)
+		m.form = f
+		return m, cmd
+	case components.FieldList:
+		// pressing enter on an empty row finishes the add-many loop.
+		if entry, _, ok := m.form.FocusedListEntry(); ok && entry == "" {
+			m.setMode(ModeNormal)
+			return m, nil
+		}
+		// otherwise commit-and-continue: add a new empty row and stay in
+		// INSERT for sequential header entry.
+		m.form.AppendListRow()
+		return m, nil
+	default:
+		m.setMode(ModeNormal)
+		return m, nil
+	}
+}
+
+// handleInsertListShortcut covers the headers-only `ctrl+n` / `ctrl+x`
+// shortcuts in INSERT: `ctrl+n` (new) jumps to the end of the list and
+// starts a new empty row; `ctrl+x` (cut) deletes the focused row (and
+// exits INSERT if the list becomes empty). Returns ok=true when the key
+// was consumed. These take priority over the global history shortcut
+// when the focused field is a list.
+func (m *Model) handleInsertListShortcut(key tea.KeyPressMsg) (consumed bool) {
+	switch key.String() {
+	case "ctrl+n":
+		m.form.AppendListRow()
+		return true
+	case "ctrl+x":
+		m.form.RemoveListRow()
+		if _, _, ok := m.form.FocusedListEntry(); !ok {
+			// list became empty — leave INSERT, nothing left to edit.
+			m.setMode(ModeNormal)
+		}
+		return true
+	}
+	return false
 }
 
 // send validates and dispatches a produce. closeAfter=true → ctrl+s (send &
@@ -346,12 +584,14 @@ func (m *Model) handleResult(msg ProduceResultMsg) {
 }
 
 // spec validates the current form contents and returns a kafka.ProduceSpec.
+// Topic is taken directly from the model (it isn't a form field — see the
+// constant block) and must be non-empty.
 func (m *Model) spec() (kafka.ProduceSpec, error) {
 	get := func(key string) string {
 		fld, _ := m.form.Field(key)
 		return strings.TrimSpace(fld.Value)
 	}
-	topic := get(fieldTopic)
+	topic := strings.TrimSpace(m.topic)
 	if topic == "" {
 		return kafka.ProduceSpec{}, errors.New("topic is required")
 	}
@@ -486,7 +726,7 @@ func (m *Model) historyStep(delta int) {
 // resetPartitionToAuto matches the resend rule from §7.5: "partition resets
 // to auto" so the user picks a destination explicitly.
 func (m *Model) applyEntry(entry Entry, resetPartitionToAuto bool) {
-	m.form.SetValue(fieldTopic, entry.Topic)
+	m.topic = entry.Topic
 	if resetPartitionToAuto {
 		m.form.SetValue(fieldPartition, "auto")
 	} else {
@@ -501,7 +741,7 @@ func (m *Model) applyEntry(entry Entry, resetPartitionToAuto bool) {
 // applyMessage prefills the form from a kafka.Message in resend mode. In
 // resend the partition is reset to auto so the user re-selects.
 func (m *Model) applyMessage(msg kafka.Message, resetPartitionToAuto bool) {
-	m.form.SetValue(fieldTopic, msg.Topic)
+	m.topic = msg.Topic
 	if resetPartitionToAuto {
 		m.form.SetValue(fieldPartition, "auto")
 	} else {
@@ -544,10 +784,24 @@ func (m *Model) openEditor() {
 	m.form.FocusKey(fieldValue)
 }
 
-// View renders the form body wrapped in the standard rounded box.
+// View renders the form body wrapped in the standard rounded box. There are
+// two layouts: mode A (default) is a single column listing all fields and
+// stretching to the full available area; mode B (fullscreen) shows a tab
+// strip across the top and the active field below.
 func (m *Model) View() string {
 	header := m.styles.HelpTitle.Render("Produce → " + m.topic)
-	hint := m.styles.HintLabel.Render("tab navigate  ctrl+s send  ctrl+shift+s send&keep  ctrl+e editor  ctrl+r clear  esc cancel")
+	var hintText string
+	switch {
+	case m.mode == ModeInsert:
+		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  on headers: ctrl+n add row  ctrl+x remove row"
+	case m.fullscreen:
+		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  esc back to split"
+	default:
+		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  esc cancel"
+	}
+	badge := m.styles.HintKey.Render("[" + m.mode.String() + "]")
+	hint := badge + " " + m.styles.HintLabel.Render(hintText)
+
 	parts := []string{header}
 	if m.err != "" {
 		parts = append(parts, m.styles.StatusErr.Render(m.err))
@@ -555,19 +809,63 @@ func (m *Model) View() string {
 	if m.sending {
 		parts = append(parts, m.styles.StatusInfo.Render("sending…"))
 	}
-	parts = append(parts, m.form.View(), "", hint)
+
+	var body string
+	if m.fullscreen {
+		body = m.renderFullscreen()
+	} else {
+		body = m.form.View()
+	}
+	parts = append(parts, body, "", hint)
 	if t := m.toasts.View(); t != "" {
 		parts = append(parts, t)
 	}
-	body := strings.Join(parts, "\n")
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(body)
-	if m.width <= 0 {
-		return box
+	rendered := strings.Join(parts, "\n")
+
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 2)
+	// Stretch the box to fill the available area so the form occupies the
+	// whole screen instead of shrinking to its content.
+	if m.width > 4 {
+		box = box.Width(m.width - 2)
 	}
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
+	if m.height > 4 {
+		box = box.Height(m.height - 2)
+	}
+	return box.Render(rendered)
+}
+
+// fieldOrder is the canonical tab order for navigation and tab-strip rendering.
+var fieldOrder = []string{
+	fieldPartition, fieldCompression, fieldKey, fieldHeaders, fieldValue,
+}
+
+// fieldLabel maps internal keys to short labels used by the fullscreen tab strip.
+var fieldLabel = map[string]string{
+	fieldPartition:   "Partition",
+	fieldCompression: "Compression",
+	fieldKey:         "Key",
+	fieldHeaders:     "Headers",
+	fieldValue:       "Value",
+}
+
+// renderFullscreen renders the tab strip plus the active field below it.
+func (m *Model) renderFullscreen() string {
+	active := m.form.FocusedField().Key
+	return m.renderTabs() + "\n\n" + m.form.RenderField(active)
+}
+
+func (m *Model) renderTabs() string {
+	active := m.form.FocusedField().Key
+	parts := make([]string, 0, len(fieldOrder))
+	for _, k := range fieldOrder {
+		label := fieldLabel[k]
+		if k == active {
+			parts = append(parts, m.styles.HintKey.Render("[ "+label+" ]"))
+		} else {
+			parts = append(parts, m.styles.HintLabel.Render("  "+label+"  "))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // ----- Messages -----

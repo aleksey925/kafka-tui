@@ -45,17 +45,13 @@ func TestNew_RendersHeaderAndFields(t *testing.T) {
 	// act
 	out := m.View()
 
-	// assert
-	for _, want := range []string{"Produce → orders", "Topic", "Partition", "Compression", "Key", "Headers", "Value"} {
+	// Topic shows up only in the header line (`Produce → orders`); it is
+	// not an editable field of the form.
+	for _, want := range []string{"Produce → orders", "Partition", "Compression", "Key", "Headers", "Value"} {
 		assert.Contains(t, out, want)
 	}
-}
-
-func TestNew_TopicPrefilledFromOption(t *testing.T) {
-	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-
-	got, _ := m.Form().Field("topic")
-	assert.Equal(t, "orders", got.Value)
+	_, ok := m.Form().Field("topic")
+	assert.False(t, ok, "topic must not exist as a form field")
 }
 
 func TestWantsRawInput_AlwaysTrue(t *testing.T) {
@@ -152,6 +148,7 @@ func TestSend_ValidationErrorOnInvalidPartition(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 	m.Form().FocusKey("partition")
+	_, _ = m.Update(keyPress("enter")) // NORMAL → INSERT
 	// replace "auto" with garbage by clearing then typing
 	for range "auto" {
 		_, _ = m.Update(keyPress("backspace"))
@@ -181,6 +178,7 @@ func TestPartition_ManualNumberPropagated(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
 	m.Form().FocusKey("partition")
+	_, _ = m.Update(keyPress("enter")) // NORMAL → INSERT
 	for range "auto" {
 		_, _ = m.Update(keyPress("backspace"))
 	}
@@ -198,10 +196,14 @@ func TestHeaders_ParsedAsKeyEquals(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
 	m.Form().FocusKey("headers")
-	_, _ = m.Update(keyPress("ctrl+a"))
-	typeText(m, "headers", "x-trace=abc")
-	_, _ = m.Update(keyPress("ctrl+a"))
-	typeText(m, "headers", "x-source=ui")
+	_, _ = m.Update(keyPress("enter")) // NORMAL → INSERT, empty row added
+	for _, r := range "x-trace=abc" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	_, _ = m.Update(keyPress("enter")) // commit + new empty row, still INSERT
+	for _, r := range "x-source=ui" {
+		_, _ = m.Update(keyPressRune(r))
+	}
 
 	_, cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
@@ -219,8 +221,10 @@ func TestHeaders_InvalidEntryRejected(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
 	m.Form().FocusKey("headers")
-	_, _ = m.Update(keyPress("ctrl+a"))
-	typeText(m, "headers", "no-equals-sign")
+	_, _ = m.Update(keyPress("enter")) // NORMAL → INSERT, empty row added
+	for _, r := range "no-equals-sign" {
+		_, _ = m.Update(keyPressRune(r))
+	}
 
 	_, cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
@@ -242,9 +246,9 @@ func TestCtrlR_ClearsAllFields(t *testing.T) {
 		got, _ := m.Form().Field(k)
 		assert.Empty(t, got.Value, "field %q should be cleared", k)
 	}
-	// the topic survives the clear because it's part of the canonical default.
-	got, _ := m.Form().Field("topic")
-	assert.Equal(t, "orders", got.Value)
+	// the topic survives the clear because it lives on the model, not in
+	// the form (it isn't editable from inside the produce screen).
+	assert.Equal(t, "orders", m.Topic())
 }
 
 func TestPrefillFromMessage_PopulatesFieldsAndResetsPartition(t *testing.T) {
@@ -267,7 +271,7 @@ func TestPrefillFromMessage_PopulatesFieldsAndResetsPartition(t *testing.T) {
 		fld, _ := m.Form().Field(k)
 		return fld.Value
 	}
-	assert.Equal(t, "orders-resend", get("topic"), "topic switches to source on resend")
+	assert.Equal(t, "orders-resend", m.Topic(), "topic switches to source on resend")
 	assert.Equal(t, "auto", get("partition"), "partition resets to auto on resend")
 	assert.Equal(t, "key-1", get("key"))
 	assert.Equal(t, `{"id":1}`, get("value"))
@@ -438,12 +442,372 @@ func TestSend_PropagatesCompressionAndKey(t *testing.T) {
 	assert.Equal(t, []byte("v1"), svc.Sent()[0].Value)
 }
 
+func TestFullscreen_ShiftPlusToggles(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	assert.False(t, m.Fullscreen())
+
+	_, _ = m.Update(keyPress("shift++"))
+	assert.True(t, m.Fullscreen())
+
+	// either key flips back (carousel)
+	_, _ = m.Update(keyPress("shift+-"))
+	assert.False(t, m.Fullscreen())
+
+	_, _ = m.Update(keyPress("shift++"))
+	_, _ = m.Update(keyPress("shift++"))
+	assert.False(t, m.Fullscreen()) // two presses = back to A
+}
+
+// On terminals without the kitty keyboard protocol (Apple Terminal etc.)
+// shift+plus delivers the rune '+' and shift+minus delivers '_' (because
+// those are the shifted forms on US layouts). The screen must accept those
+// literals as the same toggle.
+func TestFullscreen_PlainPlusUnderscoreAlsoToggles(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+
+	_, _ = m.Update(keyPress("+"))
+	assert.True(t, m.Fullscreen())
+
+	_, _ = m.Update(keyPress("_"))
+	assert.False(t, m.Fullscreen())
+}
+
+func TestFullscreen_EscReturnsToSplitThenClosesForm(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	_, _ = m.Update(keyPress("shift++"))
+	assert.True(t, m.Fullscreen())
+
+	// first esc collapses fullscreen, no Back action
+	_, _ = m.Update(keyPress("esc"))
+	assert.False(t, m.Fullscreen())
+	assert.False(t, m.ConsumeAction().Back)
+
+	// second esc closes the form
+	_, _ = m.Update(keyPress("esc"))
+	assert.True(t, m.ConsumeAction().Back)
+}
+
+func TestFullscreen_TabCyclesThroughAllFields(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	_, _ = m.Update(keyPress("shift++"))
+
+	// initial focus is field 0 (partition)
+	assert.Equal(t, "partition", m.Form().FocusedField().Key)
+
+	expected := []string{"compression", "key", "headers", "value", "partition"}
+	for _, want := range expected {
+		_, _ = m.Update(keyPress("tab"))
+		assert.Equal(t, want, m.Form().FocusedField().Key)
+	}
+}
+
+func TestFullscreen_ViewShowsTabStripWithActiveHighlighted(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.SetSize(120, 30)
+	_, _ = m.Update(keyPress("shift++"))
+
+	out := m.View()
+	for _, label := range []string{"Partition", "Compression", "Key", "Headers", "Value"} {
+		assert.Contains(t, out, label)
+	}
+	// active tab uses the bracketed form
+	assert.Contains(t, out, "[ Partition ]")
+
+	// after tab, compression becomes the active tab
+	_, _ = m.Update(keyPress("tab"))
+	out = m.View()
+	assert.Contains(t, out, "[ Compression ]")
+}
+
+func TestFullscreen_CompressionRendersAsExpandedList(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.SetSize(120, 30)
+	_, _ = m.Update(keyPress("shift++"))
+	// move focus to compression
+	for m.Form().FocusedField().Key != "compression" {
+		_, _ = m.Update(keyPress("tab"))
+	}
+	out := m.View()
+	// expanded list shows multiple radio markers and the compact slider chrome
+	// is absent for the compression field.
+	assert.Contains(t, out, "(•)")
+	assert.NotContains(t, out, "◂ none ▸")
+}
+
+func TestFullscreen_LeavingModeBCollapsesCompressionPopup(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.SetSize(120, 30)
+	_, _ = m.Update(keyPress("shift++"))
+	// compression is forced into popup form; render confirms.
+	for m.Form().FocusedField().Key != "compression" {
+		_, _ = m.Update(keyPress("tab"))
+	}
+	assert.Contains(t, m.View(), "(•)")
+
+	// leave fullscreen and the segmented field returns to compact slider
+	_, _ = m.Update(keyPress("shift+-"))
+	out := m.View()
+	assert.Contains(t, out, "◂ none ▸")
+}
+
+func TestTwoColumn_Mode_RendersWhenWideEnough(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.SetSize(120, 30)
+	out := m.View()
+	for _, label := range []string{"Partition", "Compression", "Key", "Headers", "Value"} {
+		assert.Contains(t, out, label)
+	}
+	assert.Contains(t, out, "Produce → orders", "topic only appears in the header line")
+}
+
+// ----- mode tests -----
+
+func TestMode_DefaultsToNormal(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+}
+
+func TestMode_NormalLetterDoesNotInsert(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("key")
+
+	_, _ = m.Update(keyPressRune('a'))
+	got, _ := m.Form().Field("key")
+	assert.Empty(t, got.Value)
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+}
+
+func TestMode_EnterOnTextEntersInsertAndAcceptsTyping(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("key")
+
+	_, _ = m.Update(keyPress("enter"))
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+
+	for _, r := range "abc" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	got, _ := m.Form().Field("key")
+	assert.Equal(t, "abc", got.Value)
+}
+
+func TestMode_EscReturnsToNormal(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("key")
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, produce.ModeInsert, m.Mode())
+
+	_, _ = m.Update(keyPress("esc"))
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+	// esc in NORMAL with no fullscreen/popup must close the form
+	assert.False(t, m.ConsumeAction().Back, "first esc out of INSERT must NOT close form")
+
+	_, _ = m.Update(keyPress("esc"))
+	assert.True(t, m.ConsumeAction().Back, "second esc closes the form")
+}
+
+func TestMode_TabInTextareaInsertsLiteral(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("value")
+	_, _ = m.Update(keyPress("enter")) // INSERT
+	_, _ = m.Update(keyPress("tab"))
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "\t", got.Value)
+	assert.Equal(t, produce.ModeInsert, m.Mode(), "tab in textarea must NOT leave INSERT")
+}
+
+func TestMode_TabInSingleLineCommitsAndNavigates(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("key")
+	_, _ = m.Update(keyPress("enter")) // INSERT
+	for _, r := range "id" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	_, _ = m.Update(keyPress("tab"))
+
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+	assert.Equal(t, "headers", m.Form().FocusedField().Key)
+	got, _ := m.Form().Field("key")
+	assert.Equal(t, "id", got.Value)
+}
+
+func TestMode_EnterInTextareaInsertsNewline(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("value")
+	_, _ = m.Update(keyPress("enter")) // INSERT
+	_, _ = m.Update(keyPressRune('a'))
+	_, _ = m.Update(keyPress("enter")) // newline, NOT exit
+	_, _ = m.Update(keyPressRune('b'))
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "a\nb", got.Value)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+}
+
+func TestMode_EnterInSingleLineExitsToNormal(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("key")
+	_, _ = m.Update(keyPress("enter")) // INSERT
+	for _, r := range "abc" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	_, _ = m.Update(keyPress("enter"))
+
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+	assert.Equal(t, "key", m.Form().FocusedField().Key, "stays on same field")
+	got, _ := m.Form().Field("key")
+	assert.Equal(t, "abc", got.Value)
+}
+
+func TestHeadersInsert_EnterChainsAddingRows(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+
+	// open headers edit: NORMAL → enter → empty row added, INSERT
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, produce.ModeInsert, m.Mode())
+
+	// fill first header
+	for _, r := range "x-trace=abc" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	// enter on a non-empty row: commit + add new empty + stay in INSERT
+	_, _ = m.Update(keyPress("enter"))
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"x-trace=abc", ""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+	assert.Equal(t, 0, m.Form().ListEntryCursor("headers"))
+
+	// fill second
+	for _, r := range "x-source=ui" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	_, _ = m.Update(keyPress("enter"))
+	got, _ = m.Form().Field("headers")
+	assert.Equal(t, []string{"x-trace=abc", "x-source=ui", ""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+
+	// enter on the now-empty trailing row finishes the add-many loop
+	_, _ = m.Update(keyPress("enter"))
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+}
+
+func TestHeadersInsert_CtrlNAddsRowAtEnd(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().SetList("headers", []string{"a=1", "b=2"})
+	m.Form().FocusKey("headers")
+	// open INSERT on the first row
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, produce.ModeInsert, m.Mode())
+
+	_, _ = m.Update(keyPress("ctrl+n"))
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"a=1", "b=2", ""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+	assert.Equal(t, 0, m.Form().ListEntryCursor("headers"))
+}
+
+func TestHeadersInsert_CtrlXDeletesFocusedRow(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().SetList("headers", []string{"a=1", "b=2"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT on row 0 ("a=1")
+
+	_, _ = m.Update(keyPress("ctrl+x"))
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"b=2"}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode(), "stays in INSERT while list is non-empty")
+}
+
+func TestHeadersInsert_CtrlXOnLastRowExitsToNormal(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().SetList("headers", []string{"only=row"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter"))
+
+	_, _ = m.Update(keyPress("ctrl+x"))
+	got, _ := m.Form().Field("headers")
+	assert.Empty(t, got.List)
+	assert.Equal(t, produce.ModeNormal, m.Mode())
+}
+
+func TestHeadersInsert_PlusUnderscoreAreLiterals(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT, empty row
+	for _, r := range "x_user=a+b" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"x_user=a+b"}, got.List, "+ and _ must be insertable in header values")
+}
+
+func TestHeadersInsert_CtrlNOverridesGlobalHistory(t *testing.T) {
+	// On non-list fields ctrl+n is "history step (newer)". On Headers in
+	// INSERT it must be intercepted as "add row" before the global handler.
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+	_, _ = m.Update(keyPress("enter")) // INSERT, empty row
+
+	// type something so the row is non-empty, then ctrl+n must add a new
+	// row (not jump to history).
+	for _, r := range "k=v" {
+		_, _ = m.Update(keyPressRune(r))
+	}
+	_, _ = m.Update(keyPress("ctrl+n"))
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{"k=v", ""}, got.List)
+}
+
+func TestHeadersNormal_EnterOnEmptyListAddsRowThenInsert(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("headers")
+
+	_, _ = m.Update(keyPress("enter"))
+	got, _ := m.Form().Field("headers")
+	assert.Equal(t, []string{""}, got.List)
+	assert.Equal(t, produce.ModeInsert, m.Mode())
+}
+
+func TestNormal_PlusToggleStillFiresInNormal(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	_, _ = m.Update(keyPressRune('+'))
+	assert.True(t, m.Fullscreen())
+}
+
+func TestInsert_PlusIsLiteralInTextarea(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("value")
+	_, _ = m.Update(keyPress("enter")) // INSERT
+	_, _ = m.Update(keyPressRune('+'))
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "+", got.Value)
+	assert.False(t, m.Fullscreen())
+}
+
+func TestModeBadge_ShownInHint(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.SetSize(120, 30)
+	out := m.View()
+	assert.Contains(t, out, "[NORMAL]")
+
+	m.Form().FocusKey("key")
+	_, _ = m.Update(keyPress("enter"))
+	out = m.View()
+	assert.Contains(t, out, "[INSERT]")
+}
+
 // ----- helpers -----
 
-// typeText focuses the named field and types each rune. Multi-line strings
-// supported only when the focused field is a textarea.
+// typeText focuses the named field, ensures the screen is in INSERT mode,
+// and types each rune. Multi-line strings only make sense on a textarea.
 func typeText(m *produce.Model, field, text string) {
 	m.Form().FocusKey(field)
+	if m.Mode() != produce.ModeInsert {
+		_, _ = m.Update(keyPress("enter"))
+	}
 	for _, r := range text {
 		_, _ = m.Update(keyPressRune(r))
 	}
@@ -533,12 +897,10 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
-	case "ctrl+a":
-		return tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl}
-	case "ctrl+d":
-		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
 	case "ctrl+e":
 		return tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl}
+	case "ctrl+x":
+		return tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl}
 	case "ctrl+n":
 		return tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl}
 	case "ctrl+p":
@@ -549,6 +911,14 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
 	case "ctrl+shift+s":
 		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift}
+	case "shift++":
+		return tea.KeyPressMsg{Code: '+', Mod: tea.ModShift}
+	case "shift+-":
+		return tea.KeyPressMsg{Code: '-', Mod: tea.ModShift}
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

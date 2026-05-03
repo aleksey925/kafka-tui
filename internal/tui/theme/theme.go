@@ -105,6 +105,7 @@ type Styles struct {
 	Command      lipgloss.Style
 	CommandHL    lipgloss.Style
 	CommandGhost lipgloss.Style
+	Cursor       lipgloss.Style
 	Toast        lipgloss.Style
 	HelpTitle    lipgloss.Style
 }
@@ -127,8 +128,10 @@ func New(p Palette) Styles {
 		Command:      lipgloss.NewStyle().Foreground(p.Foreground),
 		CommandHL:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
 		CommandGhost: lipgloss.NewStyle().Foreground(p.Muted),
-		Toast:        lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
-		HelpTitle:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
+		// reverse-video block cursor — terminal-native look, no extra glyph.
+		Cursor:    lipgloss.NewStyle().Foreground(p.Background).Background(p.Accent),
+		Toast:     lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
+		HelpTitle: lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
 	}
 }
 

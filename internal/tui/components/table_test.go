@@ -420,6 +420,12 @@ func keyPressMsg(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyLeft}
 	case "right":
 		return tea.KeyPressMsg{Code: tea.KeyRight}
+	case "home":
+		return tea.KeyPressMsg{Code: tea.KeyHome}
+	case "end":
+		return tea.KeyPressMsg{Code: tea.KeyEnd}
+	case "delete":
+		return tea.KeyPressMsg{Code: tea.KeyDelete}
 	case " ", "space":
 		return tea.KeyPressMsg{Code: ' ', Text: " "}
 	}
