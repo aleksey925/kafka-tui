@@ -102,16 +102,7 @@ func (m *Model) routeMessagesAction(s *messages.Model) tea.Cmd {
 func (m *Model) routeProduceAction(s *produce.Model) tea.Cmd {
 	a := s.ConsumeAction()
 	if a.Back {
-		// On send & close the produce screen pushes a success toast right
-		// before signalling Back; without forwarding it to the underlying
-		// screen's queue the user would never see the confirmation. Failed
-		// sends keep the form open, so their toast surfaces locally.
-		var pending *components.Toast
-		if a.Sent != nil {
-			if t, ok := s.LatestFlash(); ok {
-				pending = &t
-			}
-		}
+		pending := pendingProduceToast(s, a)
 		m.popScreen()
 		if pending != nil {
 			if q, ok := activeToastQueue(m.active); ok {
@@ -121,6 +112,21 @@ func (m *Model) routeProduceAction(s *produce.Model) tea.Cmd {
 		return m.activeInit()
 	}
 	return nil
+}
+
+// on send & close the produce screen pushes a success toast right before
+// signaling Back; without forwarding it to the underlying screen's queue the
+// user would never see the confirmation. Failed sends keep the form open, so
+// their toast surfaces locally.
+func pendingProduceToast(s *produce.Model, a produce.Action) *components.Toast {
+	if a.Sent == nil {
+		return nil
+	}
+	t, ok := s.LatestFlash()
+	if !ok {
+		return nil
+	}
+	return &t
 }
 
 func (m *Model) routeGroupsAction(s *groups.Model) tea.Cmd {

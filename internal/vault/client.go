@@ -129,8 +129,8 @@ func (c *Client) LookupContext(ctx context.Context, path, key string) (string, e
 }
 
 // fetch returns the cached secret data for path, fetching from Vault if not
-// yet seen. Concurrent callers for the same path may issue separate requests
-// the first time, but the cache makes subsequent calls free.
+// yet seen. The mutex guards the cache map; the HTTP request runs unlocked
+// so a slow Vault does not stall unrelated lookups.
 func (c *Client) fetch(ctx context.Context, path string) (map[string]any, error) {
 	c.mu.Lock()
 	if data, ok := c.cache[path]; ok {

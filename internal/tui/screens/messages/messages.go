@@ -716,7 +716,7 @@ func (m *Model) rowValues(msg kafka.Message) []string {
 func (m *Model) cellFor(col string, msg kafka.Message) string {
 	switch col {
 	case "timestamp":
-		return FormatTimestamp(msg.Timestamp, m.now())
+		return FormatTimestamp(msg.Timestamp)
 	case "partition":
 		return strconv.FormatInt(int64(msg.Partition), 10)
 	case "offset":
@@ -775,7 +775,7 @@ func (m *Model) View() string {
 // "today" from "an hour ago" without checking the system clock. Kafka
 // timestamps come from the broker in UTC, so we convert to Local for
 // display.
-func FormatTimestamp(ts, _ time.Time) string {
+func FormatTimestamp(ts time.Time) string {
 	if ts.IsZero() {
 		return "—"
 	}

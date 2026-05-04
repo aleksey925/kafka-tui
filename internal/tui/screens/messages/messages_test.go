@@ -522,21 +522,20 @@ func TestFollow_StartReceivesChunkAndPrependsToList(t *testing.T) {
 }
 
 func TestFormatTimestamp_AlwaysIncludesFullDate(t *testing.T) {
-	now := time.Date(2026, 4, 28, 14, 0, 0, 0, time.UTC)
 	ts := time.Date(2026, 4, 28, 9, 30, 15, 250_000_000, time.UTC)
 	// timestamps come from the broker in UTC and are rendered in the
 	// local timezone — compute the expected string the same way so the
 	// test is portable across hosts.
 	wantSame := ts.Local().Format("2006-01-02 15:04:05.000")
-	assert.Equal(t, wantSame, messages.FormatTimestamp(ts, now))
+	assert.Equal(t, wantSame, messages.FormatTimestamp(ts))
 
 	older := time.Date(2026, 3, 15, 14, 5, 0, 0, time.UTC)
 	wantOlder := older.Local().Format("2006-01-02 15:04:05.000")
-	assert.Equal(t, wantOlder, messages.FormatTimestamp(older, now))
+	assert.Equal(t, wantOlder, messages.FormatTimestamp(older))
 }
 
 func TestFormatTimestamp_ZeroReturnsDash(t *testing.T) {
-	assert.Equal(t, "—", messages.FormatTimestamp(time.Time{}, time.Now()))
+	assert.Equal(t, "—", messages.FormatTimestamp(time.Time{}))
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {
