@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
@@ -74,8 +75,11 @@ type DetailOptions struct {
 	FileWriter FileWriter
 	Pager      PagerOpener
 	OutputDir  string // where save targets are written; defaults to cwd
-	Now        func() time.Time
-	Styles     theme.Styles
+	// Wrap selects the initial soft-wrap mode. The parent screen passes its
+	// remembered value so the user's preference survives detail re-opens.
+	Wrap   bool
+	Now    func() time.Time
+	Styles theme.Styles
 }
 
 // DetailModel is the message-detail screen (§7.4).
@@ -91,6 +95,19 @@ type DetailModel struct {
 	action    DetailAction
 	styles    theme.Styles
 	now       func() time.Time
+
+	width, height int
+	wrap          bool
+	vScroll       int
+	hScroll       int
+	gPrimed       bool
+	// totalLines and maxLineWidth are cached layout geometry. They are
+	// refreshed by [layout] whenever something that affects the
+	// rendered body changes (size, view mode, wrap, current message), and
+	// consumed by scroll math (clampScroll, scrollBottom, ScrollSummary,
+	// hScroll bounds) so jumps work without first calling View().
+	totalLines   int
+	maxLineWidth int
 }
 
 // NewDetailModel constructs a detail view focused on opts.Messages[opts.Index].
@@ -131,7 +148,34 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		view:      ViewAuto,
 		styles:    styles,
 		now:       now,
+		wrap:      opts.Wrap,
 	}
+}
+
+// SetSize records the body geometry. Called by the parent screen on every
+// WindowSizeMsg so the viewport can re-clamp.
+func (d *DetailModel) SetSize(w, h int) {
+	d.width, d.height = w, h
+	d.layout()
+}
+
+// Wrap reports the current soft-wrap mode (true = on).
+func (d *DetailModel) Wrap() bool { return d.wrap }
+
+// ScrollOffset returns the current vertical line offset (for tests).
+func (d *DetailModel) ScrollOffset() int { return d.vScroll }
+
+// HScrollOffset returns the current horizontal column offset (for tests).
+func (d *DetailModel) HScrollOffset() int { return d.hScroll }
+
+// ScrollSummary describes the visible window: 1-based first/last visible
+// line and the total line count. Returns ok=false when geometry is unknown.
+func (d *DetailModel) ScrollSummary() (first, last, total int, ok bool) {
+	if d.totalLines == 0 || d.height <= 0 {
+		return 0, 0, 0, false
+	}
+	last = min(d.vScroll+d.height, d.totalLines)
+	return d.vScroll + 1, last, d.totalLines, true
 }
 
 // Action returns the pending host action.
@@ -163,6 +207,8 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 	hints := []layout.KeyHint{
 		{Key: "n/p", Label: "next/prev"},
 		{Key: "1/2/3", Label: "json/raw/hex"},
+		{Key: "j/k", Label: "scroll"},
+		{Key: "w", Label: "wrap"},
 		{Key: "y", Label: "copy"},
 		{Key: "s/S", Label: "save"},
 		{Key: "e", Label: "$EDITOR"},
@@ -180,7 +226,19 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	if !ok {
 		return d, nil
 	}
-	switch key.String() {
+	str := key.String()
+	if d.gPrimed {
+		d.gPrimed = false
+		if str == "g" {
+			d.scrollTop()
+			return d, nil
+		}
+		// any other key after `g` falls through to normal handling.
+	}
+	if d.handleScrollKey(str) {
+		return d, nil
+	}
+	switch str {
 	case "esc", "q":
 		d.action.Back = true
 	case "n":
@@ -188,11 +246,11 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	case "p":
 		d.move(-1)
 	case "1":
-		d.view = ViewJSON
+		d.setView(ViewJSON)
 	case "2":
-		d.view = ViewRaw
+		d.setView(ViewRaw)
 	case "3":
-		d.view = ViewHex
+		d.setView(ViewHex)
 	case "y":
 		d.copyRecord()
 	case "s":
@@ -203,8 +261,42 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 		d.openEditor()
 	case "r":
 		d.resend()
+	case "w":
+		d.toggleWrap()
 	}
 	return d, nil
+}
+
+// handleScrollKey routes the viewport-navigation keys. Returns true when the
+// key was consumed; non-scroll keys fall through to the main switch.
+func (d *DetailModel) handleScrollKey(str string) bool {
+	switch str {
+	case "j", "down":
+		d.scrollBy(+1)
+	case "k", "up":
+		d.scrollBy(-1)
+	case "ctrl+f", "pgdown":
+		d.scrollBy(+d.pageStep())
+	case "ctrl+b", "pgup":
+		d.scrollBy(-d.pageStep())
+	case "g":
+		d.gPrimed = true
+	case "G", "end":
+		d.scrollBottom()
+	case "home":
+		d.scrollTop()
+	case "h", "left":
+		if !d.wrap {
+			d.hScrollBy(-d.hStep())
+		}
+	case "l", "right":
+		if !d.wrap {
+			d.hScrollBy(+d.hStep())
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func (d *DetailModel) move(delta int) {
@@ -212,6 +304,103 @@ func (d *DetailModel) move(delta int) {
 		return
 	}
 	d.index = clampInt(d.index+delta, 0, len(d.messages)-1)
+	d.resetScroll()
+	d.layout()
+}
+
+// setView switches the value rendering mode and resets the viewport so the
+// new content starts from the top.
+func (d *DetailModel) setView(v ValueView) {
+	if d.view == v {
+		return
+	}
+	d.view = v
+	d.resetScroll()
+	d.layout()
+}
+
+func (d *DetailModel) toggleWrap() {
+	d.wrap = !d.wrap
+	// horizontal offset is meaningless in wrap mode; vertical offset is kept
+	// because clamp will normalise it after the next render.
+	d.hScroll = 0
+	d.layout()
+}
+
+// layout produces the visible-line slice and refreshes the cached geometry
+// (totalLines, maxLineWidth) in lock-step. Called both by [View] and by any
+// state-changing op (resize, message switch, view-mode change, wrap toggle)
+// so a subsequent scroll key sees the same numbers the next frame will
+// render.
+func (d *DetailModel) layout() []string {
+	if len(d.messages) == 0 {
+		d.totalLines, d.maxLineWidth = 0, 0
+		return nil
+	}
+	lines := d.layoutLines(d.renderFullBody())
+	d.totalLines = len(lines)
+	d.maxLineWidth = 0
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > d.maxLineWidth {
+			d.maxLineWidth = w
+		}
+	}
+	d.clampScroll()
+	return lines
+}
+
+func (d *DetailModel) resetScroll() {
+	d.vScroll = 0
+	d.hScroll = 0
+}
+
+func (d *DetailModel) pageStep() int {
+	if d.height <= 1 {
+		return 1
+	}
+	return d.height - 1
+}
+
+func (d *DetailModel) hStep() int {
+	if d.width <= 4 {
+		return 1
+	}
+	// scroll roughly a quarter screen — enough to feel responsive without
+	// jumping past short overhangs.
+	return d.width / 4
+}
+
+func (d *DetailModel) scrollBy(delta int) {
+	d.vScroll += delta
+	d.clampScroll()
+}
+
+func (d *DetailModel) hScrollBy(delta int) {
+	d.hScroll += delta
+	d.clampScroll()
+}
+
+func (d *DetailModel) scrollTop() {
+	d.vScroll = 0
+}
+
+func (d *DetailModel) scrollBottom() {
+	if d.totalLines <= d.height || d.height <= 0 {
+		d.vScroll = 0
+		return
+	}
+	d.vScroll = d.totalLines - d.height
+}
+
+func (d *DetailModel) clampScroll() {
+	d.vScroll = max(d.vScroll, 0)
+	if d.totalLines > 0 && d.height > 0 && d.vScroll > d.totalLines-d.height {
+		d.vScroll = max(d.totalLines-d.height, 0)
+	}
+	d.hScroll = max(d.hScroll, 0)
+	if d.width > 0 && d.maxLineWidth > 0 && d.hScroll > d.maxLineWidth-d.width {
+		d.hScroll = max(d.maxLineWidth-d.width, 0)
+	}
 }
 
 func (d *DetailModel) copyRecord() {
@@ -304,12 +493,41 @@ func (d *DetailModel) resend() {
 }
 
 // View renders the detail body.
-func (d *DetailModel) View(width, _ int) string {
+func (d *DetailModel) View() string {
 	if len(d.messages) == 0 {
+		d.layout()
 		return d.styles.StatusInfo.Render("(no message)")
 	}
+	lines := d.layout()
+	start := d.vScroll
+	end := len(lines)
+	if d.height > 0 && start+d.height < end {
+		end = start + d.height
+	}
+
+	visible := lines[start:end]
+	if !d.wrap && d.width > 0 {
+		// horizontal slicing applied per visible line.
+		out := make([]string, len(visible))
+		for i, line := range visible {
+			s := line
+			if d.hScroll > 0 {
+				s = ansi.TruncateLeft(s, d.hScroll, "")
+			}
+			s = ansi.Truncate(s, d.width, "")
+			out[i] = s
+		}
+		visible = out
+	}
+	return strings.Join(visible, "\n")
+}
+
+// renderFullBody assembles every block (header / key / headers / value) into
+// a single string. ANSI styling is already baked in here so downstream
+// wrap/truncate must be ANSI-aware.
+func (d *DetailModel) renderFullBody() string {
 	cur := d.Current()
-	header := d.renderHeader(cur, width)
+	header := d.renderHeader(cur)
 	keyBlock := d.renderBlock("Key ("+strconv.Itoa(len(cur.Key))+" bytes)", string(cur.Key))
 	headersBlock := d.renderBlock(fmt.Sprintf("Headers (%d)", len(cur.Headers)), headersText(cur.Headers))
 	view := AutoView(d.view, cur.Value)
@@ -318,7 +536,27 @@ func (d *DetailModel) View(width, _ int) string {
 	return strings.Join([]string{header, "", keyBlock, "", headersBlock, "", valueBlock}, "\n")
 }
 
-func (d *DetailModel) renderHeader(cur kafka.Message, _ int) string {
+// layoutLines splits the rendered body into visual lines. With wrap enabled
+// each logical line longer than width is hard-wrapped; with wrap disabled
+// lines are returned as-is and truncation happens at render time.
+func (d *DetailModel) layoutLines(body string) []string {
+	logical := strings.Split(body, "\n")
+	if !d.wrap || d.width <= 0 {
+		return logical
+	}
+	out := make([]string, 0, len(logical))
+	for _, line := range logical {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		wrapped := ansi.Hardwrap(line, d.width, false)
+		out = append(out, strings.Split(wrapped, "\n")...)
+	}
+	return out
+}
+
+func (d *DetailModel) renderHeader(cur kafka.Message) string {
 	pos := fmt.Sprintf("%d/%d", d.index+1, len(d.messages))
 	body := fmt.Sprintf(
 		"%s · partition %d · offset %d · %s",

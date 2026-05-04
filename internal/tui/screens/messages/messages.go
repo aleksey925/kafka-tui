@@ -99,6 +99,9 @@ type Model struct {
 
 	mode   Mode
 	detail *DetailModel
+	// wrap is the user's soft-wrap preference for the detail view. Held at
+	// this level so it survives detail re-opens within the same session.
+	wrap bool
 
 	follow    *kafka.FollowSession
 	following bool
@@ -149,6 +152,7 @@ func New(opts Options) *Model {
 		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		now:       now,
 		styles:    styles,
+		wrap:      true,
 	}
 }
 
@@ -204,11 +208,35 @@ func (m *Model) Title() string {
 	if m.loading {
 		body += " (loading…)"
 	}
+	if m.mode == ModeDetail && m.detail != nil {
+		body += m.detailTitleSuffix()
+	}
 	return body
 }
 
+// detailTitleSuffix appends scroll position and wrap mode to the frame title
+// while the detail view is active.
+func (m *Model) detailTitleSuffix() string {
+	out := ""
+	if first, last, total, ok := m.detail.ScrollSummary(); ok {
+		out += fmt.Sprintf(" · L%d-%d/%d", first, last, total)
+	}
+	if m.detail.Wrap() {
+		out += " · wrap"
+	} else {
+		out += " · nowrap"
+	}
+	return out
+}
+
 // Breadcrumb describes the selected message (right-aligned in the frame).
+// In ModeDetail it tracks the detail view's focused message so n/p
+// navigation updates the chrome alongside the body.
 func (m *Model) Breadcrumb() string {
+	if m.mode == ModeDetail && m.detail != nil {
+		cur := m.detail.Current()
+		return formatRowID(cur.Partition, cur.Offset)
+	}
 	row, ok := m.table.SelectedRow()
 	if !ok {
 		return ""
@@ -263,6 +291,9 @@ func (m *Model) SetSize(w, h int) {
 	}
 	if w > 0 {
 		m.table.SetTotalWidth(w)
+	}
+	if m.detail != nil {
+		m.detail.SetSize(w, h)
 	}
 }
 
@@ -419,9 +450,11 @@ func (m *Model) openDetail() {
 		FileWriter: m.writer,
 		Pager:      m.pager,
 		OutputDir:  m.outputDir,
+		Wrap:       m.wrap,
 		Now:        m.now,
 		Styles:     m.styles,
 	})
+	m.detail.SetSize(m.width, m.height)
 	m.mode = ModeDetail
 }
 
@@ -431,9 +464,11 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 	a := d.ConsumeAction()
 	switch {
 	case a.Back:
+		m.wrap = d.Wrap()
 		m.mode = ModeList
 		m.detail = nil
 	case a.Produce != "":
+		m.wrap = d.Wrap()
 		m.action.Produce = m.topic
 		m.action.PrefillFromMessage = a.PrefillFromMessage
 		m.mode = ModeList
@@ -730,7 +765,7 @@ func valuePreviewWidth(termWidth int) int {
 // View renders the screen body.
 func (m *Model) View() string {
 	if m.mode == ModeDetail {
-		return m.detail.View(m.width, m.height)
+		return m.detail.View()
 	}
 	return m.table.View()
 }

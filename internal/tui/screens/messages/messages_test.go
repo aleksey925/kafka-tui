@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -760,4 +761,343 @@ func TestDetailView_EmptyKeyAndHeadersRenderEmptyMarker(t *testing.T) {
 	out := m.View()
 	assert.Contains(t, out, "(empty)", "empty key + headers must show the empty marker")
 	assert.Contains(t, out, "value-only")
+}
+
+// largeValue produces a deterministic multi-line payload long enough to
+// overflow a small detail viewport.
+func largeValue(lines int) []byte {
+	parts := make([]string, lines)
+	for i := range lines {
+		parts[i] = "line-" + strconv.Itoa(i)
+	}
+	return []byte(strings.Join(parts, "\n"))
+}
+
+func openDetailWithLarge(t *testing.T, h, lines int) *messages.Model {
+	t.Helper()
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Partition: 0, Offset: 1, Value: largeValue(lines),
+	}})
+	m.SetSize(80, h)
+	_ = m.Update(keyPress("enter"))
+	require.NotNil(t, m.Detail())
+	return m
+}
+
+func TestDetail_VerticalScroll_JumpsAndClamps(t *testing.T) {
+	// arrange
+	m := openDetailWithLarge(t, 12, 200)
+	d := m.Detail()
+	require.Equal(t, 0, d.ScrollOffset())
+
+	// act + assert: j moves down by one
+	_ = m.Update(keyPress("j"))
+	assert.Equal(t, 1, d.ScrollOffset())
+
+	// k moves back up
+	_ = m.Update(keyPress("k"))
+	assert.Equal(t, 0, d.ScrollOffset())
+
+	// G goes to bottom — visible window should end at totalLines.
+	_ = m.Update(keyPress("G"))
+	_, last, total, ok := d.ScrollSummary()
+	require.True(t, ok)
+	assert.Equal(t, total, last, "G must align bottom of window with last line")
+
+	// gg returns to top.
+	_ = m.Update(keyPress("g"))
+	_ = m.Update(keyPress("g"))
+	assert.Equal(t, 0, d.ScrollOffset())
+}
+
+func TestDetail_PageScrollUsesViewportHeight(t *testing.T) {
+	m := openDetailWithLarge(t, 10, 200)
+	d := m.Detail()
+
+	_ = m.Update(ctrlKey('f'))
+	first := d.ScrollOffset()
+	assert.Greater(t, first, 1, "ctrl+f must move by ~one page")
+
+	_ = m.Update(ctrlKey('b'))
+	assert.Equal(t, 0, d.ScrollOffset())
+}
+
+func TestDetail_HorizontalScroll_OnlyWhenNoWrap(t *testing.T) {
+	// arrange: short payload but a single very wide line so wrap matters.
+	wide := strings.Repeat("X", 400)
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte(wide),
+	}})
+	m.SetSize(40, 20)
+	_ = m.Update(keyPress("enter"))
+	d := m.Detail()
+	require.True(t, d.Wrap(), "wrap must be on by default")
+
+	// act: l in wrap mode is a no-op for hScroll
+	_ = m.Update(keyPress("l"))
+	assert.Equal(t, 0, d.HScrollOffset(), "horizontal scroll must be ignored while wrap is on")
+
+	// switch wrap off, then l moves the window right
+	_ = m.Update(keyPress("w"))
+	require.False(t, d.Wrap())
+	_ = m.Update(keyPress("l"))
+	assert.Positive(t, d.HScrollOffset(), "l must advance horizontal offset when wrap is off")
+
+	// h moves it back
+	prev := d.HScrollOffset()
+	_ = m.Update(keyPress("h"))
+	assert.Less(t, d.HScrollOffset(), prev)
+}
+
+func TestDetail_HorizontalScroll_ClampsAtMaxLineWidth(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte(strings.Repeat("X", 120)),
+	}})
+	m.SetSize(40, 20)
+	_ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("w"))
+	d := m.Detail()
+	require.False(t, d.Wrap())
+
+	for range 1000 {
+		_ = m.Update(keyPress("l"))
+	}
+	// pinned at maxLineWidth - width, never grows past content.
+	first := d.HScrollOffset()
+	_ = m.Update(keyPress("l"))
+	assert.Equal(t, first, d.HScrollOffset(), "horizontal scroll must clamp at content width")
+}
+
+func TestDetail_WrapTogglePreservedAcrossNextPrev(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v1")},
+		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("v2")},
+	})
+	m.SetSize(80, 20)
+	_ = m.Update(keyPress("enter"))
+	d := m.Detail()
+
+	_ = m.Update(keyPress("w"))
+	require.False(t, d.Wrap())
+
+	_ = m.Update(keyPress("n"))
+	assert.False(t, d.Wrap(), "n must not reset wrap mode")
+}
+
+func TestDetail_NextResetsScroll(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: largeValue(200)},
+		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("short")},
+	})
+	m.SetSize(80, 12)
+	_ = m.Update(keyPress("enter"))
+	d := m.Detail()
+
+	_ = m.Update(keyPress("G"))
+	require.Positive(t, d.ScrollOffset())
+
+	_ = m.Update(keyPress("n"))
+	assert.Equal(t, 0, d.ScrollOffset(), "switching message must rewind scroll")
+}
+
+func TestDetail_ViewModeSwitchResetsScroll(t *testing.T) {
+	m := openDetailWithLarge(t, 12, 200)
+	d := m.Detail()
+
+	_ = m.Update(keyPress("G"))
+	require.Positive(t, d.ScrollOffset())
+
+	_ = m.Update(keyPress("2"))
+	assert.Equal(t, 0, d.ScrollOffset(), "view mode switch must rewind scroll")
+}
+
+func TestDetail_SetSize_ReclampsScroll(t *testing.T) {
+	m := openDetailWithLarge(t, 12, 60)
+	d := m.Detail()
+
+	_ = m.Update(keyPress("G"))
+	scrolled := d.ScrollOffset()
+	require.Positive(t, scrolled)
+
+	// growing the body so everything fits should pin scroll back to 0.
+	m.SetSize(80, 200)
+	assert.Equal(t, 0, d.ScrollOffset(), "growing the viewport must drop the now-invalid offset")
+}
+
+func TestMessages_WrapPersistsAcrossDetailReopen(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte("v"),
+	}})
+	m.SetSize(80, 20)
+	_ = m.Update(keyPress("enter"))
+	require.True(t, m.Detail().Wrap())
+
+	_ = m.Update(keyPress("w"))
+	require.False(t, m.Detail().Wrap())
+	_ = m.Update(keyPress("esc"))
+	require.Nil(t, m.Detail())
+
+	_ = m.Update(keyPress("enter"))
+	require.NotNil(t, m.Detail())
+	assert.False(t, m.Detail().Wrap(), "wrap preference must survive close/reopen")
+}
+
+func TestMessages_BreadcrumbTracksDetailNavigation(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
+		{Topic: "orders", Partition: 2, Offset: 42, Value: []byte("b")},
+	})
+	m.SetSize(80, 20)
+	_ = m.Update(keyPress("enter"))
+	require.Equal(t, "msg-0-1", m.Breadcrumb())
+
+	_ = m.Update(keyPress("n"))
+	assert.Equal(t, "msg-2-42", m.Breadcrumb(), "breadcrumb must follow detail's focused message")
+
+	_ = m.Update(keyPress("p"))
+	assert.Equal(t, "msg-0-1", m.Breadcrumb())
+}
+
+func TestMessages_TitleEmbedsScrollIndicator(t *testing.T) {
+	m := openDetailWithLarge(t, 12, 200)
+
+	title := m.Title()
+	assert.Contains(t, title, "wrap")
+	assert.Regexp(t, `L\d+-\d+/\d+`, title, "title must include line range while in detail")
+
+	_ = m.Update(keyPress("w"))
+	assert.Contains(t, m.Title(), "nowrap")
+}
+
+// stripANSI removes terminal escape sequences so tests can compare against
+// plain expected substrings without depending on the active theme palette.
+func stripANSI(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j - 1
+			continue
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
+// findValueLine returns the first body line that contains needle within the
+// rendered view, or "" when not found. Helps tests reason about what the
+// user sees regardless of header / block-title chrome.
+func findValueLine(view, needle string) string {
+	for line := range strings.SplitSeq(stripANSI(view), "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestDetail_WrapOn_BreaksLongLineAcrossVisualLines(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte(strings.Repeat("X", 200)),
+	}})
+	m.SetSize(40, 30)
+	_ = m.Update(keyPress("enter"))
+	require.True(t, m.Detail().Wrap())
+
+	// the long X line should appear as several visual lines in the rendered body.
+	xLines := 0
+	for line := range strings.SplitSeq(stripANSI(m.View()), "\n") {
+		if strings.Contains(line, "XXXX") {
+			xLines++
+		}
+	}
+	assert.Greater(t, xLines, 1, "wrap=on must split a 200-char line into multiple visual lines at width=40")
+}
+
+func TestDetail_WrapOff_KeepsLongLineSingleAndTruncates(t *testing.T) {
+	payload := strings.Repeat("X", 200)
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte(payload),
+	}})
+	m.SetSize(40, 30)
+	_ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("w"))
+	require.False(t, m.Detail().Wrap())
+
+	xLines := 0
+	for line := range strings.SplitSeq(stripANSI(m.View()), "\n") {
+		if strings.Contains(line, "XXXX") {
+			xLines++
+			// each rendered line must fit the viewport width (40).
+			assert.LessOrEqual(t, len(line), 40, "nowrap mode must truncate, not overflow the viewport")
+		}
+	}
+	assert.Equal(t, 1, xLines, "wrap=off must keep the long line as a single visual line")
+}
+
+func TestDetail_HScroll_SlidesVisibleContent(t *testing.T) {
+	// arrange: payload begins with a recognizable prefix so we can tell when
+	// the horizontal window has actually moved past it.
+	payload := "AAAA" + strings.Repeat("B", 200)
+	m := buildModelWithMessages(t, []kafka.Message{{
+		Topic: "orders", Value: []byte(payload),
+	}})
+	m.SetSize(40, 30)
+	_ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("w"))
+	require.False(t, m.Detail().Wrap())
+
+	before := findValueLine(m.View(), "AAAA")
+	require.NotEmpty(t, before, "prefix must be visible before scrolling")
+
+	// scroll right until prefix scrolls off-screen.
+	for range 20 {
+		_ = m.Update(keyPress("l"))
+	}
+	require.Positive(t, m.Detail().HScrollOffset())
+	after := findValueLine(m.View(), "AAAA")
+	assert.Empty(t, after, "AAAA prefix must scroll out of view once hScroll exceeds its position")
+}
+
+func TestDetail_GThenNonG_DoesNotJumpToTop(t *testing.T) {
+	m := openDetailWithLarge(t, 12, 200)
+	d := m.Detail()
+	_ = m.Update(keyPress("G"))
+	require.Positive(t, d.ScrollOffset())
+	bottom := d.ScrollOffset()
+
+	// `g` primes the gg sequence; the next non-`g` key must NOT scroll to top —
+	// it should be processed as a normal scroll command (here, j moves down,
+	// but we are already pinned at the bottom, so offset stays).
+	_ = m.Update(keyPress("g"))
+	_ = m.Update(keyPress("j"))
+	assert.Equal(t, bottom, d.ScrollOffset(), "g followed by a non-g key must not jump to top")
+}
+
+func TestDetail_KeyHints_IncludeScrollAndWrap(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	m.SetSize(80, 20)
+	_ = m.Update(keyPress("enter"))
+
+	labels := keyHintKeys(m.KeyHints())
+	assert.Contains(t, labels, "j/k", "detail hints must advertise scroll keys")
+	assert.Contains(t, labels, "w", "detail hints must advertise wrap toggle")
+}
+
+func keyHintKeys(hints []layout.KeyHint) []string {
+	out := make([]string, 0, len(hints))
+	for _, h := range hints {
+		out = append(out, h.Key)
+	}
+	return out
+}
+
+func ctrlKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
 }
