@@ -304,12 +304,13 @@ func (m *Model) ActiveFilter() string {
 	return m.table.Search()
 }
 
-// HasOverlay reports whether a modal (delete confirm or the multi-step
-// reset-offsets flow) sits on top of the list/detail view. Detail is a
-// regular sub-screen, not an overlay — esc there is "go back to list",
-// which the standard pop logic handles.
+// HasOverlay reports whether a modal (delete confirm, the multi-step
+// reset-offsets flow, or the detail view) sits on top of the list. The
+// host yields esc to the screen for any of these — without ModeDetail
+// being included here the q/esc fallback would also pop the groups
+// screen on detail close, so a single esc would skip the list view.
 func (m *Model) HasOverlay() bool {
-	return m.confirm != nil || m.mode == ModeReset
+	return m.confirm != nil || m.mode == ModeReset || m.mode == ModeDetail
 }
 
 // SetSize updates width/height. Reserves chrome rows.

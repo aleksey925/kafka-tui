@@ -392,20 +392,7 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		routeCmd := m.routeActiveAction()
 		return m, teaBatch(cmd, routeCmd)
 	}
-	switch key.String() {
-	case ":":
-		m.mode = ModeCommand
-		m.command = layout.CommandBar{Active: true, Prefix: ':'}
-		m.applySize()
-		return m, nil
-	case "/":
-		m.openSearchPrompt()
-		return m, nil
-	case "?":
-		m.mode = ModeHelp
-		return m, nil
-	case "ctrl+r":
-		m.SetAutoRefresh(!m.autoRefresh)
+	if m.handleGlobalShortcut(key) {
 		return m, nil
 	}
 	// esc cascade: if the screen has a modal overlay open, esc belongs
@@ -425,33 +412,70 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	cmd := m.forwardToActive(key)
 	routeCmd := m.routeActiveAction()
 	if cmd == nil && routeCmd == nil {
-		switch key.String() {
-		case "q":
-			// `q` quits at the root, otherwise pops a screen.
-			if m.router.Depth() <= 1 {
-				m.quit = true
-				return m, tea.Quit
-			}
-			m.popScreen()
-			next := m.activeInit()
-			return m, next
-		case "esc":
-			if hadOverlay {
-				// the screen just closed its overlay via the forwarded
-				// esc — don't double-act by also popping.
-				return m, nil
-			}
-			// at the root esc is a no-op so users don't quit the app by
-			// accident. ctrl+c remains the unconditional exit.
-			if m.router.Depth() > 1 {
-				m.popScreen()
-				next := m.activeInit()
-				return m, next
-			}
-			return m, nil
+		if fbCmd, ok := m.handleQuitFallback(key, hadOverlay); ok {
+			return m, fbCmd
 		}
 	}
 	return m, teaBatch(cmd, routeCmd)
+}
+
+// handleGlobalShortcut runs the screen-agnostic shortcut switch (`:` /
+// `/` / `?` / `ctrl+r`). Returns false when the key isn't one of those
+// so the caller falls through to the screen-aware path.
+func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
+	switch key.String() {
+	case ":":
+		m.mode = ModeCommand
+		m.command = layout.CommandBar{Active: true, Prefix: ':'}
+		m.applySize()
+		return true
+	case "/":
+		// only open the prompt for screens that can actually filter — on
+		// detail/form views the prompt would just swallow keystrokes.
+		if m.active != nil && !m.active.SupportsSearch() {
+			return true
+		}
+		m.openSearchPrompt()
+		return true
+	case "?":
+		m.mode = ModeHelp
+		return true
+	case "ctrl+r":
+		m.SetAutoRefresh(!m.autoRefresh)
+		return true
+	}
+	return false
+}
+
+// handleQuitFallback decides what `q` / `esc` should do when the active
+// screen returned no command and no Action — i.e. it didn't claim the
+// key for an overlay or transition. Returns ok=false for keys outside
+// q/esc, leaving the caller to teaBatch the screen's nil cmds.
+func (m *Model) handleQuitFallback(key tea.KeyPressMsg, hadOverlay bool) (tea.Cmd, bool) {
+	switch key.String() {
+	case "q":
+		// `q` quits at the root, otherwise pops a screen.
+		if m.router.Depth() <= 1 {
+			m.quit = true
+			return tea.Quit, true
+		}
+		m.popScreen()
+		return m.activeInit(), true
+	case "esc":
+		if hadOverlay {
+			// the screen just closed its overlay via the forwarded esc —
+			// don't double-act by also popping.
+			return nil, true
+		}
+		// at the root esc is a no-op so users don't quit the app by
+		// accident. ctrl+c remains the unconditional exit.
+		if m.router.Depth() > 1 {
+			m.popScreen()
+			return m.activeInit(), true
+		}
+		return nil, true
+	}
+	return nil, false
 }
 
 func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1153,12 +1177,22 @@ func (m *Model) popOrReplaceToClusters() tea.Cmd {
 	return m.replaceScreen(ScreenClusters, "")
 }
 
+// closeActive releases any background resources held by the current
+// active screen (clone goroutine, follow session, etc.) and clears the
+// pointer so a fresh instance can be wired in.
+func (m *Model) closeActive() {
+	if m.active != nil {
+		m.active.Close()
+		m.active = nil
+	}
+	m.flash = layout.Flash{}
+}
+
 // pushScreen pushes id onto the router stack and constructs the screen
 // instance. Used at startup. Discards the resulting Init cmd because the
 // caller is expected to invoke [Init] separately.
 func (m *Model) pushScreen(id ScreenID) {
-	m.active = nil
-	m.flash = layout.Flash{}
+	m.closeActive()
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
@@ -1168,8 +1202,7 @@ func (m *Model) pushScreen(id ScreenID) {
 // pushScreenCmd is the runtime variant: pushes a screen, instantiates it, and
 // returns its Init cmd to be batched with the host's reply.
 func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
-	m.active = nil
-	m.flash = layout.Flash{}
+	m.closeActive()
 	m.router.Push(id)
 	m.instantiate(id)
 	m.applySize()
@@ -1184,8 +1217,7 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 		// `:cluster <name>` connects to a known cluster directly.
 		return m.connectCluster(arg)
 	}
-	m.active = nil
-	m.flash = layout.Flash{}
+	m.closeActive()
 	m.router.Replace(id)
 	m.instantiate(id)
 	m.applySize()
@@ -1198,8 +1230,7 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 // data, since we drop instances when leaving them to release Kafka follow
 // sessions, table state, etc.
 func (m *Model) popScreen() {
-	m.active = nil
-	m.flash = layout.Flash{}
+	m.closeActive()
 	m.router.Pop()
 	if id := m.router.Active(); id != "" {
 		m.instantiate(id)

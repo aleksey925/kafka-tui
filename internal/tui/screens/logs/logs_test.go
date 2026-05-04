@@ -155,12 +155,8 @@ func TestSearch_FindsMatchingLine(t *testing.T) {
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
 
-	// act — open search, type "bra", submit.
-	_, _ = m.Update(keyPress("/"))
-	_, _ = m.Update(textKey("b"))
-	_, _ = m.Update(textKey("r"))
-	_, _ = m.Update(textKey("a"))
-	_, _ = m.Update(keyPress("enter"))
+	// act — host owns the prompt; drive the screen via SetSearch.
+	m.SetSearch("bra")
 
 	// assert
 	assert.Equal(t, 1, m.Cursor())
@@ -173,13 +169,7 @@ func TestSearchN_JumpsToNextMatch(t *testing.T) {
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("/"))
-	_, _ = m.Update(textKey("a"))
-	_, _ = m.Update(textKey("l"))
-	_, _ = m.Update(textKey("p"))
-	_, _ = m.Update(textKey("h"))
-	_, _ = m.Update(textKey("a"))
-	_, _ = m.Update(keyPress("enter"))
+	m.SetSearch("alpha")
 	require.Equal(t, 0, m.Cursor())
 
 	// act

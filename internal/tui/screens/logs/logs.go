@@ -61,12 +61,13 @@ type Model struct {
 	cursor   int
 	viewport int
 
-	// search state. mirrors the table component, but operates over the raw
-	// lines slice rather than table rows.
-	searchActive bool
-	search       string
-	matches      []int
-	matchCursor  int
+	// search state. The host owns the `/` prompt (see app.go) and pushes
+	// the live query into [Model.SetSearch]; the screen only keeps the
+	// resulting query plus the precomputed line indices for n/N
+	// navigation.
+	search      string
+	matches     []int
+	matchCursor int
 
 	gPrimed bool
 
@@ -164,12 +165,17 @@ func (m *Model) Breadcrumb() string { return m.path }
 
 // SetSearch applies a host-driven filter query. The match-index list is
 // rebuilt right away so n/N navigation (and the title's "X matches" hint)
-// reflect the new query without waiting for the user to advance.
+// reflect the new query without waiting for the user to advance, and
+// the cursor jumps to the first match so the user sees the result of
+// each keystroke live.
 func (m *Model) SetSearch(query string) {
 	m.search = query
-	m.searchActive = false
 	m.recomputeMatches()
 	m.matchCursor = 0
+	if len(m.matches) > 0 {
+		m.cursor = m.matches[0]
+		m.clampViewport()
+	}
 }
 
 // ActiveFilter returns the current search query.
@@ -223,10 +229,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-	if m.searchActive {
-		m.handleSearchKey(key)
-		return m, nil
-	}
 	if m.gPrimed {
 		m.gPrimed = false
 		if key.String() == "g" {
@@ -243,10 +245,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case "f":
 		cmd := m.toggleFollow()
 		return m, cmd
-	case "/":
-		m.searchActive = true
-		m.search = ""
-		return m, nil
 	case "n":
 		m.jumpMatch(+1)
 		return m, nil
@@ -274,32 +272,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
-}
-
-func (m *Model) handleSearchKey(key tea.KeyPressMsg) {
-	switch key.String() {
-	case "esc":
-		m.searchActive = false
-		m.search = ""
-		m.matches = nil
-		m.matchCursor = 0
-	case "enter":
-		m.searchActive = false
-		m.recomputeMatches()
-		if len(m.matches) > 0 {
-			m.cursor = m.matches[0]
-			m.matchCursor = 0
-			m.clampViewport()
-		}
-	case "backspace":
-		if n := len(m.search); n > 0 {
-			m.search = m.search[:n-1]
-		}
-	default:
-		if t := key.Text; t != "" {
-			m.search += t
-		}
-	}
 }
 
 func (m *Model) move(delta int) {

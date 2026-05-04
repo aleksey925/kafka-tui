@@ -60,6 +60,12 @@ type screen interface {
 	// snapshot). The chrome shows "—" instead of "off" for the latter
 	// to make it clear refresh isn't applicable here.
 	SupportsRefresh() bool
+	// SupportsSearch reports whether the screen can usefully filter its
+	// rows. The host calls it on `/` and skips opening the prompt when
+	// the answer is false (e.g. the produce form, the messages detail
+	// view) so users don't see an inert prompt that swallows their
+	// keystrokes.
+	SupportsSearch() bool
 	// SetSearch applies a filter query to the screen's primary table.
 	// The host owns the search prompt (k9s-style, in the same slot as
 	// the command bar) and pushes each keystroke here so rows filter
@@ -78,6 +84,13 @@ type screen interface {
 	// close cleanly and skips both the filter-clear cascade and the
 	// screen pop.
 	HasOverlay() bool
+	// Close releases any background resources (long-running goroutines,
+	// open kafka clients, file handles, etc.) the screen owns. Called by
+	// the host before swapping `m.active` for a new screen — without it
+	// in-flight clones / follow sessions would keep running until their
+	// outer context times out. Idempotent and safe to call on a screen
+	// with no resources to release.
+	Close()
 }
 
 type clustersScreen struct{ m *clusters.Model }
@@ -99,9 +112,11 @@ func (s *clustersScreen) RefreshInterval() time.Duration        { return s.m.Ref
 func (s *clustersScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *clustersScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *clustersScreen) SupportsRefresh() bool                 { return true }
+func (s *clustersScreen) SupportsSearch() bool                  { return true }
 func (s *clustersScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *clustersScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *clustersScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
+func (s *clustersScreen) Close()                                {}
 
 type topicsScreen struct{ m *topics.Model }
 
@@ -122,9 +137,11 @@ func (s *topicsScreen) RefreshInterval() time.Duration        { return s.m.Refre
 func (s *topicsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *topicsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *topicsScreen) SupportsRefresh() bool                 { return true }
+func (s *topicsScreen) SupportsSearch() bool                  { return true }
 func (s *topicsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *topicsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *topicsScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
+func (s *topicsScreen) Close()                                { s.m.Close() }
 
 type messagesScreen struct{ m *messages.Model }
 
@@ -145,9 +162,11 @@ func (s *messagesScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *messagesScreen) SetRefreshPaused(bool)                 {}
 func (s *messagesScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *messagesScreen) SupportsRefresh() bool                 { return false }
+func (s *messagesScreen) SupportsSearch() bool                  { return s.m.SupportsSearch() }
 func (s *messagesScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *messagesScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
-func (s *messagesScreen) HasOverlay() bool                      { return false }
+func (s *messagesScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
+func (s *messagesScreen) Close()                                { s.m.Close() }
 
 type produceScreen struct{ m *produce.Model }
 
@@ -168,9 +187,11 @@ func (s *produceScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *produceScreen) SetRefreshPaused(bool)                 {}
 func (s *produceScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *produceScreen) SupportsRefresh() bool                 { return false }
+func (s *produceScreen) SupportsSearch() bool                  { return false }
 func (s *produceScreen) SetSearch(string)                      {}
 func (s *produceScreen) ActiveFilter() string                  { return "" }
 func (s *produceScreen) HasOverlay() bool                      { return false }
+func (s *produceScreen) Close()                                {}
 
 type groupsScreen struct{ m *groups.Model }
 
@@ -191,9 +212,11 @@ func (s *groupsScreen) RefreshInterval() time.Duration        { return s.m.Refre
 func (s *groupsScreen) SetRefreshPaused(p bool)               { s.m.SetRefreshPaused(p) }
 func (s *groupsScreen) LastRefresh() time.Time                { return s.m.LastRefresh() }
 func (s *groupsScreen) SupportsRefresh() bool                 { return true }
+func (s *groupsScreen) SupportsSearch() bool                  { return true }
 func (s *groupsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *groupsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *groupsScreen) HasOverlay() bool                      { return s.m.HasOverlay() }
+func (s *groupsScreen) Close()                                {}
 
 type logsScreen struct{ m *logs.Model }
 
@@ -214,9 +237,11 @@ func (s *logsScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *logsScreen) SetRefreshPaused(bool)                 {}
 func (s *logsScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *logsScreen) SupportsRefresh() bool                 { return false }
+func (s *logsScreen) SupportsSearch() bool                  { return true }
 func (s *logsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *logsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *logsScreen) HasOverlay() bool                      { return false }
+func (s *logsScreen) Close()                                {}
 
 type configsrcScreen struct{ m *configsrc.Model }
 
@@ -237,9 +262,11 @@ func (s *configsrcScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *configsrcScreen) SetRefreshPaused(bool)                 {}
 func (s *configsrcScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *configsrcScreen) SupportsRefresh() bool                 { return false }
+func (s *configsrcScreen) SupportsSearch() bool                  { return true }
 func (s *configsrcScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *configsrcScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *configsrcScreen) HasOverlay() bool                      { return false }
+func (s *configsrcScreen) Close()                                {}
 
 type topicConfigsScreen struct{ m *topics.ConfigsModel }
 
@@ -260,6 +287,8 @@ func (s *topicConfigsScreen) RefreshInterval() time.Duration        { return 0 }
 func (s *topicConfigsScreen) SetRefreshPaused(bool)                 {}
 func (s *topicConfigsScreen) LastRefresh() time.Time                { return time.Time{} }
 func (s *topicConfigsScreen) SupportsRefresh() bool                 { return false }
+func (s *topicConfigsScreen) SupportsSearch() bool                  { return true }
 func (s *topicConfigsScreen) SetSearch(q string)                    { s.m.SetSearch(q) }
 func (s *topicConfigsScreen) ActiveFilter() string                  { return s.m.ActiveFilter() }
 func (s *topicConfigsScreen) HasOverlay() bool                      { return false }
+func (s *topicConfigsScreen) Close()                                {}

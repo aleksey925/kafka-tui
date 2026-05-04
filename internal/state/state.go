@@ -29,9 +29,9 @@ import (
 const driverName = "sqlite"
 
 // DefaultPath returns the spec-defined location for the state DB:
-// `~/.local/share/kafka-tui/state.db`. When `$HOME` is unset (e.g. in a
-// constrained CI sandbox) the function falls back to a path under the
-// current working directory so callers can still proceed.
+// `~/.local/share/kafka-tui/state.db`. Returns an error when the home
+// directory cannot be resolved or is empty so callers can decide whether
+// to fall back to an in-memory store or skip persistence entirely.
 func DefaultPath() (string, error) {
 	if dir, err := os.UserHomeDir(); err == nil && dir != "" {
 		return filepath.Join(dir, ".local", "share", "kafka-tui", "state.db"), nil

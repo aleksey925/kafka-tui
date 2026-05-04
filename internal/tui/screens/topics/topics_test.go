@@ -367,11 +367,9 @@ func TestSearch_FiltersTable(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("/"))
-	for _, r := range "order" {
-		_, _ = m.Update(keyPressRune(r))
-	}
-	_, _ = m.Update(keyPress("enter"))
+	// host owns the `/` prompt now and pushes each keystroke into
+	// SetSearch — exercise the screen through that public surface.
+	m.SetSearch("order")
 	out := m.View()
 	assert.Contains(t, out, "orders")
 	assert.Contains(t, out, "order-history")

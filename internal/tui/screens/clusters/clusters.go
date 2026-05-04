@@ -501,14 +501,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		_, _ = m.toasts.Update(key)
 	}
 
-	// while the table is in fuzzy-search mode, every keypress belongs to the
-	// search prompt — don't intercept hotkey letters.
-	if m.table.SearchActive() {
-		tbl, _ := m.table.Update(key)
-		m.table = tbl
-		return m, nil
-	}
-
 	switch key.String() {
 	case "enter":
 		cmd := m.connectCurrent()

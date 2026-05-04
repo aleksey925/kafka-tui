@@ -93,6 +93,46 @@ func TestConfigsScreen_EscRaisesBack(t *testing.T) {
 	assert.True(t, m.ConsumeAction().Back)
 }
 
+// TestConfigsScreen_SetSearchAppliesToBothTables pins the screen-level
+// filter contract: the host-driven `/` prompt narrows both sub-tables
+// (configs and partitions), so an esc-cascade can clear the filter
+// regardless of which sub-table currently has focus.
+func TestConfigsScreen_SetSearchAppliesToBothTables(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "retention.ms", Value: "1000"},
+		{Key: "cleanup.policy", Value: "compact"},
+	}
+	svc.parts["alpha"] = []kafka.PartitionDetail{
+		{Partition: 0, Leader: 1},
+		{Partition: 1, Leader: 2},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	driveConfigs(t, m, m.Init())
+
+	// applying "retention" hides cleanup.policy on the configs table; the
+	// partitions table holds rows like "p-0"/"p-1" which don't contain
+	// "retention" either, so it should also collapse to no rows.
+	m.SetSearch("retention")
+	out := m.View()
+	assert.Contains(t, out, "retention.ms")
+	assert.NotContains(t, out, "cleanup.policy")
+	assert.Contains(t, out, "(no rows)", "partitions table must reflect the same filter")
+	assert.Equal(t, "retention", m.ActiveFilter(),
+		"ActiveFilter must report the screen-level query regardless of focus")
+
+	// switching focus to the partitions table must NOT change the active
+	// filter — both tables are filtered by the same string so the host
+	// can clear it on any focus.
+	_, _ = m.Update(keyPress("tab"))
+	require.True(t, m.FocusPartitions())
+	assert.Equal(t, "retention", m.ActiveFilter())
+
+	// clearing through the host's esc-cascade resets both tables.
+	m.SetSearch("")
+	assert.Empty(t, m.ActiveFilter())
+}
+
 // ----- helpers -----
 
 type configsFakeService struct {

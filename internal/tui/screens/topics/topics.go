@@ -394,11 +394,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-	if m.table.SearchActive() {
-		tbl, _ := m.table.Update(key)
-		m.table = tbl
-		return m, nil
-	}
 	return m.handleListKey(key)
 }
 
@@ -606,6 +601,22 @@ func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
 		return clonePollCmd(m.cloneCh)
 	}
 	return nil
+}
+
+// Close releases any background resources owned by the screen. The host
+// calls it before swapping the active screen, so an in-flight clone
+// goroutine doesn't keep running (and holding a worker kgo.Client) until
+// its outer context times out. Safe to call when nothing is in flight.
+func (m *Model) Close() {
+	if m.cloneCxl != nil {
+		m.cloneCxl()
+		m.cloneCxl = nil
+	}
+	if m.cloneCh != nil {
+		ch := m.cloneCh
+		m.cloneCh = nil
+		go drainChannel(ch)
+	}
 }
 
 func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {

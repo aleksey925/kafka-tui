@@ -326,6 +326,28 @@ func TestDetail_EscReturnsToList(t *testing.T) {
 	assert.Equal(t, groups.ModeList, m.CurrentMode())
 }
 
+// TestHasOverlay_DetailIsOverlay pins the host contract: while in
+// ModeDetail the screen reports HasOverlay=true so the host's q/esc
+// fallback yields esc to the screen (which closes detail) instead of
+// also popping the groups screen — without this the user would skip
+// the list view entirely with a single esc.
+func TestHasOverlay_DetailIsOverlay(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
+	svc.descriptions = map[string]kafka.GroupDescription{"g1": {Group: "g1", State: "Empty"}}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+	require.False(t, m.HasOverlay(), "list mode is not an overlay")
+
+	_, cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	require.Equal(t, groups.ModeDetail, m.CurrentMode())
+	assert.True(t, m.HasOverlay(), "detail mode must report as overlay so esc stays inside the screen")
+
+	_, _ = m.Update(keyPress("esc"))
+	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
+}
+
 func TestDetail_LargeNumbersHaveThousandsSeparators(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
 		{Topic: "t", Partition: 0, Committed: 1234567, End: 2000000, Lag: 765433, MemberID: "m"},

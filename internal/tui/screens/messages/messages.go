@@ -223,6 +223,11 @@ func (m *Model) Messages() []kafka.Message {
 	return out
 }
 
+// SupportsSearch reports whether the screen can usefully filter rows.
+// In ModeDetail there's only one record on screen, so the host should
+// not open the search prompt.
+func (m *Model) SupportsSearch() bool { return m.mode != ModeDetail }
+
 // SetSearch forwards a host-driven filter query to the underlying table.
 // In ModeDetail there's no table to search, so it's a no-op.
 func (m *Model) SetSearch(query string) {
@@ -240,6 +245,13 @@ func (m *Model) ActiveFilter() string {
 	}
 	return m.table.Search()
 }
+
+// HasOverlay reports whether the screen is showing a modal-like overlay
+// the host should yield esc to. Today that's the detail view: on esc
+// the screen closes detail and returns to the list — without this flag
+// the host's q/esc fallback would also pop the messages screen, so a
+// single esc in detail would skip the list view entirely.
+func (m *Model) HasOverlay() bool { return m.mode == ModeDetail }
 
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
@@ -304,11 +316,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	}
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
-	}
-	if m.table.SearchActive() {
-		tbl, _ := m.table.Update(key)
-		m.table = tbl
-		return m, nil
 	}
 
 	// vim-style "g <x>" jump prefix.
@@ -536,6 +543,19 @@ func (m *Model) stopFollow() {
 	}
 	if m.following {
 		m.toasts.Push(components.ToastInfo, "follow mode off")
+	}
+	m.following = false
+}
+
+// Close releases any background resources owned by the screen. The host
+// calls it before swapping the active screen, so an open follow session
+// doesn't leak its kgo consumer / goroutine (Follow uses
+// context.Background internally and would otherwise live forever). Safe
+// to call when no session is open.
+func (m *Model) Close() {
+	if m.follow != nil {
+		m.follow.Close()
+		m.follow = nil
 	}
 	m.following = false
 }

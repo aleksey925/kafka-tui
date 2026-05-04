@@ -432,11 +432,10 @@ func TestSearch_FiltersTable(t *testing.T) {
 			{Name: "prod-west", Brokers: []string{"c"}},
 		},
 	})
-	_, _ = m.Update(keyPress("/"))
-	for _, ch := range "prod" {
-		_, _ = m.Update(keyPressRune(ch))
-	}
-	_, _ = m.Update(keyPress("enter"))
+	// the host owns the `/` prompt now and pushes each keystroke into
+	// SetSearch. Drive the screen through that public API to verify
+	// rows filter as expected.
+	m.SetSearch("prod")
 	out := m.View()
 	assert.Contains(t, out, "prod-east")
 	assert.Contains(t, out, "prod-west")
@@ -482,8 +481,4 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: r, Text: string(r)}
 	}
 	return tea.KeyPressMsg{}
-}
-
-func keyPressRune(r rune) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }

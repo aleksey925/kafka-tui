@@ -103,20 +103,21 @@ func (m *Model) Breadcrumb() string {
 	return "config"
 }
 
-// SetSearch forwards a host-driven filter query to the currently focused
-// sub-table (config keys or per-cluster fields).
+// SetSearch forwards a host-driven filter query to both sub-tables. The
+// screen treats the host's `/` prompt as a single screen-level filter:
+// Tab only switches navigation focus, so an esc cascade can always
+// clear the filter without depending on which table is currently in
+// focus.
 func (m *Model) SetSearch(query string) {
-	if t := m.activeTable(); t != nil {
-		t.SetSearch(query)
-	}
+	m.cfgTable.SetSearch(query)
+	m.clusterTable.SetSearch(query)
 }
 
-// ActiveFilter returns the focused sub-table's current search query.
+// ActiveFilter returns the screen-level search query. Both tables hold
+// the same value (see [SetSearch]), so the config table is queried
+// directly.
 func (m *Model) ActiveFilter() string {
-	if t := m.activeTable(); t != nil {
-		return t.Search()
-	}
-	return ""
+	return m.cfgTable.Search()
 }
 
 // SetSize updates width/height.
@@ -152,11 +153,6 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
-	active := m.activeTable()
-	if active.SearchActive() {
-		_, _ = active.Update(key)
-		return m, nil
-	}
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
@@ -165,7 +161,12 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		m.focusClusters = !m.focusClusters
 		return m, nil
 	}
-	_, _ = active.Update(key)
+	tbl, _ := m.activeTable().Update(key)
+	if m.focusClusters {
+		m.clusterTable = tbl
+	} else {
+		m.cfgTable = tbl
+	}
 	return m, nil
 }
 

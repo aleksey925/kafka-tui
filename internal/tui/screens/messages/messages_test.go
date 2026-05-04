@@ -112,6 +112,64 @@ func TestDetailEsc_ReturnsToList(t *testing.T) {
 	assert.Nil(t, m.Detail())
 }
 
+// TestHasOverlay_DetailIsOverlay pins the host contract: while in
+// ModeDetail the screen reports HasOverlay=true so the host's q/esc
+// fallback yields esc to the screen (which closes detail) instead of
+// also popping the messages screen — without this the user would skip
+// the list view entirely with a single esc.
+func TestHasOverlay_DetailIsOverlay(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Value: []byte("hello")},
+	})
+	require.False(t, m.HasOverlay(), "list mode is not an overlay")
+
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, messages.ModeDetail, m.CurrentMode())
+	assert.True(t, m.HasOverlay(), "detail mode must report as overlay so esc stays inside the screen")
+
+	_, _ = m.Update(keyPress("esc"))
+	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
+}
+
+// TestSupportsSearch_DisabledInDetail pins the host contract: while in
+// ModeDetail the screen reports SupportsSearch=false so the host skips
+// opening the `/` prompt — there's no rows to filter, an inert prompt
+// would just swallow keystrokes.
+func TestSupportsSearch_DisabledInDetail(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Value: []byte("hello")},
+	})
+	require.True(t, m.SupportsSearch(), "list mode must support search")
+
+	_, _ = m.Update(keyPress("enter"))
+	require.Equal(t, messages.ModeDetail, m.CurrentMode())
+	assert.False(t, m.SupportsSearch(), "detail mode has no rows to filter")
+}
+
+// TestClose_StopsFollowSession pins the lifecycle contract: when the
+// host swaps the active screen the messages model's Close() must
+// terminate any open FollowSession so its kgo consumer / goroutine
+// (started against context.Background) is released instead of leaking
+// indefinitely.
+func TestClose_StopsFollowSession(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+	_, _ = m.Update(keyPress("f"))
+	require.True(t, m.Following())
+
+	m.Close()
+	assert.False(t, m.Following(), "Close must terminate the follow session")
+
+	// idempotent — second call must not panic on the already-closed session.
+	m.Close()
+}
+
 func TestDetail_NextPrevNavigatesMessages(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Offset: 1, Value: []byte("a")},

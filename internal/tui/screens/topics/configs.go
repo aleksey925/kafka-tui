@@ -143,20 +143,20 @@ func (m *ConfigsModel) Partitions() []kafka.PartitionDetail {
 // FocusPartitions reports whether the partition table currently has focus.
 func (m *ConfigsModel) FocusPartitions() bool { return m.focusParts }
 
-// SetSearch forwards a host-driven filter query to the focused sub-table.
+// SetSearch forwards a host-driven filter query to both sub-tables. The
+// configs screen treats the host's `/` prompt as a single screen-level
+// filter applied to whichever sub-table the user is browsing — Tab
+// switches focus, not the filter — so an esc cascade can always clear
+// it without surprising the user.
 func (m *ConfigsModel) SetSearch(query string) {
-	if m.focusParts {
-		m.partTbl.SetSearch(query)
-		return
-	}
 	m.cfgTable.SetSearch(query)
+	m.partTbl.SetSearch(query)
 }
 
-// ActiveFilter returns the focused sub-table's current search query.
+// ActiveFilter returns the screen-level search query. Both tables hold
+// the same value (see [SetSearch]), so the configs table is queried
+// directly.
 func (m *ConfigsModel) ActiveFilter() string {
-	if m.focusParts {
-		return m.partTbl.Search()
-	}
 	return m.cfgTable.Search()
 }
 
@@ -201,13 +201,6 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) (*ConfigsModel, tea.Cmd) {
 		_, _ = m.toasts.Update(key)
 	}
 
-	active := m.activeTable()
-	if active.SearchActive() {
-		t, _ := active.Update(key)
-		_ = t
-		return m, nil
-	}
-
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
@@ -219,8 +212,12 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) (*ConfigsModel, tea.Cmd) {
 		m.loading = true
 		return m, loadConfigsCmd(m.svc, m.topic)
 	}
-	t, _ := active.Update(key)
-	_ = t
+	tbl, _ := m.activeTable().Update(key)
+	if m.focusParts {
+		m.partTbl = tbl
+	} else {
+		m.cfgTable = tbl
+	}
 	return m, nil
 }
 

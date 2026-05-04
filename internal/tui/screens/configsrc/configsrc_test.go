@@ -96,26 +96,44 @@ func TestKeyHints_IncludesExpectedLabels(t *testing.T) {
 	}
 }
 
-func TestSearch_FiltersConfigTable(t *testing.T) {
+// TestSetSearch_AppliesToBothTables pins the screen-level filter
+// contract: the host-driven `/` prompt narrows both sub-tables (config
+// fields and per-cluster fields), so an esc-cascade can clear the
+// filter regardless of which sub-table currently has focus.
+func TestSetSearch_AppliesToBothTables(t *testing.T) {
 	src := config.Sources{
 		Config: map[string]config.Source{
 			"logging.level":       {Path: "/g/c.yaml", Layer: config.LayerGlobal},
 			"refresh.topics_list": {Path: "/g/c.yaml", Layer: config.LayerGlobal},
 			"produce.history":     {Path: "/g/c.yaml", Layer: config.LayerGlobal},
 		},
+		Clusters: map[string]map[string]config.Source{
+			"alpha": {"brokers": {Path: "/g/clusters.yaml", Layer: config.LayerGlobal}},
+			"beta":  {"brokers": {Path: "/g/clusters.yaml", Layer: config.LayerGlobal}},
+		},
 	}
 	m := configsrc.New(configsrc.Options{Sources: src})
 
-	_, _ = m.Update(keyPress("/"))
-	for _, r := range "logging" {
-		_, _ = m.Update(textKey(string(r)))
-	}
-	_, _ = m.Update(keyPress("enter"))
-
+	m.SetSearch("logging")
 	out := m.View()
 	assert.Contains(t, out, "logging.level")
 	assert.NotContains(t, out, "refresh.topics_list")
 	assert.NotContains(t, out, "produce.history")
+	// per-cluster table holds rows keyed by cluster name; "logging" is
+	// not a substring of any of them, so the second table must collapse
+	// too — proving the filter applies to both.
+	assert.NotContains(t, out, "alpha")
+	assert.NotContains(t, out, "beta")
+	assert.Equal(t, "logging", m.ActiveFilter())
+
+	// switching focus to the cluster table must keep the same filter
+	// reported by ActiveFilter so the host's esc-cascade can clear it.
+	_, _ = m.Update(keyPress("tab"))
+	require.True(t, m.FocusClusters())
+	assert.Equal(t, "logging", m.ActiveFilter())
+
+	m.SetSearch("")
+	assert.Empty(t, m.ActiveFilter())
 }
 
 func keyPress(name string) tea.KeyPressMsg {
@@ -132,9 +150,4 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: r, Text: string(r)}
 	}
 	return tea.KeyPressMsg{}
-}
-
-func textKey(text string) tea.KeyPressMsg {
-	r := rune(text[0])
-	return tea.KeyPressMsg{Code: r, Text: text}
 }
