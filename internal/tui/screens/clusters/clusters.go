@@ -156,10 +156,6 @@ type Options struct {
 	Editor Editor
 	// PingTimeout caps each probe. Defaults to 5s.
 	PingTimeout time.Duration
-	// RefreshInterval enables periodic re-pings of every cluster so the
-	// status dots stay current without user input. 0 disables auto-refresh
-	// entirely; defaults to 60s when zero is passed and Pinger is set.
-	RefreshInterval time.Duration
 	// StartupWarnings are surfaced as warning toasts on first Init.
 	StartupWarnings []string
 	// Now is the injected clock (defaults to time.Now).
@@ -198,12 +194,10 @@ type Model struct {
 
 	width, height int
 
-	// auto-refresh: periodically re-pings every cluster so the status dots
-	// stay in sync with reality even without user input. The refresher
-	// also tracks the wall-clock time of the most recent re-ping batch
-	// (we don't wait for individual ping results — they trickle in via
-	// PingResultMsg, but the user-facing "X ago" wants the action time,
-	// not the slowest reply).
+	// connectivity probes are strictly user-driven (`t`/`T`) — there is no
+	// auto-refresh ticker on this screen. The refresher is kept solely to
+	// stamp `LastRefresh()` so the chrome's "X ago" indicator (RefreshOnEdit
+	// mode) can show when the last config snapshot landed.
 	refresher components.Refresher
 
 	startupWarn []string
@@ -247,10 +241,10 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(columnDefs(), components.WithStyles(styles))
 
-	// no implicit auto-refresh on clusters: connectivity probes are a
-	// strictly user-driven action (`t`/`T`) and config-file edits are
-	// picked up by the host's config.Watcher subscription, not by polling.
-	refresher := components.NewRefresher(opts.RefreshInterval, now)
+	// no auto-refresh on clusters: connectivity probes are strictly
+	// user-driven (`t`/`T`) and config-file edits are picked up by the
+	// host's config.Watcher subscription, not by polling.
+	refresher := components.NewRefresher(0, now)
 	// the initial config load just happened — anchor "X ago" to the
 	// construction time so the chrome shows "0s ago" right after entry
 	// instead of staying blank until the first watcher snapshot.
@@ -312,39 +306,16 @@ func (m *Model) Init() tea.Cmd {
 		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
 	}
 	m.startupWarn = nil
-	// fire the first ping batch immediately so statuses (and the chrome's
-	// "X ago" indicator) are populated on entry — without this nothing
-	// happens until the first tick fires `refreshInterval` later.
-	return tea.Batch(m.testAll(), m.AutoRefreshTick())
+	return nil
 }
 
-// RefreshTickMsg is the periodic auto-refresh tick for the clusters screen.
-type RefreshTickMsg struct{}
-
-// AutoRefreshTick returns a tea.Cmd that schedules the next refresh tick.
-// nil when auto-refresh is disabled or no pinger is wired.
-func (m *Model) AutoRefreshTick() tea.Cmd {
-	if m.pinger == nil {
-		return nil
-	}
-	return m.refresher.Tick(RefreshTickMsg{})
-}
-
-// HandleRefreshTick re-pings every cluster and reschedules. Skips the
-// re-ping (but keeps the ticker alive) while paused, so resuming is
-// instantaneous.
-func (m *Model) HandleRefreshTick() tea.Cmd {
-	next := m.AutoRefreshTick()
-	if next == nil || m.refresher.Paused() {
-		return next
-	}
-	return tea.Batch(m.testAll(), next)
-}
-
-// RefreshInterval exposes the configured tick (0 disables refresh).
+// RefreshInterval exposes the configured tick. Always 0 on this screen
+// because connectivity probes are strictly user-driven; kept to satisfy
+// the host's Refreshable interface.
 func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
 
-// SetRefreshPaused toggles auto-refresh without stopping the ticker.
+// SetRefreshPaused is a no-op on this screen (no auto-refresh ticker);
+// kept to satisfy the host's Refreshable interface.
 func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
 
 // Action returns the current pending action.
@@ -476,8 +447,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case EditCompletedMsg:
 		m.handleEditCompleted(msg)
 		return nil
-	case RefreshTickMsg:
-		return m.HandleRefreshTick()
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

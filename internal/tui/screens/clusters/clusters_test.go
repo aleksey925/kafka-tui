@@ -109,6 +109,23 @@ func TestInit_StartupWarningsBecomeToasts(t *testing.T) {
 	assert.Equal(t, 1, m.Toasts().Len())
 }
 
+func TestInit_DoesNotPingClusters(t *testing.T) {
+	pings := 0
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}, {Name: "b", Brokers: []string{"y"}}},
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			pings++
+			return nil
+		}),
+	})
+
+	drive(t, m, m.Init())
+
+	assert.Equal(t, 0, pings)
+	assert.Equal(t, clusters.StatusUnknown, m.Status("a"))
+	assert.Equal(t, clusters.StatusUnknown, m.Status("b"))
+}
+
 func TestEnter_OptimisticConnectWhenNoPinger(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
