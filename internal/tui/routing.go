@@ -8,6 +8,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
@@ -101,7 +102,22 @@ func (m *Model) routeMessagesAction(s *messages.Model) tea.Cmd {
 func (m *Model) routeProduceAction(s *produce.Model) tea.Cmd {
 	a := s.ConsumeAction()
 	if a.Back {
+		// On send & close the produce screen pushes a success toast right
+		// before signalling Back; without forwarding it to the underlying
+		// screen's queue the user would never see the confirmation. Failed
+		// sends keep the form open, so their toast surfaces locally.
+		var pending *components.Toast
+		if a.Sent != nil {
+			if t, ok := s.LatestFlash(); ok {
+				pending = &t
+			}
+		}
 		m.popScreen()
+		if pending != nil {
+			if q, ok := activeToastQueue(m.active); ok {
+				q.Push(pending.Level, pending.Message)
+			}
+		}
 		return m.activeInit()
 	}
 	return nil

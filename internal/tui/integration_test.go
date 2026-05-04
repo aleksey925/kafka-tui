@@ -978,6 +978,34 @@ func TestRoute_TopicsToGroupsConfigsAndProduce(t *testing.T) {
 	assert.Contains(t, m.Render(), "Topics")
 }
 
+// TestRoute_ProduceSuccessForwardsToastToTopics pins the send & close path:
+// the produce screen's success toast is captured before the screen is
+// popped and re-pushed onto the underlying topics screen, so the user sees
+// a confirmation in the global flash bar even though the form is gone.
+func TestRoute_ProduceSuccessForwardsToastToTopics(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool { return strings.Contains(m.Render(), "orders") })
+
+	// `p` opens the produce form bound to the focused topic.
+	_, cmd := m.Update(keyPressRune('p'))
+	drainCmd(t, m, cmd)
+	require.Contains(t, strings.ToLower(m.Render()), "produce")
+
+	// ctrl+s in NORMAL mode sends and closes — async produce result drains
+	// through the host, the screen pops, and the success toast must land on
+	// the topics screen's queue.
+	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	drainCmd(t, m, cmd)
+
+	out := m.Render()
+	assert.Contains(t, out, "Topics", "topics screen must be active after pop")
+	assert.Contains(t, out, "Sent to orders", "success toast must surface on the underlying screen")
+}
+
 // TestRoute_LogsAndConfigSrcBackPops drives back/quit on the logs and
 // config-sources screens to exercise the Back branches of
 // routeLogsAction and routeConfigSrcAction.
