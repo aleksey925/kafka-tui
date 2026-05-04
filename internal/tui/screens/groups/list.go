@@ -222,7 +222,7 @@ func (m *Model) Title() string {
 		if m.filterTopic != "" {
 			prefix = "Consumer Groups · " + m.filterTopic
 		}
-		body = fmt.Sprintf("%s [%d/%d] /%s", prefix, m.table.FilteredCount(), total, q)
+		body = fmt.Sprintf("%s [%d/%d] </%s>", prefix, m.table.FilteredCount(), total, q)
 	}
 	if m.loading {
 		body += " (loading…)"

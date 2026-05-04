@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/filterhistory"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
@@ -84,12 +85,14 @@ type Model struct {
 	status  layout.StatusInfo
 	command layout.CommandBar
 	search  layout.CommandBar
-	// searchOriginal is the screen's filter at the moment the prompt was
-	// (re)opened. Esc restores it; enter keeps whatever the buffer holds.
-	// Mirrors k9s — opening `/` over an existing filter is "edit", not
-	// "discard and re-enter".
-	searchOriginal string
-	hints          []layout.KeyHint
+	// per-screen filter history. Entries are pushed when the user commits
+	// a non-empty query via Enter or Ctrl-E; opening `/` again surfaces
+	// the newest match as a ghost suggestion (Tab/Right/Ctrl-F to accept).
+	// Up/Down cycle through the matches.
+	searchHistories     map[ScreenID]*filterhistory.History
+	searchSuggestions   []string
+	searchSuggestionIdx int
+	hints               []layout.KeyHint
 
 	width, height int
 	autoRefresh   bool
@@ -147,8 +150,10 @@ func New(opts Options) *Model {
 	}
 	router := NewRouter()
 	m := &Model{
-		router: router,
-		mode:   ModeNormal,
+		router:              router,
+		mode:                ModeNormal,
+		searchHistories:     make(map[ScreenID]*filterhistory.History),
+		searchSuggestionIdx: -1,
 		header: layout.HeaderInfo{
 			Cluster:      opts.Cluster,
 			ClusterColor: opts.ClusterColor,
@@ -216,6 +221,12 @@ func (m *Model) CommandBuffer() string { return m.command.Buffer }
 
 // CommandSuggestion returns the current command-bar suggestion (for tests).
 func (m *Model) CommandSuggestion() string { return m.command.Suggestion }
+
+// SearchBuffer returns the current `/`-prompt buffer (for tests).
+func (m *Model) SearchBuffer() string { return m.search.Buffer }
+
+// SearchSuggestion returns the current `/`-prompt ghost suggestion (for tests).
+func (m *Model) SearchSuggestion() string { return m.search.Suggestion }
 
 // AutoRefresh reports whether auto-refresh is enabled (for tests).
 func (m *Model) AutoRefresh() bool { return m.autoRefresh }

@@ -262,7 +262,7 @@ func (m *Model) Title() string {
 	visible := len(m.visibleTopics())
 	body := fmt.Sprintf("Topics[%d]", visible)
 	if q := m.table.Search(); q != "" {
-		body = fmt.Sprintf("Topics[%d/%d] /%s", m.table.FilteredCount(), visible, q)
+		body = fmt.Sprintf("Topics[%d/%d] </%s>", m.table.FilteredCount(), visible, q)
 	} else if m.hiddenIntern > 0 {
 		body = fmt.Sprintf("Topics[%d, +%d internal hidden]", visible, m.hiddenIntern)
 	}

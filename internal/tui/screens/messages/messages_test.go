@@ -87,6 +87,21 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
+func TestTitle_AppliesAngleBracketFilter(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 10, Timestamp: now, Value: []byte(`{"id":1}`)},
+		{Topic: "orders", Partition: 1, Offset: 20, Timestamp: now, Value: []byte("plain")},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+
+	m.SetSearch("plain")
+
+	assert.Contains(t, m.Title(), "Messages · orders [1/2] </plain>")
+}
+
 func TestEsc_RaisesBackAction(t *testing.T) {
 	m := buildModelWith(t)
 	_ = m.Update(keyPress("esc"))

@@ -381,7 +381,7 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 func (m *Model) Title() string {
 	total := len(m.clusters)
 	if q := m.table.Search(); q != "" {
-		return fmt.Sprintf("Clusters[%d/%d] /%s", m.table.FilteredCount(), total, q)
+		return fmt.Sprintf("Clusters[%d/%d] </%s>", m.table.FilteredCount(), total, q)
 	}
 	return fmt.Sprintf("Clusters[%d]", total)
 }

@@ -83,7 +83,7 @@ func TestSearch_LiveFilterAndCommit(t *testing.T) {
 	feed(m, "/", 'b', 'e')
 	out = m.Render()
 	assert.Equal(t, tui.ModeSearch, m.Mode(), "prompt is open")
-	assert.Contains(t, out, "Clusters[1/3] /be", "title shows match count + query")
+	assert.Contains(t, out, "Clusters[1/3] </be>", "title shows match count + query")
 	assert.Contains(t, out, "beta")
 	assert.NotContains(t, out, "alpha")
 	assert.NotContains(t, out, "gamma")
@@ -92,15 +92,17 @@ func TestSearch_LiveFilterAndCommit(t *testing.T) {
 	_, _ = m.Update(keyPress("enter"))
 	out = m.Render()
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Contains(t, out, "Clusters[1/3] /be")
+	assert.Contains(t, out, "Clusters[1/3] </be>")
 	assert.Contains(t, out, "beta")
 	assert.NotContains(t, out, "gamma")
 }
 
-// TestSearch_EscRestoresPreviousFilter pins the k9s behavior reported by
-// the user: opening `/` over an existing filter pre-fills the buffer for
-// editing, and esc restores the original filter rather than dropping it.
-func TestSearch_EscRestoresPreviousFilter(t *testing.T) {
+// TestSearch_ReopenShowsHistoryGhostAndEscClearsFilter pins the k9s flow:
+// reopening `/` over an applied filter starts with an empty buffer but
+// surfaces the previous query as a ghost suggestion (Tab to accept), and
+// esc inside the prompt always drops the applied filter rather than
+// restoring it.
+func TestSearch_ReopenShowsHistoryGhostAndEscClearsFilter(t *testing.T) {
 	m := newClustersHostWith(t, []config.Cluster{
 		{Name: "alpha", Brokers: []string{"a:9092"}},
 		{Name: "beta", Brokers: []string{"b:9092"}},
@@ -110,19 +112,242 @@ func TestSearch_EscRestoresPreviousFilter(t *testing.T) {
 	// apply a filter
 	feed(m, "/", 'b', 'e')
 	_, _ = m.Update(keyPress("enter"))
-	require.Contains(t, m.Render(), "Clusters[1/3] /be")
+	require.Contains(t, m.Render(), "Clusters[1/3] </be>")
 
-	// reopen the prompt — buffer should already hold "be" — and esc.
+	// reopen the prompt — buffer is empty, ghost holds the last query.
 	feed(m, "/")
 	require.Equal(t, tui.ModeSearch, m.Mode())
-	_, _ = m.Update(keyPress("esc"))
+	assert.Empty(t, m.SearchBuffer())
+	assert.Equal(t, "be", m.SearchSuggestion())
 
+	// esc clears the applied filter wholesale (no restore).
+	_, _ = m.Update(keyPress("esc"))
 	out := m.Render()
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	// filter is preserved verbatim.
-	assert.Contains(t, out, "Clusters[1/3] /be")
-	assert.Contains(t, out, "beta")
-	assert.NotContains(t, out, "alpha")
+	assert.Contains(t, out, "Clusters[3]")
+	assert.NotContains(t, out, "</be>")
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		assert.Contains(t, out, name)
+	}
+}
+
+// TestSearch_TabPromotesGhostAndAppliesLive verifies that after a prior
+// committed query lands in history, Tab on the freshly-opened prompt
+// promotes the ghost to the buffer and applies the filter live.
+func TestSearch_TabPromotesGhostAndAppliesLive(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+		{Name: "gamma", Brokers: []string{"g:9092"}},
+	})
+
+	// seed history with "be", then drop the applied filter.
+	feed(m, "/", 'b', 'e')
+	_, _ = m.Update(keyPress("enter"))
+	_, _ = m.Update(keyPress("esc")) // clears the applied filter
+
+	// reopen — ghost surfaces from history; tab promotes it.
+	feed(m, "/")
+	require.Equal(t, "be", m.SearchSuggestion())
+	_, _ = m.Update(keyPress("tab"))
+
+	assert.Equal(t, "be", m.SearchBuffer())
+	assert.Empty(t, m.SearchSuggestion())
+	out := m.Render()
+	assert.Contains(t, out, "Clusters[1/3] </be>", "tab applies the suggestion live")
+}
+
+// TestSearch_UpDownCycleHistory confirms Up/Down walk through the
+// suggestion list (newest ↔ oldest, wrapping).
+func TestSearch_UpDownCycleHistory(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	// seed history with three queries.
+	for _, q := range []string{"alpha", "beta", "alp"} {
+		feed(m, "/")
+		for _, r := range q {
+			feed(m, r)
+		}
+		_, _ = m.Update(keyPress("enter"))
+		_, _ = m.Update(keyPress("esc"))
+	}
+
+	// reopen — newest ("alp") leads.
+	feed(m, "/")
+	require.Equal(t, "alp", m.SearchSuggestion())
+
+	// up → next older ("beta")
+	_, _ = m.Update(keyPress("up"))
+	assert.Equal(t, "beta", m.SearchSuggestion())
+
+	// up → "alpha"
+	_, _ = m.Update(keyPress("up"))
+	assert.Equal(t, "alpha", m.SearchSuggestion())
+
+	// up → wraps back to newest
+	_, _ = m.Update(keyPress("up"))
+	assert.Equal(t, "alp", m.SearchSuggestion())
+
+	// down → wraps to oldest
+	_, _ = m.Update(keyPress("down"))
+	assert.Equal(t, "alpha", m.SearchSuggestion())
+}
+
+// TestSearch_RightAndCtrlFPromoteLikeTab pins the Tab/Right/Ctrl-F parity
+// from k9s — all three accept the current ghost suggestion identically.
+func TestSearch_RightAndCtrlFPromoteLikeTab(t *testing.T) {
+	for _, accept := range []string{"right", "ctrl+f"} {
+		t.Run(accept, func(t *testing.T) {
+			m := newClustersHostWith(t, []config.Cluster{
+				{Name: "alpha", Brokers: []string{"a:9092"}},
+				{Name: "beta", Brokers: []string{"b:9092"}},
+				{Name: "gamma", Brokers: []string{"g:9092"}},
+			})
+
+			// seed history with "be"
+			feed(m, "/", 'b', 'e')
+			_, _ = m.Update(keyPress("enter"))
+			_, _ = m.Update(keyPress("esc"))
+
+			// reopen, accept ghost via the alias.
+			feed(m, "/")
+			require.Equal(t, "be", m.SearchSuggestion())
+			_, _ = m.Update(keyPress(accept))
+
+			assert.Equal(t, "be", m.SearchBuffer())
+			assert.Empty(t, m.SearchSuggestion())
+			assert.Contains(t, m.Render(), "Clusters[1/3] </be>")
+		})
+	}
+}
+
+// TestSearch_CtrlEActsLikeEnter pins the Enter/Ctrl-E parity from k9s.
+func TestSearch_CtrlEActsLikeEnter(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	feed(m, "/", 'b')
+	_, _ = m.Update(keyPress("ctrl+e"))
+
+	// prompt closed, filter applied, history populated.
+	assert.Equal(t, tui.ModeNormal, m.Mode())
+	assert.Contains(t, m.Render(), "Clusters[1/2] </b>")
+	feed(m, "/")
+	assert.Equal(t, "b", m.SearchSuggestion(), "ctrl+e must push to history")
+}
+
+// TestSearch_DeleteActsLikeBackspace pins the Backspace/Delete parity.
+func TestSearch_DeleteActsLikeBackspace(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	feed(m, "/", 'b', 'e', 'x')
+	_, _ = m.Update(keyPress("delete"))
+
+	assert.Equal(t, "be", m.SearchBuffer(), "delete drops the last rune")
+}
+
+// TestSearch_CtrlUAndCtrlWClearBuffer pins the line-wipe shortcuts. Both
+// keys do the same thing in k9s (full clear, no word-boundary distinction).
+func TestSearch_CtrlUAndCtrlWClearBuffer(t *testing.T) {
+	for _, wipe := range []string{"ctrl+u", "ctrl+w"} {
+		t.Run(wipe, func(t *testing.T) {
+			m := newClustersHostWith(t, []config.Cluster{
+				{Name: "alpha", Brokers: []string{"a:9092"}},
+				{Name: "beta", Brokers: []string{"b:9092"}},
+			})
+
+			feed(m, "/", 'b', 'e')
+			require.Contains(t, m.Render(), "Clusters[1/2] </be>")
+
+			_, _ = m.Update(keyPress(wipe))
+
+			assert.Empty(t, m.SearchBuffer())
+			// filter applied live → table back to full count.
+			assert.Contains(t, m.Render(), "Clusters[2]")
+		})
+	}
+}
+
+// TestSearch_BackspaceRecomputesSuggestion verifies the live suggestion
+// recompute path: shrinking the buffer must surface a different
+// (broader-prefix) match from history.
+func TestSearch_BackspaceRecomputesSuggestion(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	// seed two history entries.
+	for _, q := range []string{"alpha", "beta"} {
+		feed(m, "/")
+		for _, r := range q {
+			feed(m, r)
+		}
+		_, _ = m.Update(keyPress("enter"))
+		_, _ = m.Update(keyPress("esc"))
+	}
+
+	// reopen, type "a" — only "alpha" matches.
+	feed(m, "/", 'a')
+	assert.Equal(t, "alpha", m.SearchSuggestion())
+
+	// type "x" — no match.
+	feed(m, 'x')
+	assert.Empty(t, m.SearchSuggestion())
+
+	// backspace removes "x" — "alpha" surfaces again.
+	_, _ = m.Update(keyPress("backspace"))
+	assert.Equal(t, "alpha", m.SearchSuggestion())
+}
+
+// TestSearch_EscDoesNotPushToHistory pins the asymmetric semantics:
+// only Enter (and Ctrl-E) commit to history; Esc walks away cleanly.
+func TestSearch_EscDoesNotPushToHistory(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	// type and abandon via esc — must not enter history.
+	feed(m, "/", 'b', 'e')
+	_, _ = m.Update(keyPress("esc"))
+
+	// reopen — no ghost, nothing was pushed.
+	feed(m, "/")
+	assert.Empty(t, m.SearchSuggestion(), "esc must not commit to history")
+}
+
+// TestSearch_HistoryIsPerScreen ensures history buckets don't bleed across
+// unrelated screens — a query committed on clusters must not surface on
+// topics, and vice versa.
+func TestSearch_HistoryIsPerScreen(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool { return strings.Contains(m.Render(), "orders") })
+
+	// commit a query on the topics screen.
+	feed(m, "/", 'o', 'r', 'd')
+	_, _ = m.Update(keyPress("enter"))
+	_, _ = m.Update(keyPress("esc"))
+
+	// pop back to the clusters screen.
+	_, cmd := m.Update(keyPress("q"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Clusters")
+
+	// open `/` on clusters — no ghost from the topics history.
+	feed(m, "/")
+	assert.Empty(t, m.SearchSuggestion(),
+		"clusters history is independent from topics history")
 }
 
 // TestEsc_FilterClearedBeforePop verifies the esc cascade: with a filter
@@ -137,13 +362,13 @@ func TestEsc_FilterClearedBeforePop(t *testing.T) {
 	// apply a filter
 	feed(m, "/", 'b')
 	_, _ = m.Update(keyPress("enter"))
-	require.Contains(t, m.Render(), "Clusters[1/2] /b")
+	require.Contains(t, m.Render(), "Clusters[1/2] </b>")
 	require.False(t, m.Quit())
 
 	// first esc clears filter
 	_, _ = m.Update(keyPress("esc"))
 	out := m.Render()
-	assert.NotContains(t, out, "/b")
+	assert.NotContains(t, out, "</b>")
 	assert.Contains(t, out, "Clusters[2]")
 	assert.False(t, m.Quit(), "esc must not quit while filter was active")
 

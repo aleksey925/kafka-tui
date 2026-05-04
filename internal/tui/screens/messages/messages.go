@@ -200,7 +200,7 @@ func (m *Model) Title() string {
 	total := len(m.messages)
 	body := fmt.Sprintf("Messages · %s [%d]", m.topic, total)
 	if q := m.table.Search(); q != "" {
-		body = fmt.Sprintf("Messages · %s [%d/%d] /%s", m.topic, m.table.FilteredCount(), total, q)
+		body = fmt.Sprintf("Messages · %s [%d/%d] </%s>", m.topic, m.table.FilteredCount(), total, q)
 	}
 	if m.following {
 		body += " ● LIVE"

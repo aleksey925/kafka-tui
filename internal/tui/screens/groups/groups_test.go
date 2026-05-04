@@ -69,6 +69,20 @@ func TestInit_LoadsGroupsAndShowsCounter(t *testing.T) {
 	assert.Contains(t, out, "g2")
 }
 
+func TestTitle_AppliesAngleBracketFilter(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{
+		{Group: "g1", State: "Stable", Coordinator: 1},
+		{Group: "g2", State: "Empty", Coordinator: 2},
+	}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	m.SetSearch("g1")
+
+	assert.Contains(t, m.Title(), "Consumer Groups [1/2] </g1>")
+}
+
 func TestInit_FilterTopicShowsHeader(t *testing.T) {
 	svc := newFakeService()
 	svc.filteredGroups = map[string][]kafka.GroupListInfo{

@@ -455,6 +455,7 @@ func TestSearch_FiltersTable(t *testing.T) {
 	assert.Contains(t, out, "prod-east")
 	assert.Contains(t, out, "prod-west")
 	assert.NotContains(t, out, "stage")
+	assert.Contains(t, m.Title(), "Clusters[2/3] </prod>")
 }
 
 func TestEditCompleted_ErrorRaisesToast(t *testing.T) {

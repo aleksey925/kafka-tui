@@ -3,6 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/filterhistory"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
 
@@ -175,63 +176,159 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// openSearchPrompt switches into ModeSearch and pre-fills the buffer with
-// the screen's currently-applied filter so `/` re-opens an existing filter
-// for editing instead of discarding it. esc on an empty edit restores
-// whatever was there before.
+// openSearchPrompt switches into ModeSearch with an empty buffer and
+// surfaces the newest history entry as a ghost suggestion. The screen's
+// applied filter is left untouched until the user types — typing an empty
+// buffer first clears it (live filtering). Mirrors k9s behavior.
 func (m *Model) openSearchPrompt() {
 	m.mode = ModeSearch
-	m.searchOriginal = ""
-	if m.active != nil {
-		m.searchOriginal = screenActiveFilter(m.active)
-	}
-	m.search = layout.CommandBar{Active: true, Prefix: '/', Buffer: m.searchOriginal}
+	m.search = layout.CommandBar{Active: true, Prefix: '/'}
+	m.refreshSearchSuggestions()
 	m.applySize()
 }
 
-// handleSearchKey runs the host's k9s-style filter prompt: each keystroke
-// updates the buffer AND pushes the live query into the active screen so
-// rows filter as the user types. esc cancels the edit and restores the
-// previous filter (or clears it when there was none). Enter commits the
-// current buffer and dismisses the prompt.
+// searchHistoryCap mirrors k9s's MaxHistory (20). Per-screen, in-memory.
+const searchHistoryCap = 20
+
+// activeSearchHistory returns the filter-history bucket for the active
+// screen, creating one lazily on first use. Returns nil when there is no
+// active screen — callers must guard.
+func (m *Model) activeSearchHistory() *filterhistory.History {
+	if m.active == nil {
+		return nil
+	}
+	id := m.router.Active()
+	if id == "" {
+		return nil
+	}
+	h, ok := m.searchHistories[id]
+	if !ok {
+		h = filterhistory.New(searchHistoryCap)
+		m.searchHistories[id] = h
+	}
+	return h
+}
+
+// refreshSearchSuggestions recomputes the ghost suggestion list for the
+// current buffer against the active screen's history. Index resets to 0
+// (newest match) on every recompute, matching k9s.
+func (m *Model) refreshSearchSuggestions() {
+	hist := m.activeSearchHistory()
+	if hist == nil {
+		m.searchSuggestions = nil
+		m.searchSuggestionIdx = -1
+		m.search.Suggestion = ""
+		return
+	}
+	m.searchSuggestions = hist.Matches(m.search.Buffer)
+	if len(m.searchSuggestions) == 0 {
+		m.searchSuggestionIdx = -1
+		m.search.Suggestion = ""
+		return
+	}
+	m.searchSuggestionIdx = 0
+	m.search.Suggestion = m.searchSuggestions[0]
+}
+
+// closeSearchPrompt drops the prompt's transient state. Does not touch
+// the screen's applied filter — Esc/Enter handle that separately.
+func (m *Model) closeSearchPrompt() {
+	m.mode = ModeNormal
+	m.search = layout.CommandBar{}
+	m.searchSuggestions = nil
+	m.searchSuggestionIdx = -1
+	m.applySize()
+}
+
+// handleSearchKey runs the k9s-style filter prompt. Each keystroke that
+// changes the buffer is forwarded to the active screen so rows filter
+// live; suggestions are recomputed against the per-screen history.
+//
+//   - esc            clears the filter and closes (no history push).
+//   - enter / ctrl+e commits: pushes the buffer to history (when non-empty),
+//     closes the prompt; the live filter stays applied.
+//   - tab / right / ctrl+f promotes the current ghost suggestion into the
+//     buffer and applies it.
+//   - up / down      cycle through suggestion matches (newest ↔ oldest, wraps).
+//   - ctrl+u / ctrl+w wipe the buffer (k9s parity — both are full clear).
+//   - backspace / delete drop the last rune.
 func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
-		// restore the filter that was active before the prompt opened —
-		// "/" then esc must be a no-op when used to inspect/edit, not a
-		// silent way to drop an applied filter.
 		if m.active != nil {
-			setScreenSearch(m.active, m.searchOriginal)
+			setScreenSearch(m.active, "")
 		}
-		m.mode = ModeNormal
-		m.search = layout.CommandBar{}
-		m.searchOriginal = ""
-		m.applySize()
+		m.closeSearchPrompt()
 		return m, nil
-	case "enter":
-		m.mode = ModeNormal
-		m.search = layout.CommandBar{}
-		m.searchOriginal = ""
-		m.applySize()
-		// filter stays applied — the active screen's table already has it.
+	case "enter", "ctrl+e":
+		if buf := m.search.Buffer; buf != "" {
+			if hist := m.activeSearchHistory(); hist != nil {
+				hist.Push(buf)
+			}
+		}
+		m.closeSearchPrompt()
 		return m, nil
-	case "backspace":
+	case "tab", "right", "ctrl+f":
+		if m.search.Suggestion == "" {
+			return m, nil
+		}
+		m.search.Buffer = m.search.Suggestion
+		m.searchSuggestions = nil
+		m.searchSuggestionIdx = -1
+		m.search.Suggestion = ""
+		if m.active != nil {
+			setScreenSearch(m.active, m.search.Buffer)
+		}
+		return m, nil
+	case "up":
+		m.cycleSearchSuggestion(1)
+		return m, nil
+	case "down":
+		m.cycleSearchSuggestion(-1)
+		return m, nil
+	case "ctrl+u", "ctrl+w":
+		m.search.Buffer = ""
+		if m.active != nil {
+			setScreenSearch(m.active, "")
+		}
+		m.refreshSearchSuggestions()
+		return m, nil
+	case "backspace", "delete":
 		if n := len(m.search.Buffer); n > 0 {
 			m.search.Buffer = m.search.Buffer[:n-1]
 		}
 		if m.active != nil {
 			setScreenSearch(m.active, m.search.Buffer)
 		}
+		m.refreshSearchSuggestions()
 		return m, nil
 	default:
 		if t := key.Text; t != "" {
 			m.search.Buffer += t
-		}
-		if m.active != nil {
-			setScreenSearch(m.active, m.search.Buffer)
+			if m.active != nil {
+				setScreenSearch(m.active, m.search.Buffer)
+			}
+			m.refreshSearchSuggestions()
 		}
 		return m, nil
 	}
+}
+
+// cycleSearchSuggestion advances the suggestion index by step (+1 = next
+// older, -1 = next newer, both wrap). No-op when the suggestion list is
+// empty.
+func (m *Model) cycleSearchSuggestion(step int) {
+	n := len(m.searchSuggestions)
+	if n == 0 {
+		return
+	}
+	idx := m.searchSuggestionIdx + step
+	idx %= n
+	if idx < 0 {
+		idx += n
+	}
+	m.searchSuggestionIdx = idx
+	m.search.Suggestion = m.searchSuggestions[idx]
 }
 
 // handleHelpKey closes the help overlay on any of the documented exit

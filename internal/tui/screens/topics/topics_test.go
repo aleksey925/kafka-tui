@@ -374,6 +374,8 @@ func TestSearch_FiltersTable(t *testing.T) {
 	assert.Contains(t, out, "orders")
 	assert.Contains(t, out, "order-history")
 	assert.NotContains(t, out, "events")
+	// title surfaces the active query in k9s-style angle brackets.
+	assert.Contains(t, m.Title(), "Topics[2/3] </order>")
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {
