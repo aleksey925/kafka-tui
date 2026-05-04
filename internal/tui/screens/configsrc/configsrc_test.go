@@ -52,7 +52,7 @@ func TestEsc_RaisesBackAction(t *testing.T) {
 	m := configsrc.New(configsrc.Options{})
 
 	// act
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 
 	// assert
 	assert.True(t, m.ConsumeAction().Back)
@@ -64,9 +64,9 @@ func TestTab_TogglesFocus(t *testing.T) {
 	require.False(t, m.FocusClusters())
 
 	// act / assert
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	assert.True(t, m.FocusClusters())
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	assert.False(t, m.FocusClusters())
 }
 
@@ -128,7 +128,7 @@ func TestSetSearch_AppliesToBothTables(t *testing.T) {
 
 	// switching focus to the cluster table must keep the same filter
 	// reported by ActiveFilter so the host's esc-cascade can clear it.
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	require.True(t, m.FocusClusters())
 	assert.Equal(t, "logging", m.ActiveFilter())
 

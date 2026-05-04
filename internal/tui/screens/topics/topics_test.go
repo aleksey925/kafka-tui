@@ -35,7 +35,7 @@ func drive(t *testing.T, m *topics.Model, cmd tea.Cmd) {
 			queue = append(queue, batch...)
 			continue
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -96,7 +96,7 @@ func TestInternalToggle_HidesAndShowsInternalTopics(t *testing.T) {
 	assert.Equal(t, 2, m.HiddenInternalCount())
 
 	// toggle: now visible
-	_, _ = m.Update(keyPress("i"))
+	_ = m.Update(keyPress("i"))
 	assert.True(t, m.ShowInternal())
 	visible = m.Topics()
 	assert.Len(t, visible, 3)
@@ -121,37 +121,37 @@ func TestEnter_RaisesMessagesAction(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{
 		{Name: "alpha"}, {Name: "beta"},
 	})
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	assert.Equal(t, "alpha", m.ConsumeAction().Messages)
 }
 
 func TestM_AlsoOpensMessages(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{{Name: "alpha"}})
-	_, _ = m.Update(keyPress("m"))
+	_ = m.Update(keyPress("m"))
 	assert.Equal(t, "alpha", m.ConsumeAction().Messages)
 }
 
 func TestC_RaisesConfigsAction(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{{Name: "alpha"}})
-	_, _ = m.Update(keyPress("c"))
+	_ = m.Update(keyPress("c"))
 	assert.Equal(t, "alpha", m.ConsumeAction().Configs)
 }
 
 func TestG_RaisesGroupsAction(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{{Name: "alpha"}})
-	_, _ = m.Update(keyPress("g"))
+	_ = m.Update(keyPress("g"))
 	assert.Equal(t, "alpha", m.ConsumeAction().Groups)
 }
 
 func TestP_RaisesProduceAction(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{{Name: "alpha"}})
-	_, _ = m.Update(keyPress("p"))
+	_ = m.Update(keyPress("p"))
 	assert.Equal(t, "alpha", m.ConsumeAction().Produce)
 }
 
 func TestEsc_RaisesQuit(t *testing.T) {
 	m := buildModelWith(t, []kafka.TopicSummary{{Name: "alpha"}})
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.True(t, m.ConsumeAction().Quit)
 }
 
@@ -161,7 +161,7 @@ func TestReadOnly_BlocksMutatingHotkeys(t *testing.T) {
 	drive(t, m, m.Init())
 
 	for _, k := range []string{"n", "D", "y", "p"} {
-		_, _ = m.Update(keyPress(k))
+		_ = m.Update(keyPress(k))
 		assert.Empty(t, m.ConsumeAction().Produce, "p must not raise produce in RO")
 		assert.False(t, m.ConfirmOpen(), "D must not open confirm in RO")
 		assert.Equal(t, topics.ModeList, m.CurrentMode(), "n/y must not enter overlay in RO")
@@ -176,11 +176,11 @@ func TestDelete_ConfirmYesTriggersDeleteCmd(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("D"))
 	assert.True(t, m.ConfirmOpen())
 	assert.Equal(t, "alpha", m.PendingTopic())
 
-	_, cmd := m.Update(keyPress("y"))
+	cmd := m.Update(keyPress("y"))
 	drive(t, m, cmd)
 	assert.False(t, m.ConfirmOpen())
 	assert.Equal(t, []string{"alpha"}, svc.Deleted())
@@ -191,10 +191,10 @@ func TestDelete_ConfirmNoCancels(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("D"))
 	require.True(t, m.ConfirmOpen())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.False(t, m.ConfirmOpen())
 	assert.Empty(t, svc.Deleted())
 }
@@ -204,7 +204,7 @@ func TestN_OpensCreateForm(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.Equal(t, topics.ModeCreate, m.CurrentMode())
 	out := m.View()
 	assert.Contains(t, out, "New topic")
@@ -216,9 +216,9 @@ func TestCreateForm_EscReturnsToList(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	require.Equal(t, topics.ModeCreate, m.CurrentMode())
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.Equal(t, topics.ModeList, m.CurrentMode())
 }
 
@@ -229,14 +229,14 @@ func TestWantsRawInput_TracksFormModes(t *testing.T) {
 
 	assert.False(t, m.WantsRawInput(), "list mode does not edit text")
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	require.Equal(t, topics.ModeCreate, m.CurrentMode())
 	assert.True(t, m.WantsRawInput(), "create form edits text")
 
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.False(t, m.WantsRawInput())
 
-	_, _ = m.Update(keyPress("y"))
+	_ = m.Update(keyPress("y"))
 	require.Equal(t, topics.ModeClone, m.CurrentMode())
 	assert.True(t, m.WantsRawInput(), "clone form edits text")
 }
@@ -246,15 +246,15 @@ func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 
 	// form opens in NORMAL — press enter to start typing into the focused
 	// `name` field, then fill it in.
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	for _, r := range "orders" {
-		_, _ = m.Update(keyPressRune(r))
+		_ = m.Update(keyPressRune(r))
 	}
-	_, cmd := m.Update(keyPress("ctrl+s"))
+	cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
 
 	created := svc.Created()
@@ -269,9 +269,9 @@ func TestCreateForm_CtrlSWithEmptyNameShowsInlineError(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	// no name typed
-	_, cmd := m.Update(keyPress("ctrl+s"))
+	cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
 
 	require.Equal(t, topics.ModeCreate, m.CurrentMode(), "stay on form when invalid")
@@ -284,7 +284,7 @@ func TestY_OpensCloneForm(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("y"))
+	_ = m.Update(keyPress("y"))
 	assert.Equal(t, topics.ModeClone, m.CurrentMode())
 	out := m.View()
 	assert.Contains(t, out, "Clone topic")
@@ -296,10 +296,10 @@ func TestCloneForm_CtrlSStartsCloneAndShowsProgress(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("y"))
+	_ = m.Update(keyPress("y"))
 	require.Equal(t, topics.ModeClone, m.CurrentMode())
 
-	_, cmd := m.Update(keyPress("ctrl+s"))
+	cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
 
 	cloned := svc.Cloned()
@@ -323,15 +323,15 @@ func TestCloneForm_PartialProgressRendersOverlayAndEscReturns(t *testing.T) {
 	m.SetSize(120, 30)
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("y"))
-	_, cmd := m.Update(keyPress("ctrl+s"))
+	_ = m.Update(keyPress("y"))
+	cmd := m.Update(keyPress("ctrl+s"))
 	// pump the cloneStartedMsg so we land on the first clonePollCmd.
 	step1 := cmd()
 	require.NotNil(t, step1)
-	_, cmd = m.Update(step1)
+	cmd = m.Update(step1)
 	// the next cmd reads the first partial-progress message.
 	step2 := cmd()
-	_, _ = m.Update(step2)
+	_ = m.Update(step2)
 
 	require.Equal(t, topics.ModeCloning, m.CurrentMode(), "must remain cloning before Done arrives")
 
@@ -343,7 +343,7 @@ func TestCloneForm_PartialProgressRendersOverlayAndEscReturns(t *testing.T) {
 	assert.Contains(t, out, "esc")
 
 	// esc on the cloning overlay returns to the list (handleCloningKey).
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.Equal(t, topics.ModeList, m.CurrentMode())
 }
 
@@ -353,7 +353,7 @@ func TestRefresh_RKeyReloadsTopics(t *testing.T) {
 	drive(t, m, m.Init())
 	require.Equal(t, 1, svc.ListCalls())
 
-	_, cmd := m.Update(keyPress("r"))
+	cmd := m.Update(keyPress("r"))
 	drive(t, m, cmd)
 	assert.Equal(t, 2, svc.ListCalls())
 }
@@ -432,7 +432,7 @@ func TestSort_SCyclesSortOnCurrentColumn(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("s")) // first s engages asc on first sortable col (name)
+	_ = m.Update(keyPress("s")) // first s engages asc on first sortable col (name)
 	out := m.View()
 	idxAlpha := strings.Index(out, "alpha")
 	idxZeta := strings.Index(out, "zeta")
@@ -561,7 +561,7 @@ func TestFilterTopics_CombinesWithInternalToggle(t *testing.T) {
 	}, visible)
 
 	// toggle internal on
-	_, _ = m.Update(keyPress("i"))
+	_ = m.Update(keyPress("i"))
 	visible = m.Topics()
 	assert.Equal(t, []kafka.TopicSummary{
 		{Name: "orders"},

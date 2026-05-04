@@ -36,7 +36,7 @@ func drive(t *testing.T, m *groups.Model, cmd tea.Cmd) {
 			queue = append(queue, batch...)
 			continue
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -96,7 +96,7 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 func TestEnter_OpensDetail(t *testing.T) {
 	m := buildModelWith(t, []kafka.GroupListInfo{{Group: "g1", State: "Empty"}})
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	assert.Equal(t, groups.ModeDetail, m.CurrentMode())
 	assert.NotNil(t, m.Detail())
 	drive(t, m, cmd)
@@ -107,7 +107,7 @@ func TestEnter_OpensDetail(t *testing.T) {
 
 func TestEsc_RaisesBackOnList(t *testing.T) {
 	m := buildModelWith(t, []kafka.GroupListInfo{{Group: "g1"}})
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.True(t, m.ConsumeAction().Back)
 }
 
@@ -118,7 +118,7 @@ func TestRefresh_RKeyReloadsGroups(t *testing.T) {
 	drive(t, m, m.Init())
 	require.Equal(t, 1, svc.ListCalls())
 
-	_, cmd := m.Update(keyPress("r"))
+	cmd := m.Update(keyPress("r"))
 	drive(t, m, cmd)
 	assert.Equal(t, 2, svc.ListCalls())
 }
@@ -130,7 +130,7 @@ func TestReadOnly_BlocksDestructiveHotkeys(t *testing.T) {
 	drive(t, m, m.Init())
 
 	for _, k := range []string{"R", "shift+r", "D"} {
-		_, _ = m.Update(keyPress(k))
+		_ = m.Update(keyPress(k))
 		assert.False(t, m.ConfirmOpen(), "%s must not open confirm in RO", k)
 		assert.NotEqual(t, groups.ModeReset, m.CurrentMode(), "%s must not enter reset in RO", k)
 	}
@@ -143,11 +143,11 @@ func TestDelete_ConfirmYesTriggersDelete(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("D"))
 	require.True(t, m.ConfirmOpen())
 	assert.Equal(t, "g1", m.PendingGroup())
 
-	_, cmd := m.Update(keyPress("y"))
+	cmd := m.Update(keyPress("y"))
 	drive(t, m, cmd)
 	assert.False(t, m.ConfirmOpen())
 	assert.Equal(t, []string{"g1"}, svc.Deleted())
@@ -160,8 +160,8 @@ func TestDelete_NonEmptyShowsError(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("D"))
-	_, cmd := m.Update(keyPress("y"))
+	_ = m.Update(keyPress("D"))
+	cmd := m.Update(keyPress("y"))
 	drive(t, m, cmd)
 
 	// the delete-group command should have been invoked
@@ -176,9 +176,9 @@ func TestDelete_ConfirmNoCancels(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("D"))
 	require.True(t, m.ConfirmOpen())
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.False(t, m.ConfirmOpen())
 	assert.Empty(t, svc.Deleted())
 }
@@ -225,6 +225,113 @@ func TestRefreshInterval_OffYieldsNilCmd(t *testing.T) {
 	assert.Nil(t, m.AutoRefreshTick())
 }
 
+// TestSetRefreshPaused_AffectsListAndDetailTickers pins the
+// post-refactor contract: the host's single ctrl+r toggle must pause
+// (and resume) BOTH the list and detail refresh tickers in lock-step.
+// Before the refactor a single shared bool covered both; the refactor
+// split it into two Refresher values, so a regression that only paused
+// one would surface as a still-running auto-refresh on the other side.
+//
+// We drive the screen by sending the typed *RefreshTickMsg values
+// directly into Update — that exercises the same handle*RefreshTick
+// codepath the production tea.Tick chain feeds, but without waiting on
+// real interval durations.
+func TestSetRefreshPaused_AffectsListAndDetailTickers(t *testing.T) {
+	// arrange — both intervals enabled so the refresher fires ticks.
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
+	svc.descriptions = map[string]kafka.GroupDescription{"g1": {Group: "g1", State: "Empty"}}
+	m := groups.New(groups.Options{
+		Service:               svc,
+		ListRefreshInterval:   time.Second,
+		DetailRefreshInterval: time.Second,
+	})
+	// settle the initial load (refreshCmd is the first cmd in Init's batch
+	// — runIfDataMsg unwraps it; the auto-refresh tick is dropped because
+	// running tea.Tick synchronously would block for 1s).
+	runDataCmds(t, m, m.Init())
+	listCallsBefore := svc.ListCalls()
+
+	// pause both — feeding a list-tick must NOT trigger another ListConsumerGroups.
+	m.SetRefreshPaused(true)
+	feedTick(t, m, groups.ListRefreshTickMsg{})
+	assert.Equal(t, listCallsBefore, svc.ListCalls(),
+		"paused list refresher must skip its load")
+
+	// open detail and verify the same for the detail ticker.
+	cmd := m.Update(keyPress("enter"))
+	runDataCmds(t, m, cmd)
+	require.Equal(t, groups.ModeDetail, m.CurrentMode())
+	descCallsBefore := svc.DescribeCalls()
+	feedTick(t, m, groups.DetailRefreshTickMsg{})
+	assert.Equal(t, descCallsBefore, svc.DescribeCalls(),
+		"paused detail refresher must skip its load")
+
+	// resume — both tickers must reload again.
+	m.SetRefreshPaused(false)
+	feedTick(t, m, groups.DetailRefreshTickMsg{})
+	runDataCmds(t, m, nil) // drain the batched detail-load cmd that the tick produced
+	assert.Greater(t, svc.DescribeCalls(), descCallsBefore,
+		"resumed detail refresher must reload on the next tick")
+}
+
+// feedTick sends a typed refresh-tick message into Update and pumps any
+// data-bearing follow-up cmds through. Tea.Tick cmds (the rescheduled
+// next tick) are dropped — running them synchronously would block on
+// the real interval duration.
+func feedTick(t *testing.T, m *groups.Model, msg tea.Msg) {
+	t.Helper()
+	cmd := m.Update(msg)
+	runDataCmds(t, m, cmd)
+}
+
+// runDataCmds drains cmd and any tea.BatchMsg children, feeding only
+// non-tick messages back into Update. It distinguishes "data" cmds
+// (the actual load that returns a typed *LoadedMsg) from "tick" cmds
+// (tea.Tick that waits on a real timer) by trying each cmd in a tight
+// loop and skipping anything that would deliver a *RefreshTickMsg — we
+// never want to chain another tick during a test.
+func runDataCmds(t *testing.T, m *groups.Model, cmd tea.Cmd) {
+	t.Helper()
+	queue := []tea.Cmd{cmd}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next == nil {
+			continue
+		}
+		msg := runCmdNonBlocking(next)
+		if msg == nil {
+			continue
+		}
+		switch msg.(type) {
+		case groups.ListRefreshTickMsg, groups.DetailRefreshTickMsg:
+			// drop — we drive ticks explicitly via feedTick.
+			continue
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		queue = append(queue, m.Update(msg))
+	}
+}
+
+// runCmdNonBlocking invokes cmd in a goroutine with a tight deadline.
+// tea.Tick's value is delivered after Interval ms, so we time-bound it
+// to keep tests fast — anything that doesn't return promptly is treated
+// as a deferred timer and dropped.
+func runCmdNonBlocking(cmd tea.Cmd) tea.Msg {
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(50 * time.Millisecond):
+		return nil
+	}
+}
+
 func TestFetchLagsForVisible_PopulatesLagAndMemberCount(t *testing.T) {
 	svc := newFakeService()
 	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
@@ -267,7 +374,7 @@ func TestDetail_LoadsAndShowsRows(t *testing.T) {
 	}
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 
 	d := m.Detail()
@@ -318,11 +425,11 @@ func TestDetail_EscReturnsToList(t *testing.T) {
 	svc.descriptions = map[string]kafka.GroupDescription{"g1": {Group: "g1", State: "Empty"}}
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 	require.Equal(t, groups.ModeDetail, m.CurrentMode())
 
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.Equal(t, groups.ModeList, m.CurrentMode())
 }
 
@@ -339,12 +446,12 @@ func TestHasOverlay_DetailIsOverlay(t *testing.T) {
 	drive(t, m, m.Init())
 	require.False(t, m.HasOverlay(), "list mode is not an overlay")
 
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 	require.Equal(t, groups.ModeDetail, m.CurrentMode())
 	assert.True(t, m.HasOverlay(), "detail mode must report as overlay so esc stays inside the screen")
 
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
 }
 
@@ -374,7 +481,7 @@ func TestDetail_TruncatesMembersWithMore(t *testing.T) {
 	svc.descriptions = map[string]kafka.GroupDescription{"g": desc}
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 	d := m.Detail()
 	require.NotNil(t, d)
@@ -391,7 +498,7 @@ func TestReset_OpensFromListWithR(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("R"))
+	_ = m.Update(keyPress("R"))
 	assert.Equal(t, groups.ModeReset, m.CurrentMode())
 	r := m.Reset()
 	require.NotNil(t, r)
@@ -407,15 +514,15 @@ func TestWantsRawInput_OnlyDuringResetParams(t *testing.T) {
 
 	assert.False(t, m.WantsRawInput(), "list mode is not text input")
 
-	_, _ = m.Update(keyPress("R"))
+	_ = m.Update(keyPress("R"))
 	require.Equal(t, groups.ModeReset, m.CurrentMode())
 	require.Equal(t, groups.StepStrategy, m.Reset().Step())
 	assert.False(t, m.WantsRawInput(), "strategy step is selection, not text")
 
 	// j j → ResetShift, enter → StepParams (text input).
-	_, _ = m.Update(keyPress("j"))
-	_, _ = m.Update(keyPress("j"))
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("j"))
+	_ = m.Update(keyPress("j"))
+	_ = m.Update(keyPress("enter"))
 	require.Equal(t, groups.StepParams, m.Reset().Step())
 	assert.True(t, m.WantsRawInput(), "params step edits text")
 }
@@ -426,7 +533,7 @@ func TestReset_ShiftRSetsExpress(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("shift+r"))
+	_ = m.Update(keyPress("shift+r"))
 	r := m.Reset()
 	require.NotNil(t, r)
 	assert.True(t, r.Express())
@@ -440,7 +547,7 @@ func TestReset_FilteredListPassesScopeTopic(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc, FilterTopic: "orders"})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("R"))
+	_ = m.Update(keyPress("R"))
 	r := m.Reset()
 	require.NotNil(t, r)
 	scope, ok := r.Scope().(groups.ScopeWholeGroup)
@@ -676,7 +783,7 @@ func newDetailWithRows(t *testing.T, rows []kafka.PartitionLag) *groups.DetailMo
 	svc.offsets = map[string][]kafka.PartitionLag{"g1": rows}
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 	d := m.Detail()
 	require.NotNil(t, d)
@@ -712,6 +819,7 @@ type fakeService struct {
 
 	descriptions map[string]kafka.GroupDescription
 	descErr      error
+	descN        int
 
 	offsets    map[string][]kafka.PartitionLag
 	offsetsErr error
@@ -782,6 +890,7 @@ func (f *fakeService) FilterGroupsByTopic(_ context.Context, topic string) ([]ka
 
 func (f *fakeService) DescribeConsumerGroup(_ context.Context, group string) (kafka.GroupDescription, error) {
 	f.mu.Lock()
+	f.descN++
 	d, ok := f.descriptions[group]
 	err := f.descErr
 	f.mu.Unlock()
@@ -789,6 +898,15 @@ func (f *fakeService) DescribeConsumerGroup(_ context.Context, group string) (ka
 		return kafka.GroupDescription{Group: group}, nil
 	}
 	return d, err
+}
+
+// DescribeCalls returns how many times DescribeConsumerGroup was
+// invoked. Used by tests that assert the detail-refresh ticker fired
+// (or didn't, when paused).
+func (f *fakeService) DescribeCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.descN
 }
 
 func (f *fakeService) GroupOffsets(_ context.Context, group string) ([]kafka.PartitionLag, error) {

@@ -205,27 +205,25 @@ func (m *Model) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case LoadedMsg:
 		m.handleLoaded(msg)
-		return m, nil
+		return nil
 	case AppendedMsg:
-		cmd := m.handleAppended(msg)
-		return m, cmd
+		return m.handleAppended(msg)
 	case FollowTickMsg:
-		cmd := m.handleFollowTick()
-		return m, cmd
+		return m.handleFollowTick()
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
@@ -234,44 +232,43 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		if key.String() == "g" {
 			m.cursor = 0
 			m.clampViewport()
-			return m, nil
+			return nil
 		}
 		// otherwise fall through; treat the second key normally
 	}
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
-		return m, nil
+		return nil
 	case "f":
-		cmd := m.toggleFollow()
-		return m, cmd
+		return m.toggleFollow()
 	case "n":
 		m.jumpMatch(+1)
-		return m, nil
+		return nil
 	case "N":
 		m.jumpMatch(-1)
-		return m, nil
+		return nil
 	case "j", "down":
 		m.move(+1)
-		return m, nil
+		return nil
 	case "k", "up":
 		m.move(-1)
-		return m, nil
+		return nil
 	case "ctrl+d":
 		m.move(+m.pageStep())
-		return m, nil
+		return nil
 	case "ctrl+u":
 		m.move(-m.pageStep())
-		return m, nil
+		return nil
 	case "g":
 		m.gPrimed = true
-		return m, nil
+		return nil
 	case "G":
 		m.cursor = max(0, len(m.lines)-1)
 		m.clampViewport()
-		return m, nil
+		return nil
 	}
-	return m, nil
+	return nil
 }
 
 func (m *Model) move(delta int) {

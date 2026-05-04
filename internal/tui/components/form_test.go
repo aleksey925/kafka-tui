@@ -578,7 +578,7 @@ func TestForm_ValidateFocusedListEntry_RunsValidator(t *testing.T) {
 	bad := errors.New("invalid")
 	f := components.NewForm([]components.Field{
 		{Key: "h", Label: "Headers", Kind: components.FieldList,
-			List: []string{"oops"},
+			List:      []string{"oops"},
 			Validator: func(string) error { return bad },
 		},
 	})
@@ -589,7 +589,7 @@ func TestForm_ValidateFocusedListEntry_RunsValidator(t *testing.T) {
 func TestForm_ValidateFocusedListEntry_EmptyEntryIsSkipped(t *testing.T) {
 	f := components.NewForm([]components.Field{
 		{Key: "h", Label: "Headers", Kind: components.FieldList,
-			List: []string{""},
+			List:      []string{""},
 			Validator: func(string) error { return errors.New("must not be called") },
 		},
 	})

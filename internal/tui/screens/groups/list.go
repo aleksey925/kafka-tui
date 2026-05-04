@@ -105,15 +105,11 @@ type Model struct {
 	detail *DetailModel
 	reset  *ResetModel
 
-	listInterval   time.Duration
-	detailInterval time.Duration
-	refreshPaused  bool
+	listRefresher   components.Refresher
+	detailRefresher components.Refresher
 
 	width, height int
 	loading       bool
-	// lastRefresh marks the wall-clock time of the most recent successful
-	// load. Drives the chrome's "X ago" indicator.
-	lastRefresh time.Time
 	// manualReload is set when the user pressed `r` and is consumed by
 	// handleGroupsLoaded to push a one-shot success toast (auto-refresh
 	// ticks stay silent).
@@ -143,17 +139,17 @@ func New(opts Options) *Model {
 	}
 	tbl := components.NewTable(listColumns(), components.WithStyles(styles))
 	return &Model{
-		svc:            opts.Service,
-		readOnly:       opts.ReadOnly,
-		filterTopic:    opts.FilterTopic,
-		totalLag:       map[string]int64{},
-		memberN:        map[string]int{},
-		table:          tbl,
-		toasts:         components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		listInterval:   opts.ListRefreshInterval,
-		detailInterval: opts.DetailRefreshInterval,
-		now:            now,
-		styles:         styles,
+		svc:             opts.Service,
+		readOnly:        opts.ReadOnly,
+		filterTopic:     opts.FilterTopic,
+		totalLag:        map[string]int64{},
+		memberN:         map[string]int{},
+		table:           tbl,
+		toasts:          components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		listRefresher:   components.NewRefresher(opts.ListRefreshInterval, now),
+		detailRefresher: components.NewRefresher(opts.DetailRefreshInterval, now),
+		now:             now,
+		styles:          styles,
 	}
 }
 
@@ -359,51 +355,51 @@ func (m *Model) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case GroupsLoadedMsg:
 		m.handleGroupsLoaded(msg)
-		return m, nil
+		return nil
 	case GroupLagsLoadedMsg:
 		m.handleLagsLoaded(msg)
-		return m, nil
+		return nil
 	case DetailLoadedMsg:
 		if m.detail != nil {
 			m.detail.HandleLoaded(msg)
 		}
-		return m, nil
+		return nil
 	case GroupDeletedMsg:
 		m.handleDeleted(msg)
 		cmd := m.refreshCmd()
-		return m, cmd
+		return cmd
 	case ListRefreshTickMsg:
 		cmd := m.handleListRefreshTick()
-		return m, cmd
+		return cmd
 	case DetailRefreshTickMsg:
 		if m.detail == nil || m.mode != ModeDetail {
-			return m, nil
+			return nil
 		}
 		cmd := m.handleDetailRefreshTick()
-		return m, cmd
+		return cmd
 	case ResetPreviewMsg, ResetCommittedMsg:
 		if m.reset != nil {
 			r, cmd := m.reset.Update(msg)
 			m.reset = r
 			a := r.ConsumeAction()
 			cmd = m.handleResetAction(a, cmd)
-			return m, cmd
+			return cmd
 		}
-		return m, nil
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	switch m.mode {
 	case ModeDetail:
 		return m.handleDetailKey(key)
@@ -421,25 +417,25 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if m.table.SearchActive() {
 		tbl, _ := m.table.Update(key)
 		m.table = tbl
-		return m, nil
+		return nil
 	}
 	return m.handleListKey(key)
 }
 
-func (m *Model) handleListKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
-		return m, nil
+		return nil
 	case "enter":
 		return m.openDetail()
 	case "r":
 		if m.loading {
-			return m, nil
+			return nil
 		}
 		m.manualReload = true
 		cmd := m.refreshCmd()
-		return m, cmd
+		return cmd
 	case "R":
 		return m.openReset(false)
 	case "shift+r":
@@ -449,13 +445,13 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
-	return m, nil
+	return nil
 }
 
-func (m *Model) openDetail() (*Model, tea.Cmd) {
+func (m *Model) openDetail() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
-		return m, nil
+		return nil
 	}
 	d := NewDetailModel(DetailOptions{
 		Service:  m.svc,
@@ -469,10 +465,10 @@ func (m *Model) openDetail() (*Model, tea.Cmd) {
 	m.mode = ModeDetail
 	// also kick off the detail-refresh tick chain — it only sustains
 	// itself once started.
-	return m, tea.Batch(d.Init(), m.DetailRefreshTick())
+	return tea.Batch(d.Init(), m.DetailRefreshTick())
 }
 
-func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 	d, cmd := m.detail.Update(key)
 	m.detail = d
 	a := d.ConsumeAction()
@@ -498,15 +494,15 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case len(a.TopicsForGroup) > 0:
 		m.action.TopicsForGroup = a.TopicsForGroup
 	}
-	return m, cmd
+	return cmd
 }
 
-func (m *Model) handleResetKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleResetKey(key tea.KeyPressMsg) tea.Cmd {
 	r, cmd := m.reset.Update(key)
 	m.reset = r
 	a := r.ConsumeAction()
 	cmd = m.handleResetAction(a, cmd)
-	return m, cmd
+	return cmd
 }
 
 // handleResetAction interprets the reset model's pending action and returns
@@ -532,14 +528,14 @@ func (m *Model) handleResetAction(a ResetAction, prev tea.Cmd) tea.Cmd {
 	return prev
 }
 
-func (m *Model) openReset(express bool) (*Model, tea.Cmd) {
+func (m *Model) openReset(express bool) tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
-		return m, nil
+		return nil
 	}
 	row, ok := m.table.SelectedRow()
 	if !ok {
-		return m, nil
+		return nil
 	}
 	scope := ScopeWholeGroup{Group: row.ID}
 	if m.filterTopic != "" {
@@ -548,10 +544,10 @@ func (m *Model) openReset(express bool) (*Model, tea.Cmd) {
 	return m.openResetForGroup(row.ID, express, scope)
 }
 
-func (m *Model) openResetForGroup(group string, express bool, scope ResetScope) (*Model, tea.Cmd) {
+func (m *Model) openResetForGroup(group string, express bool, scope ResetScope) tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
-		return m, nil
+		return nil
 	}
 	r := NewResetModel(ResetOptions{
 		Service: m.svc,
@@ -564,17 +560,17 @@ func (m *Model) openResetForGroup(group string, express bool, scope ResetScope) 
 	r.SetSize(m.width, m.height)
 	m.reset = r
 	m.mode = ModeReset
-	return m, r.Init()
+	return r.Init()
 }
 
-func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
+func (m *Model) openDeleteConfirm() tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — delete blocked")
-		return m, nil
+		return nil
 	}
 	row, ok := m.table.SelectedRow()
 	if !ok {
-		return m, nil
+		return nil
 	}
 	m.pending = pendingOp{group: row.ID}
 	m.confirm = components.NewConfirm(
@@ -582,27 +578,27 @@ func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
 		fmt.Sprintf("Delete group %q? This cannot be undone.", row.ID),
 		components.WithConfirmStyles(m.styles),
 	)
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 	c, _ := m.confirm.Update(key)
 	m.confirm = c
 	switch c.Result() {
 	case components.ConfirmPending:
-		return m, nil
+		return nil
 	case components.ConfirmYes:
 		op := m.pending
 		m.confirm = nil
 		m.pending = pendingOp{}
 		if op.group != "" {
-			return m, deleteCmd(m.svc, op.group)
+			return deleteCmd(m.svc, op.group)
 		}
 	case components.ConfirmNo:
 		m.confirm = nil
 		m.pending = pendingOp{}
 	}
-	return m, nil
+	return nil
 }
 
 func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
@@ -612,7 +608,7 @@ func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
 		m.manualReload = false
 		return
 	}
-	m.lastRefresh = m.now()
+	m.listRefresher.MarkSuccess()
 	if m.manualReload {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d groups", len(msg.Groups)))
 		m.manualReload = false
@@ -644,22 +640,22 @@ func (m *Model) handleDeleted(msg GroupDeletedMsg) {
 }
 
 func (m *Model) handleListRefreshTick() tea.Cmd {
-	if m.listInterval <= 0 || m.mode != ModeList {
+	if m.mode != ModeList {
 		return nil
 	}
 	next := m.AutoRefreshTick()
-	if m.refreshPaused || m.loading {
+	if next == nil || m.listRefresher.Paused() || m.loading {
 		return next
 	}
 	return tea.Batch(m.refreshCmd(), next)
 }
 
 func (m *Model) handleDetailRefreshTick() tea.Cmd {
-	if m.detailInterval <= 0 || m.mode != ModeDetail || m.detail == nil {
+	if m.mode != ModeDetail || m.detail == nil {
 		return nil
 	}
 	next := m.DetailRefreshTick()
-	if m.refreshPaused {
+	if next == nil || m.detailRefresher.Paused() {
 		return next
 	}
 	return tea.Batch(m.detail.RefreshCmd(), next)
@@ -669,18 +665,19 @@ func (m *Model) handleDetailRefreshTick() tea.Cmd {
 // sub-mode (list or detail). The host uses it to drive the chrome's
 // Refresh: indicator and the ctrl+r toggle.
 func (m *Model) RefreshInterval() time.Duration {
-	switch m.mode {
-	case ModeDetail:
-		return m.detailInterval
-	case ModeList, ModeReset:
-		return m.listInterval
+	if m.mode == ModeDetail {
+		return m.detailRefresher.Interval()
 	}
-	return m.listInterval
+	return m.listRefresher.Interval()
 }
 
-// SetRefreshPaused toggles auto-refresh on the screen without stopping the
-// underlying ticker — flipping back to false resumes the regular cadence.
-func (m *Model) SetRefreshPaused(paused bool) { m.refreshPaused = paused }
+// SetRefreshPaused toggles auto-refresh on both list and detail tickers
+// without stopping them — flipping back to false resumes the regular
+// cadence on whichever sub-mode is active.
+func (m *Model) SetRefreshPaused(paused bool) {
+	m.listRefresher.SetPaused(paused)
+	m.detailRefresher.SetPaused(paused)
+}
 
 // LastRefresh returns the wall-clock time of the most recent successful
 // load for the active sub-mode — detail when the user is inspecting one
@@ -690,30 +687,16 @@ func (m *Model) LastRefresh() time.Time {
 	if m.mode == ModeDetail && m.detail != nil {
 		return m.detail.LastRefresh()
 	}
-	return m.lastRefresh
+	return m.listRefresher.LastRefresh()
 }
 
 // AutoRefreshTick returns a [tea.Cmd] that emits a tick for the list refresh
 // interval. Hosts opt-in by calling this from Init.
-func (m *Model) AutoRefreshTick() tea.Cmd {
-	if m.listInterval <= 0 {
-		return nil
-	}
-	return tea.Tick(m.listInterval, func(time.Time) tea.Msg {
-		return ListRefreshTickMsg{}
-	})
-}
+func (m *Model) AutoRefreshTick() tea.Cmd { return m.listRefresher.Tick(ListRefreshTickMsg{}) }
 
 // DetailRefreshTick returns a [tea.Cmd] that emits a tick for the detail-view
 // refresh interval.
-func (m *Model) DetailRefreshTick() tea.Cmd {
-	if m.detailInterval <= 0 {
-		return nil
-	}
-	return tea.Tick(m.detailInterval, func(time.Time) tea.Msg {
-		return DetailRefreshTickMsg{}
-	})
-}
+func (m *Model) DetailRefreshTick() tea.Cmd { return m.detailRefresher.Tick(DetailRefreshTickMsg{}) }
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true

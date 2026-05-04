@@ -141,25 +141,25 @@ func (m *Model) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
-		return m, nil
+		return nil
 	case "tab":
 		m.focusClusters = !m.focusClusters
-		return m, nil
+		return nil
 	}
 	tbl, _ := m.activeTable().Update(key)
 	if m.focusClusters {
@@ -167,7 +167,7 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	} else {
 		m.cfgTable = tbl
 	}
-	return m, nil
+	return nil
 }
 
 func (m *Model) activeTable() *components.Table {

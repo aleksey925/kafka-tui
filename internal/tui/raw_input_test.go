@@ -42,7 +42,7 @@ func (s *fakeScreen) RefreshInterval() time.Duration { return 0 }
 func (s *fakeScreen) SetRefreshPaused(bool)          {}
 func (s *fakeScreen) LastRefresh() time.Time         { return time.Time{} }
 func (s *fakeScreen) SupportsRefresh() bool          { return false }
-func (s *fakeScreen) SupportsSearch() bool           { return s.supportsSearch }
+func (s *fakeScreen) SearchAvailable() bool          { return s.supportsSearch }
 func (s *fakeScreen) SetSearch(string)               {}
 func (s *fakeScreen) ActiveFilter() string           { return "" }
 func (s *fakeScreen) HasOverlay() bool               { return s.hasOverlay }

@@ -182,21 +182,21 @@ func (m *ConfigsModel) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *ConfigsModel) Update(msg tea.Msg) (*ConfigsModel, tea.Cmd) {
+func (m *ConfigsModel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case ConfigsLoadedMsg:
 		m.handleLoaded(msg)
-		return m, nil
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) (*ConfigsModel, tea.Cmd) {
+func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
@@ -204,13 +204,13 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) (*ConfigsModel, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
-		return m, nil
+		return nil
 	case "tab":
 		m.focusParts = !m.focusParts
-		return m, nil
+		return nil
 	case "r":
 		m.loading = true
-		return m, loadConfigsCmd(m.svc, m.topic)
+		return loadConfigsCmd(m.svc, m.topic)
 	}
 	tbl, _ := m.activeTable().Update(key)
 	if m.focusParts {
@@ -218,7 +218,7 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) (*ConfigsModel, tea.Cmd) {
 	} else {
 		m.cfgTable = tbl
 	}
-	return m, nil
+	return nil
 }
 
 func (m *ConfigsModel) activeTable() *components.Table {

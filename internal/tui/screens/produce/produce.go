@@ -331,21 +331,21 @@ func (m *Model) setFullscreen(on bool) {
 }
 
 // Update routes incoming messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case ProduceResultMsg:
 		m.handleResult(msg)
-		return m, nil
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
@@ -353,12 +353,12 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	// (e.g. ctrl+n means "add row" here, not "history next").
 	if m.mode == ModeInsert && m.form.FocusedField().Kind == components.FieldList {
 		if m.handleInsertListShortcut(key) {
-			return m, nil
+			return nil
 		}
 	}
 	// mode-agnostic global shortcuts work in both NORMAL and INSERT.
-	if mm, cmd, ok := m.handleGlobalShortcut(key); ok {
-		return mm, cmd
+	if cmd, ok := m.handleGlobalShortcut(key); ok {
+		return cmd
 	}
 	if m.mode == ModeInsert {
 		return m.handleInsert(key)
@@ -369,28 +369,26 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 // handleGlobalShortcut covers send/clear/history/editor — they should fire
 // regardless of mode so the user doesn't need to esc-into-NORMAL just to
 // send. Returns ok=true when the key was consumed.
-func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (*Model, tea.Cmd, bool) {
+func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch key.String() {
 	case "ctrl+s":
-		mm, cmd := m.send(true)
-		return mm, cmd, true
+		return m.send(true), true
 	case "ctrl+shift+s":
-		mm, cmd := m.send(false)
-		return mm, cmd, true
+		return m.send(false), true
 	case "ctrl+e":
 		m.openEditor()
-		return m, nil, true
+		return nil, true
 	case "ctrl+r":
 		m.clear()
-		return m, nil, true
+		return nil, true
 	case "ctrl+p":
 		m.historyStep(+1)
-		return m, nil, true
+		return nil, true
 	case "ctrl+n":
 		m.historyStep(-1)
-		return m, nil, true
+		return nil, true
 	}
-	return m, nil, false
+	return nil, false
 }
 
 // handleNormal is the default mode: tab/shift+tab navigate, enter is
@@ -403,11 +401,11 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (*Model, tea.Cmd, bool
 // toggles (`shift+-`/`_`) deliberately keep their NORMAL semantics and
 // fall through to the switch below, so esc cascade closes the popup via
 // handleEscNormal and `_` collapses fullscreen.
-func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 	if m.form.PopupActive() && popupNavKey(key) {
 		f, cmd := m.form.Update(key)
 		m.form = f
-		return m, cmd
+		return cmd
 	}
 	switch key.String() {
 	case "esc":
@@ -417,13 +415,13 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		// US/RU layouts; the kitty-protocol `shift++` / `shift+-` strings
 		// also mapped here for completeness.
 		m.setFullscreen(!m.fullscreen)
-		return m, nil
+		return nil
 	case "tab", "down":
 		m.form.FocusNext()
-		return m, nil
+		return nil
 	case "shift+tab", "up":
 		m.form.FocusPrev()
-		return m, nil
+		return nil
 	case "enter":
 		return m.enterInsertOnFocused(key)
 	}
@@ -432,10 +430,10 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if m.form.FocusedField().Kind == components.FieldSegmented {
 		f, cmd := m.form.Update(key)
 		m.form = f
-		return m, cmd
+		return cmd
 	}
 	// any other NORMAL-mode keystroke is ignored.
-	return m, nil
+	return nil
 }
 
 // popupNavKey reports whether key belongs to the segmented popup while it
@@ -453,47 +451,47 @@ func popupNavKey(key tea.KeyPressMsg) bool {
 
 // handleEscNormal implements the esc cascade: popup → close popup;
 // fullscreen → split; otherwise → close form.
-func (m *Model) handleEscNormal(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleEscNormal(key tea.KeyPressMsg) tea.Cmd {
 	if m.form.PopupActive() && !m.fullscreen {
 		f, cmd := m.form.Update(key)
 		m.form = f
-		return m, cmd
+		return cmd
 	}
 	if m.fullscreen {
 		m.setFullscreen(false)
-		return m, nil
+		return nil
 	}
 	m.action.Back = true
-	return m, nil
+	return nil
 }
 
 // enterInsertOnFocused decides what `enter` does in NORMAL based on the
 // focused field's kind. Segmented opens a popup (its native behavior);
 // list with no rows gets a fresh empty row first; everything else flips
 // the mode flag and lets INSERT handle the next keystroke.
-func (m *Model) enterInsertOnFocused(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) enterInsertOnFocused(key tea.KeyPressMsg) tea.Cmd {
 	fld := m.form.FocusedField()
 	switch fld.Kind {
 	case components.FieldSegmented:
 		f, cmd := m.form.Update(key)
 		m.form = f
-		return m, cmd
+		return cmd
 	case components.FieldList:
 		if len(fld.List) == 0 {
 			m.form.AppendListRow()
 		}
 		m.setMode(ModeInsert)
-		return m, nil
+		return nil
 	default:
 		m.setMode(ModeInsert)
-		return m, nil
+		return nil
 	}
 }
 
 // handleInsert is INSERT mode: typing inserts into the focused field;
 // special keys (tab, shift+tab, enter, esc) implement commit / navigate /
 // newline / leave-mode semantics.
-func (m *Model) handleInsert(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleInsert(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "esc":
 		// if the segmented popup is open, esc reverts/closes it but stays
@@ -501,16 +499,16 @@ func (m *Model) handleInsert(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		if m.form.PopupActive() {
 			f, cmd := m.form.Update(key)
 			m.form = f
-			return m, cmd
+			return cmd
 		}
 		m.setMode(ModeNormal)
-		return m, nil
+		return nil
 	case "tab":
 		return m.handleInsertTab()
 	case "shift+tab":
 		m.form.FocusPrev()
 		m.setMode(ModeNormal)
-		return m, nil
+		return nil
 	case "enter":
 		return m.handleInsertEnter(key)
 	}
@@ -525,7 +523,7 @@ func (m *Model) handleInsert(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	if key.String() == "backspace" {
 		m.ensureListNotEmpty()
 	}
-	return m, cmd
+	return cmd
 }
 
 // ensureListNotEmpty re-creates an empty row when the focused list became
@@ -544,14 +542,14 @@ func (m *Model) ensureListNotEmpty() {
 // handleInsertTab implements the textarea-vs-single-line tab split: in a
 // textarea the tab is inserted as a literal `\t`; everywhere else it
 // commits and navigates to the next field, returning to NORMAL.
-func (m *Model) handleInsertTab() (*Model, tea.Cmd) {
+func (m *Model) handleInsertTab() tea.Cmd {
 	if m.form.FocusedField().Kind == components.FieldTextarea {
 		m.form.InsertAtCursor("\t")
-		return m, nil
+		return nil
 	}
 	m.form.FocusNext()
 	m.setMode(ModeNormal)
-	return m, nil
+	return nil
 }
 
 // handleInsertEnter implements the per-kind Enter semantics in INSERT:
@@ -560,32 +558,32 @@ func (m *Model) handleInsertTab() (*Model, tea.Cmd) {
 //     commits and adds a fresh empty row to keep filling; Enter on an
 //     empty row exits to NORMAL (signals "done adding").
 //   - single-line text: commit and return to NORMAL on the same field.
-func (m *Model) handleInsertEnter(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleInsertEnter(key tea.KeyPressMsg) tea.Cmd {
 	fld := m.form.FocusedField()
 	switch fld.Kind {
 	case components.FieldTextarea:
 		f, cmd := m.form.Update(key)
 		m.form = f
-		return m, cmd
+		return cmd
 	case components.FieldList:
 		// pressing enter on an empty row finishes the add-many loop.
 		if entry, _, ok := m.form.FocusedListEntry(); ok && entry == "" {
 			m.setMode(ModeNormal)
-			return m, nil
+			return nil
 		}
 		// invalid current row blocks the chain — surface the reason as a
 		// toast and stay in INSERT on the broken row so the user fixes it.
 		if err := m.form.ValidateFocusedListEntry(); err != nil {
 			m.toasts.Push(components.ToastWarning, "header invalid: "+err.Error())
-			return m, nil
+			return nil
 		}
 		// otherwise commit-and-continue: add a new empty row and stay in
 		// INSERT for sequential header entry.
 		m.form.AppendListRow()
-		return m, nil
+		return nil
 	default:
 		m.setMode(ModeNormal)
-		return m, nil
+		return nil
 	}
 }
 
@@ -611,19 +609,19 @@ func (m *Model) handleInsertListShortcut(key tea.KeyPressMsg) (consumed bool) {
 
 // send validates and dispatches a produce. closeAfter=true → ctrl+s (send &
 // close); closeAfter=false → ctrl+shift+s (send & keep).
-func (m *Model) send(closeAfter bool) (*Model, tea.Cmd) {
+func (m *Model) send(closeAfter bool) tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — produce blocked")
-		return m, nil
+		return nil
 	}
 	spec, err := m.spec()
 	if err != nil {
 		m.err = err.Error()
-		return m, nil
+		return nil
 	}
 	m.err = ""
 	m.sending = true
-	return m, produceCmd(m.svc, spec, closeAfter)
+	return produceCmd(m.svc, spec, closeAfter)
 }
 
 func (m *Model) handleResult(msg ProduceResultMsg) {

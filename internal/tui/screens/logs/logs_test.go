@@ -41,7 +41,7 @@ func drive(t *testing.T, m *logs.Model, cmd tea.Cmd) {
 			}
 			tickSeen = true
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -88,7 +88,7 @@ func TestEsc_RaisesBackAction(t *testing.T) {
 	drive(t, m, m.Init())
 
 	// act
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 
 	// assert
 	assert.True(t, m.ConsumeAction().Back)
@@ -102,7 +102,7 @@ func TestF_TogglesFollowMode(t *testing.T) {
 	require.False(t, m.Following())
 
 	// act
-	_, cmd := m.Update(keyPress("f"))
+	cmd := m.Update(keyPress("f"))
 
 	// assert
 	assert.True(t, m.Following())
@@ -110,7 +110,7 @@ func TestF_TogglesFollowMode(t *testing.T) {
 	// LIVE indicator lives in the frame title now.
 	assert.Contains(t, m.Title(), "● LIVE")
 
-	_, _ = m.Update(keyPress("f"))
+	_ = m.Update(keyPress("f"))
 	assert.False(t, m.Following())
 }
 
@@ -119,7 +119,7 @@ func TestFollowTick_AppendsNewLines(t *testing.T) {
 	path := writeLog(t, "INFO first\n")
 	m := logs.New(logs.Options{Path: path, FollowInterval: time.Millisecond})
 	drive(t, m, m.Init())
-	_, _ = m.Update(keyPress("f")) // toggle follow
+	_ = m.Update(keyPress("f")) // toggle follow
 
 	// act
 	appendLog(t, path, "INFO second\n")
@@ -138,7 +138,7 @@ func TestFollowTick_TruncationTriggersReload(t *testing.T) {
 	m := logs.New(logs.Options{Path: path, FollowInterval: time.Millisecond})
 	drive(t, m, m.Init())
 	require.Len(t, m.Lines(), 3)
-	_, _ = m.Update(keyPress("f"))
+	_ = m.Update(keyPress("f"))
 
 	// act
 	require.NoError(t, os.WriteFile(path, []byte("INFO fresh\n"), 0o600))
@@ -173,11 +173,11 @@ func TestSearchN_JumpsToNextMatch(t *testing.T) {
 	require.Equal(t, 0, m.Cursor())
 
 	// act
-	_, _ = m.Update(textKey("n"))
+	_ = m.Update(textKey("n"))
 	assert.Equal(t, 1, m.Cursor())
-	_, _ = m.Update(textKey("n"))
+	_ = m.Update(textKey("n"))
 	assert.Equal(t, 3, m.Cursor())
-	_, _ = m.Update(textKey("N"))
+	_ = m.Update(textKey("N"))
 	assert.Equal(t, 1, m.Cursor())
 }
 
@@ -190,8 +190,8 @@ func TestNavigation_GgJumpsToTop(t *testing.T) {
 	require.Equal(t, 3, m.Cursor())
 
 	// act
-	_, _ = m.Update(textKey("g"))
-	_, _ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
 
 	// assert
 	assert.Equal(t, 0, m.Cursor())
@@ -203,12 +203,12 @@ func TestNavigation_BigGJumpsToBottom(t *testing.T) {
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	_, _ = m.Update(textKey("g"))
-	_, _ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
 	require.Equal(t, 0, m.Cursor())
 
 	// act
-	_, _ = m.Update(keyPress("G"))
+	_ = m.Update(keyPress("G"))
 
 	// assert
 	assert.Equal(t, 2, m.Cursor())
@@ -220,14 +220,14 @@ func TestNavigation_JK(t *testing.T) {
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	_, _ = m.Update(textKey("g"))
-	_, _ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
+	_ = m.Update(textKey("g"))
 	require.Equal(t, 0, m.Cursor())
 
 	// act / assert
-	_, _ = m.Update(textKey("j"))
+	_ = m.Update(textKey("j"))
 	assert.Equal(t, 1, m.Cursor())
-	_, _ = m.Update(textKey("k"))
+	_ = m.Update(textKey("k"))
 	assert.Equal(t, 0, m.Cursor())
 }
 
@@ -334,15 +334,15 @@ func TestNavigation_CtrlDPagesDownAndCtrlUPagesUp(t *testing.T) {
 	// the viewer starts at the tail; jump to the top first so ctrl+d has
 	// somewhere to advance into.
 	for range 2 {
-		m, _ = m.Update(keyPress("g"))
+		_ = m.Update(keyPress("g"))
 	}
 	require.Equal(t, 0, m.Cursor())
 
-	m, _ = m.Update(ctrlKey('d'))
+	_ = m.Update(ctrlKey('d'))
 	cursorAfterDown := m.Cursor()
 	require.Positive(t, cursorAfterDown, "ctrl+d must move cursor down")
 
-	m, _ = m.Update(ctrlKey('u'))
+	_ = m.Update(ctrlKey('u'))
 	assert.Less(t, m.Cursor(), cursorAfterDown, "ctrl+u must move cursor up")
 }
 

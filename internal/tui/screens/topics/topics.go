@@ -136,13 +136,9 @@ type Model struct {
 	cloneCh  <-chan kafka.CloneProgress
 	cloneCxl context.CancelFunc
 
-	width, height   int
-	loading         bool
-	refreshInterval time.Duration
-	refreshPaused   bool
-	// lastRefresh marks the wall-clock time of the most recent successful
-	// load. Drives the chrome's "X ago" indicator.
-	lastRefresh time.Time
+	width, height int
+	loading       bool
+	refresher     components.Refresher
 	// manualReload is set when the user pressed `r` and is consumed by
 	// handleLoaded to push a one-shot success toast (auto ticks stay silent).
 	manualReload bool
@@ -188,20 +184,20 @@ func New(opts Options) *Model {
 	}
 
 	return &Model{
-		svc:             opts.Service,
-		readOnly:        opts.ReadOnly,
-		columns:         cols,
-		filterNames:     filterSet,
-		focusTopic:      opts.FocusTopic,
-		watermarks:      map[string]kafka.TopicWatermarks{},
-		sizes:           map[string]int64{},
-		configs:         map[string][]kafka.TopicConfig{},
-		shownWarnings:   map[string]struct{}{},
-		table:           tbl,
-		toasts:          components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:             now,
-		styles:          styles,
-		refreshInterval: opts.RefreshInterval,
+		svc:           opts.Service,
+		readOnly:      opts.ReadOnly,
+		columns:       cols,
+		filterNames:   filterSet,
+		focusTopic:    opts.FocusTopic,
+		watermarks:    map[string]kafka.TopicWatermarks{},
+		sizes:         map[string]int64{},
+		configs:       map[string][]kafka.TopicConfig{},
+		shownWarnings: map[string]struct{}{},
+		table:         tbl,
+		toasts:        components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:           now,
+		styles:        styles,
+		refresher:     components.NewRefresher(opts.RefreshInterval, now),
 	}
 }
 
@@ -348,35 +344,35 @@ func (m *Model) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case TopicsLoadedMsg:
 		m.handleLoaded(msg)
-		return m, nil
+		return nil
 	case TopicMutatedMsg:
 		m.handleMutated(msg)
 		cmd := m.refreshCmd()
-		return m, cmd
+		return cmd
 	case cloneStartedMsg:
 		m.cloneCh = msg.ch
 		m.cloneCxl = msg.cancel
-		return m, clonePollCmd(msg.ch)
+		return clonePollCmd(msg.ch)
 	case CloneProgressMsg:
 		cmd := m.handleCloneProgress(msg)
-		return m, cmd
+		return cmd
 	case RefreshTickMsg:
 		cmd := m.HandleRefreshTick()
-		return m, cmd
+		return cmd
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	switch m.mode {
 	case ModeList:
 		// fall through to list-mode handling below.
@@ -398,69 +394,69 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 }
 
 // handleListKey handles all hotkeys in list mode (no overlay open).
-func (m *Model) handleListKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "enter", "m":
 		if row, ok := m.table.SelectedRow(); ok {
 			m.action.Messages = row.ID
 		}
-		return m, nil
+		return nil
 	case "c":
 		if row, ok := m.table.SelectedRow(); ok {
 			m.action.Configs = row.ID
 		}
-		return m, nil
+		return nil
 	case "g":
 		if row, ok := m.table.SelectedRow(); ok {
 			m.action.Groups = row.ID
 		}
-		return m, nil
+		return nil
 	case "i":
 		m.showInternal = !m.showInternal
 		m.refreshTable()
-		return m, nil
+		return nil
 	case "r":
 		// skip duplicate loads — pressing `r` while a previous fetch is
 		// still in flight would just queue redundant RPCs.
 		if m.loading {
-			return m, nil
+			return nil
 		}
 		m.manualReload = true
 		cmd := m.refreshCmd()
-		return m, cmd
+		return cmd
 	case "n", "p", "y", "D":
 		return m.handleMutatingKey(key.String())
 	case "esc", "q":
 		m.action.Quit = true
-		return m, nil
+		return nil
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
-	return m, nil
+	return nil
 }
 
 // handleMutatingKey gates write hotkeys behind the read-only flag.
-func (m *Model) handleMutatingKey(key string) (*Model, tea.Cmd) {
+func (m *Model) handleMutatingKey(key string) tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — "+actionLabel(key)+" blocked")
-		return m, nil
+		return nil
 	}
 	switch key {
 	case "n":
 		m.openCreateForm()
-		return m, nil
+		return nil
 	case "p":
 		if row, ok := m.table.SelectedRow(); ok {
 			m.action.Produce = row.ID
 		}
-		return m, nil
+		return nil
 	case "y":
 		m.openCloneForm()
-		return m, nil
+		return nil
 	case "D":
 		return m.openDeleteConfirm()
 	}
-	return m, nil
+	return nil
 }
 
 func actionLabel(key string) string {
@@ -478,10 +474,10 @@ func actionLabel(key string) string {
 }
 
 // openDeleteConfirm pops the delete-confirmation modal for the focused topic.
-func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
+func (m *Model) openDeleteConfirm() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
-		return m, nil
+		return nil
 	}
 	m.pending = pendingOp{topic: row.ID}
 	m.confirm = components.NewConfirm(
@@ -489,7 +485,7 @@ func (m *Model) openDeleteConfirm() (*Model, tea.Cmd) {
 		fmt.Sprintf("Delete topic %q? This cannot be undone.", row.ID),
 		components.WithConfirmStyles(m.styles),
 	)
-	return m, nil
+	return nil
 }
 
 func (m *Model) openCreateForm() {
@@ -507,7 +503,7 @@ func (m *Model) openCloneForm() {
 	m.mode = ModeClone
 }
 
-func (m *Model) handleCreateKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "esc":
 		// in INSERT, or while a segmented popup is open in NORMAL, esc is
@@ -516,62 +512,62 @@ func (m *Model) handleCreateKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 		if m.create.Mode() == FormInsert || m.create.Form().PopupActive() {
 			c, _ := m.create.Update(key)
 			m.create = c
-			return m, nil
+			return nil
 		}
 		m.create = nil
 		m.mode = ModeList
-		return m, nil
+		return nil
 	case "ctrl+s":
 		spec, err := m.create.Spec()
 		if err != nil {
 			m.create.SetError(err.Error())
-			return m, nil
+			return nil
 		}
 		m.create = nil
 		m.mode = ModeList
 		m.toasts.Push(components.ToastInfo, "creating "+spec.Name+"…")
-		return m, createCmd(m.svc, spec)
+		return createCmd(m.svc, spec)
 	}
 	c, _ := m.create.Update(key)
 	m.create = c
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleCloneKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
 	switch key.String() {
 	case "esc":
 		if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
 			c, _ := m.clone.Update(key)
 			m.clone = c
-			return m, nil
+			return nil
 		}
 		m.clone = nil
 		m.mode = ModeList
-		return m, nil
+		return nil
 	case "ctrl+s":
 		src, dst, err := m.clone.Submit()
 		if err != nil {
 			m.clone.SetError(err.Error())
-			return m, nil
+			return nil
 		}
 		m.mode = ModeCloning
 		m.progress = kafka.CloneProgress{}
 		m.toasts.Push(components.ToastInfo, "cloning "+src+" → "+dst+"…")
-		return m, cloneStartCmd(m.svc, src, dst, m.clone.Options())
+		return cloneStartCmd(m.svc, src, dst, m.clone.Options())
 	}
 	c, _ := m.clone.Update(key)
 	m.clone = c
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleCloningKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
 	if key.String() == "esc" {
 		// in-flight clone — ESC abandons the screen but the goroutine continues
 		// in the background; we just return to the list.
 		m.mode = ModeList
-		return m, nil
+		return nil
 	}
-	return m, nil
+	return nil
 }
 
 func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
@@ -619,25 +615,25 @@ func (m *Model) Close() {
 	}
 }
 
-func (m *Model) handleConfirmKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 	c, _ := m.confirm.Update(key)
 	m.confirm = c
 	switch c.Result() {
 	case components.ConfirmPending:
-		return m, nil
+		return nil
 	case components.ConfirmYes:
 		op := m.pending
 		m.confirm = nil
 		m.pending = pendingOp{}
 		if op.topic != "" {
 			cmd := deleteCmd(m.svc, op.topic)
-			return m, cmd
+			return cmd
 		}
 	case components.ConfirmNo:
 		m.confirm = nil
 		m.pending = pendingOp{}
 	}
-	return m, nil
+	return nil
 }
 
 // PendingTopic returns the topic name currently awaiting confirmation (for
@@ -656,7 +652,7 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 		m.manualReload = false
 		return
 	}
-	m.lastRefresh = m.now()
+	m.refresher.MarkSuccess()
 	if m.manualReload {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d topics", len(msg.Topics)))
 		m.manualReload = false
@@ -809,25 +805,15 @@ func (m *Model) refreshCmd() tea.Cmd {
 
 // AutoRefreshTick returns a [tea.Cmd] that emits a tick for the configured
 // refresh interval. Hosts that opt-in call this from Init.
-func (m *Model) AutoRefreshTick() tea.Cmd {
-	if m.refreshInterval <= 0 {
-		return nil
-	}
-	return tea.Tick(m.refreshInterval, func(time.Time) tea.Msg {
-		return RefreshTickMsg{}
-	})
-}
+func (m *Model) AutoRefreshTick() tea.Cmd { return m.refresher.Tick(RefreshTickMsg{}) }
 
 // HandleRefreshTick triggers a reload + reschedules another tick. The reload
 // itself is skipped while a previous load is in flight (`m.loading`) or the
 // host has paused auto-refresh via [Model.SetRefreshPaused]; the ticker
 // keeps running so resuming is instantaneous.
 func (m *Model) HandleRefreshTick() tea.Cmd {
-	if m.refreshInterval <= 0 {
-		return nil
-	}
-	next := m.AutoRefreshTick()
-	if m.loading || m.refreshPaused {
+	next := m.refresher.Tick(RefreshTickMsg{})
+	if next == nil || m.loading || m.refresher.Paused() {
 		return next
 	}
 	return tea.Batch(m.refreshCmd(), next)
@@ -835,16 +821,16 @@ func (m *Model) HandleRefreshTick() tea.Cmd {
 
 // RefreshInterval returns the screen's configured auto-refresh tick (0 if
 // auto-refresh is disabled in config).
-func (m *Model) RefreshInterval() time.Duration { return m.refreshInterval }
+func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
 
 // SetRefreshPaused toggles the auto-refresh pause flag. The host calls it
 // from the global ctrl+r handler so refresh state stays in sync with the
 // chrome's Refresh: indicator.
-func (m *Model) SetRefreshPaused(paused bool) { m.refreshPaused = paused }
+func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
 
 // LastRefresh returns the wall-clock time of the most recent successful
 // load, or zero when no load has completed yet.
-func (m *Model) LastRefresh() time.Time { return m.lastRefresh }
+func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
 
 // ----- Messages -----
 

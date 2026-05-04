@@ -223,10 +223,12 @@ func (m *Model) Messages() []kafka.Message {
 	return out
 }
 
-// SupportsSearch reports whether the screen can usefully filter rows.
-// In ModeDetail there's only one record on screen, so the host should
-// not open the search prompt.
-func (m *Model) SupportsSearch() bool { return m.mode != ModeDetail }
+// SearchAvailable reports whether search is currently usable. In
+// ModeDetail there's only one record on screen, so the host's `/`
+// prompt would have nothing to filter — return false to suppress it.
+// Screens that always support search just implement [tui.Searchable]
+// and skip this method.
+func (m *Model) SearchAvailable() bool { return m.mode != ModeDetail }
 
 // SetSearch forwards a host-driven filter query to the underlying table.
 // In ModeDetail there's no table to search, so it's a no-op.
@@ -283,34 +285,34 @@ func (m *Model) KeyHints() []layout.KeyHint {
 }
 
 // Update routes messages.
-func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
-		return m, nil
+		return nil
 	case MessagesLoadedMsg:
 		m.handleLoaded(msg)
-		return m, nil
+		return nil
 	case MessagesAppendedMsg:
 		m.handleAppended(msg)
-		return m, nil
+		return nil
 	case FollowChunkMsg:
 		m.handleFollowChunk(msg)
 		if msg.Closed {
-			return m, nil
+			return nil
 		}
 		cmd := m.followPollCmd()
-		return m, cmd
+		return cmd
 	case FollowErrMsg:
 		m.handleFollowErr(msg)
-		return m, nil
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.mode == ModeDetail {
 		return m.handleDetailKey(key)
 	}
@@ -326,69 +328,69 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
 		m.action.Back = true
-		return m, nil
+		return nil
 	case "enter":
 		m.openDetail()
-		return m, nil
+		return nil
 	case "f":
 		cmd := m.toggleFollow()
-		return m, cmd
+		return cmd
 	case "[":
 		cmd := m.loadEarlier()
-		return m, cmd
+		return cmd
 	case "]":
 		cmd := m.loadLater()
-		return m, cmd
+		return cmd
 	case "p":
 		return m.handleProduceKey()
 	case "r":
 		m.handleResendKey()
-		return m, nil
+		return nil
 	case "g":
 		m.gPrimed = true
-		return m, nil
+		return nil
 	case "G":
 		// jump to most recent (cursor 0 because newest-first sort).
 		// the table itself handles the cursor move; nothing to do here.
 		tbl, _ := m.table.Update(key)
 		m.table = tbl
-		return m, nil
+		return nil
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
-	return m, nil
+	return nil
 }
 
 // handleGPrefix consumes the second key of a `g <x>` sequence.
-func (m *Model) handleGPrefix(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleGPrefix(key tea.KeyPressMsg) tea.Cmd {
 	m.gPrimed = false
 	switch key.String() {
 	case "g":
 		// gg → top
 		tbl, _ := m.table.Update(key)
 		m.table = tbl
-		return m, nil
+		return nil
 	case "o":
 		m.openJumpForm(jumpOffset)
-		return m, nil
+		return nil
 	case "t":
 		m.openJumpForm(jumpTimestamp)
-		return m, nil
+		return nil
 	case "p":
 		m.openJumpForm(jumpPartition)
-		return m, nil
+		return nil
 	}
-	return m, nil
+	return nil
 }
 
-func (m *Model) handleProduceKey() (*Model, tea.Cmd) {
+func (m *Model) handleProduceKey() tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — produce blocked")
-		return m, nil
+		return nil
 	}
 	m.action.Produce = m.topic
 	m.action.PrefillFromMessage = nil
-	return m, nil
+	return nil
 }
 
 func (m *Model) handleResendKey() {
@@ -423,7 +425,7 @@ func (m *Model) openDetail() {
 	m.mode = ModeDetail
 }
 
-func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
+func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 	d, cmd := m.detail.Update(key)
 	m.detail = d
 	a := d.ConsumeAction()
@@ -441,7 +443,7 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) (*Model, tea.Cmd) {
 	case a.Warn != "":
 		m.toasts.Push(components.ToastWarning, a.Warn)
 	}
-	return m, cmd
+	return cmd
 }
 
 // selected returns the message under the table cursor, or false if empty.

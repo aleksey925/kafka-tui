@@ -37,7 +37,7 @@ func drive(t *testing.T, m *messages.Model, cmd tea.Cmd) {
 			queue = append(queue, batch...)
 			continue
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -88,7 +88,7 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 func TestEsc_RaisesBackAction(t *testing.T) {
 	m := buildModelWith(t)
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.True(t, m.ConsumeAction().Back)
 }
 
@@ -96,7 +96,7 @@ func TestEnter_OpensDetailView(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte(`{"k":"v"}`)},
 	})
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	assert.Equal(t, messages.ModeDetail, m.CurrentMode())
 	require.NotNil(t, m.Detail())
 }
@@ -105,9 +105,9 @@ func TestDetailEsc_ReturnsToList(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte("hello")},
 	})
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	require.Equal(t, messages.ModeDetail, m.CurrentMode())
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.Equal(t, messages.ModeList, m.CurrentMode())
 	assert.Nil(t, m.Detail())
 }
@@ -123,11 +123,11 @@ func TestHasOverlay_DetailIsOverlay(t *testing.T) {
 	})
 	require.False(t, m.HasOverlay(), "list mode is not an overlay")
 
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	require.Equal(t, messages.ModeDetail, m.CurrentMode())
 	assert.True(t, m.HasOverlay(), "detail mode must report as overlay so esc stays inside the screen")
 
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
 }
 
@@ -139,11 +139,11 @@ func TestSupportsSearch_DisabledInDetail(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte("hello")},
 	})
-	require.True(t, m.SupportsSearch(), "list mode must support search")
+	require.True(t, m.SearchAvailable(), "list mode must support search")
 
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	require.Equal(t, messages.ModeDetail, m.CurrentMode())
-	assert.False(t, m.SupportsSearch(), "detail mode has no rows to filter")
+	assert.False(t, m.SearchAvailable(), "detail mode has no rows to filter")
 }
 
 // TestClose_StopsFollowSession pins the lifecycle contract: when the
@@ -160,7 +160,7 @@ func TestClose_StopsFollowSession(t *testing.T) {
 
 	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
 	drive(t, m, m.Init())
-	_, _ = m.Update(keyPress("f"))
+	_ = m.Update(keyPress("f"))
 	require.True(t, m.Following())
 
 	m.Close()
@@ -176,17 +176,17 @@ func TestDetail_NextPrevNavigatesMessages(t *testing.T) {
 		{Topic: "orders", Offset: 2, Value: []byte("b")},
 		{Topic: "orders", Offset: 3, Value: []byte("c")},
 	})
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 	require.Equal(t, 0, m.Detail().Index())
 
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.Equal(t, 1, m.Detail().Index())
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.Equal(t, 2, m.Detail().Index())
 	// clamps at end
-	_, _ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("n"))
 	assert.Equal(t, 2, m.Detail().Index())
-	_, _ = m.Update(keyPress("p"))
+	_ = m.Update(keyPress("p"))
 	assert.Equal(t, 1, m.Detail().Index())
 }
 
@@ -194,13 +194,13 @@ func TestDetail_FormatHotkeysSwitchView(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte(`{"a":1}`)},
 	})
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 
-	_, _ = m.Update(keyPressRune('1'))
+	_ = m.Update(keyPressRune('1'))
 	assert.Equal(t, messages.ViewJSON, m.Detail().ViewMode())
-	_, _ = m.Update(keyPressRune('2'))
+	_ = m.Update(keyPressRune('2'))
 	assert.Equal(t, messages.ViewRaw, m.Detail().ViewMode())
-	_, _ = m.Update(keyPressRune('3'))
+	_ = m.Update(keyPressRune('3'))
 	assert.Equal(t, messages.ViewHex, m.Detail().ViewMode())
 }
 
@@ -362,7 +362,7 @@ func TestProduce_RaisesAction(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte("v")},
 	})
-	_, _ = m.Update(keyPress("p"))
+	_ = m.Update(keyPress("p"))
 	a := m.ConsumeAction()
 	assert.Equal(t, "orders", a.Produce)
 	assert.Nil(t, a.PrefillFromMessage)
@@ -372,7 +372,7 @@ func TestResend_FromListRaisesActionWithMessage(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Offset: 5, Value: []byte("payload")},
 	})
-	_, _ = m.Update(keyPress("r"))
+	_ = m.Update(keyPress("r"))
 	a := m.ConsumeAction()
 	assert.Equal(t, "orders", a.Produce)
 	require.NotNil(t, a.PrefillFromMessage)
@@ -385,9 +385,9 @@ func TestReadOnly_BlocksProduceAndResend(t *testing.T) {
 	m := messages.New(messages.Options{Service: svc, Topic: "orders", ReadOnly: true})
 	drive(t, m, m.Init())
 
-	_, _ = m.Update(keyPress("p"))
+	_ = m.Update(keyPress("p"))
 	assert.Empty(t, m.ConsumeAction().Produce)
-	_, _ = m.Update(keyPress("r"))
+	_ = m.Update(keyPress("r"))
 	assert.Empty(t, m.ConsumeAction().Produce)
 	assert.GreaterOrEqual(t, m.Toasts().Len(), 1)
 }
@@ -404,7 +404,7 @@ func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	svc.earlier = []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 99, Value: []byte("z")},
 	}
-	_, cmd := m.Update(keyPress("["))
+	cmd := m.Update(keyPress("["))
 	drive(t, m, cmd)
 	require.Equal(t, map[int32]int64{0: 100}, svc.lastEarlierBaseline)
 	assert.Equal(t, []byte("z"), m.Messages()[0].Value, "earlier batch is prepended")
@@ -412,7 +412,7 @@ func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	svc.later = []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 102, Value: []byte("c")},
 	}
-	_, cmd = m.Update(keyPress("]"))
+	cmd = m.Update(keyPress("]"))
 	drive(t, m, cmd)
 	require.Equal(t, map[int32]int64{0: 101}, svc.lastLaterBaseline)
 	assert.Equal(t, []byte("c"), m.Messages()[len(m.Messages())-1].Value, "later batch is appended")
@@ -466,8 +466,8 @@ func TestJumpToPartition_NarrowsFilterAndReloads(t *testing.T) {
 
 func TestGPrefix_OpenJumpFormShowsToast(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
-	_, _ = m.Update(keyPress("g"))
-	_, _ = m.Update(keyPress("o"))
+	_ = m.Update(keyPress("g"))
+	_ = m.Update(keyPress("o"))
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 }
 
@@ -495,7 +495,7 @@ func TestFollow_StartReceivesChunkAndPrependsToList(t *testing.T) {
 	close(msgCh)
 	_ = errCh // referenced to keep the channel alive for the test duration
 
-	_, cmd := m.Update(keyPress("f"))
+	cmd := m.Update(keyPress("f"))
 	require.NotNil(t, cmd)
 	assert.True(t, m.Following())
 	drive(t, m, cmd)
@@ -729,7 +729,7 @@ func TestDetailView_RendersHeaderAndBlocks(t *testing.T) {
 		},
 	}})
 	m.SetSize(120, 30)
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 
 	out := m.View()
 
@@ -755,7 +755,7 @@ func TestDetailView_EmptyKeyAndHeadersRenderEmptyMarker(t *testing.T) {
 		Topic: "orders", Value: []byte("value-only"),
 	}})
 	m.SetSize(80, 20)
-	_, _ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("enter"))
 
 	out := m.View()
 	assert.Contains(t, out, "(empty)", "empty key + headers must show the empty marker")

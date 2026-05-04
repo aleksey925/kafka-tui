@@ -412,7 +412,7 @@ func TestCommand_LogsAndConfigSourcesPushScreens(t *testing.T) {
 // TestConnect_DialsAndPushesTopics drives the cluster→topics connect path
 // against a real kfake broker, exercising connectCluster, replaceScreen,
 // instantiate(topics), updateHeaderForActive, findCluster, newTopics, and
-// the topicsScreen wrapper methods.
+// the topics screen lifecycle.
 func TestConnect_DialsAndPushesTopics(t *testing.T) {
 	cluster := startKfake(t)
 	m := newConnectedHost(t, cluster)
@@ -499,7 +499,7 @@ func TestConnect_DialErrorSurfacesToast(t *testing.T) {
 
 // TestRoute_TopicsToMessagesAndBack drives the host's topics→messages→back
 // chain. Hits routeTopicsAction, pushScreenCmd(messages), newMessages,
-// messagesScreen wrappers, and routeMessagesAction's back branch.
+// messages screen and routeMessagesAction.
 func TestRoute_TopicsToMessagesAndBack(t *testing.T) {
 	cluster := startKfake(t)
 	mustCreateTopic(t, cluster, "orders")
@@ -527,7 +527,7 @@ func TestRoute_TopicsToMessagesAndBack(t *testing.T) {
 
 // TestRoute_MessagesToProduce drives the messages→produce action via the
 // `p` hotkey, exercising routeMessagesAction.Produce, newProduce, and
-// the produceScreen wrapper.
+// the produce screen.
 func TestRoute_MessagesToProduce(t *testing.T) {
 	cluster := startKfake(t)
 	mustCreateTopic(t, cluster, "events")
@@ -719,7 +719,7 @@ func TestRoute_TopicsToGroupsConfigsAndProduce(t *testing.T) {
 	settleUntil(t, m, func() bool { return strings.Contains(m.Render(), "orders") })
 
 	// `g` → push consumer-groups (filtered by topic). Exercises
-	// routeTopicsAction.Groups, newGroups, groupsScreen wrappers.
+	// routeTopicsAction.Groups, newGroups, groups screen.
 	_, cmd := m.Update(keyPressRune('g'))
 	drainCmd(t, m, cmd)
 	require.Contains(t, m.Render(), "Consumer Groups")
@@ -730,7 +730,7 @@ func TestRoute_TopicsToGroupsConfigsAndProduce(t *testing.T) {
 	require.Contains(t, m.Render(), "Topics")
 
 	// `c` → push topic-configs screen. Exercises routeTopicsAction.Configs,
-	// newTopicConfigs, topicConfigsScreen wrappers.
+	// newTopicConfigs, topic configs screen.
 	_, cmd = m.Update(keyPressRune('c'))
 	drainCmd(t, m, cmd)
 	require.Contains(t, m.Render(), "Configs")
@@ -741,7 +741,7 @@ func TestRoute_TopicsToGroupsConfigsAndProduce(t *testing.T) {
 	require.Contains(t, m.Render(), "Topics")
 
 	// `p` → push produce form. Exercises routeTopicsAction.Produce,
-	// newProduce, produceScreen wrappers.
+	// newProduce, produce screen.
 	_, cmd = m.Update(keyPressRune('p'))
 	drainCmd(t, m, cmd)
 	require.Contains(t, strings.ToLower(m.Render()), "produce")

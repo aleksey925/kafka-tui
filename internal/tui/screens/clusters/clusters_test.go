@@ -36,7 +36,7 @@ func drive(t *testing.T, m *clusters.Model, cmd tea.Cmd) {
 			queue = append(queue, batch...)
 			continue
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -116,8 +116,7 @@ func TestEnter_OptimisticConnectWhenNoPinger(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 	})
-	updated, _ := m.Update(keyPress("enter"))
-	m = updated
+	_ = m.Update(keyPress("enter"))
 	a := m.ConsumeAction()
 	assert.Equal(t, "a", a.Connect)
 	assert.Equal(t, clusters.StatusOK, m.Status("a"))
@@ -135,7 +134,7 @@ func TestEnter_PingerSuccessSetsOKAndConnects(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	require.NotNil(t, cmd)
 	assert.Equal(t, clusters.StatusChecking, m.Status("a"))
 
@@ -156,7 +155,7 @@ func TestEnter_PingerFailureSetsFailedAndRaisesToast(t *testing.T) {
 			return errors.New("dial timeout")
 		}),
 	})
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 
 	assert.Equal(t, clusters.StatusFailed, m.Status("a"))
@@ -177,7 +176,7 @@ func TestT_TestSelectedClusterOnly(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("t"))
+	cmd := m.Update(keyPress("t"))
 	drive(t, m, cmd)
 	assert.Equal(t, []string{"a"}, probed)
 	assert.Equal(t, clusters.StatusOK, m.Status("a"))
@@ -197,7 +196,7 @@ func TestShiftT_TestAllClusters(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("T"))
+	cmd := m.Update(keyPress("T"))
 	drive(t, m, cmd)
 	assert.Equal(t, 1, probed["a"])
 	assert.Equal(t, 1, probed["b"])
@@ -217,7 +216,7 @@ func TestT_TestsAllStatuses(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("T"))
+	cmd := m.Update(keyPress("T"))
 	drive(t, m, cmd)
 	assert.Equal(t, 2, probed)
 }
@@ -228,7 +227,7 @@ func TestR_RaisesReloadAction(t *testing.T) {
 			{Name: "a", Brokers: []string{"x"}},
 		},
 	})
-	_, _ = m.Update(keyPress("r"))
+	_ = m.Update(keyPress("r"))
 	assert.True(t, m.ConsumeAction().Reload, "r must request a config reload")
 }
 
@@ -241,8 +240,7 @@ func TestE_OpensChooserWhenBothPathsExist(t *testing.T) {
 		GlobalPath:  "/home/u/.kafka-tui/clusters.yaml",
 		ProjectPath: "/proj/.kafka-tui/clusters.yaml",
 	})
-	updated, _ := m.Update(keyPress("e"))
-	m = updated
+	_ = m.Update(keyPress("e"))
 	assert.True(t, m.EditingChooser())
 	assert.Equal(t, []string{"global", "project"}, m.EditChoices())
 }
@@ -261,11 +259,11 @@ func TestEditChooser_NavigatesAndSelects(t *testing.T) {
 			return nil
 		}),
 	})
-	_, _ = m.Update(keyPress("e"))
-	_, _ = m.Update(keyPress("j")) // move to project
+	_ = m.Update(keyPress("e"))
+	_ = m.Update(keyPress("j")) // move to project
 	assert.Equal(t, 1, m.EditCursor())
 
-	_, cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 
 	assert.False(t, m.EditingChooser())
@@ -279,7 +277,7 @@ func TestE_NoChoicesEmitsWarning(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 	})
-	_, _ = m.Update(keyPress("e"))
+	_ = m.Update(keyPress("e"))
 	require.Equal(t, 1, m.Toasts().Len())
 	assert.Contains(t, m.Toasts().Items()[0].Message, "no clusters.yaml")
 }
@@ -297,7 +295,7 @@ func TestE_SinglePathSkipsChooser(t *testing.T) {
 			return nil
 		}),
 	})
-	_, cmd := m.Update(keyPress("e"))
+	cmd := m.Update(keyPress("e"))
 	drive(t, m, cmd)
 	assert.False(t, m.EditingChooser())
 	assert.Equal(t, []string{"/g/clusters.yaml"}, called)
@@ -312,8 +310,8 @@ func TestEditChooser_EscapeCancels(t *testing.T) {
 		GlobalPath:  "/g/clusters.yaml",
 		ProjectPath: "/p/clusters.yaml",
 	})
-	_, _ = m.Update(keyPress("e"))
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("e"))
+	_ = m.Update(keyPress("esc"))
 	assert.False(t, m.EditingChooser())
 }
 
@@ -324,7 +322,7 @@ func TestQ_RaisesQuitAction(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 	})
-	_, _ = m.Update(keyPress("q"))
+	_ = m.Update(keyPress("q"))
 	assert.True(t, m.ConsumeAction().Quit)
 }
 
@@ -335,7 +333,7 @@ func TestEsc_DoesNotQuitFromRoot(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 	})
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.False(t, m.ConsumeAction().Quit, "esc on the root screen must be a no-op")
 }
 
@@ -372,7 +370,7 @@ func TestView_GoldenWithStatuses(t *testing.T) {
 		}),
 		Now: func() time.Time { return time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC) },
 	})
-	_, cmd := m.Update(keyPress("T"))
+	cmd := m.Update(keyPress("T"))
 	drive(t, m, cmd)
 
 	out := m.View()
@@ -394,7 +392,7 @@ func TestView_EditChooserModalRendered(t *testing.T) {
 		GlobalPath:  "/g/clusters.yaml",
 		ProjectPath: "/p/clusters.yaml",
 	})
-	_, _ = m.Update(keyPress("e"))
+	_ = m.Update(keyPress("e"))
 
 	out := m.View()
 	assert.Contains(t, out, "Edit clusters.yaml")
@@ -453,7 +451,7 @@ func TestEditCompleted_ErrorRaisesToast(t *testing.T) {
 			return errors.New("editor crashed")
 		}),
 	})
-	_, cmd := m.Update(keyPress("e"))
+	cmd := m.Update(keyPress("e"))
 	drive(t, m, cmd)
 	require.Equal(t, 1, m.Toasts().Len())
 	assert.Contains(t, m.Toasts().Items()[0].Message, "editor crashed")

@@ -30,7 +30,7 @@ func driveConfigs(t *testing.T, m *topics.ConfigsModel, cmd tea.Cmd) {
 			queue = append(queue, batch...)
 			continue
 		}
-		_, follow := m.Update(msg)
+		follow := m.Update(msg)
 		queue = append(queue, follow)
 	}
 }
@@ -79,9 +79,9 @@ func TestConfigsScreen_TabSwitchesFocus(t *testing.T) {
 	driveConfigs(t, m, m.Init())
 
 	require.False(t, m.FocusPartitions())
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	assert.True(t, m.FocusPartitions())
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	assert.False(t, m.FocusPartitions())
 }
 
@@ -89,7 +89,7 @@ func TestConfigsScreen_EscRaisesBack(t *testing.T) {
 	svc := newConfigsFake()
 	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
 	driveConfigs(t, m, m.Init())
-	_, _ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("esc"))
 	assert.True(t, m.ConsumeAction().Back)
 }
 
@@ -124,7 +124,7 @@ func TestConfigsScreen_SetSearchAppliesToBothTables(t *testing.T) {
 	// switching focus to the partitions table must NOT change the active
 	// filter — both tables are filtered by the same string so the host
 	// can clear it on any focus.
-	_, _ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
 	require.True(t, m.FocusPartitions())
 	assert.Equal(t, "retention", m.ActiveFilter())
 
