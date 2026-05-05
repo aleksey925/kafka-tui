@@ -25,6 +25,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -384,30 +386,102 @@ func (m *Model) ConsumeAction() Action {
 // Sending reports whether a produce call is currently in flight.
 func (m *Model) Sending() bool { return m.sending }
 
-// WantsRawInput reports that the produce form is always editing text and wants
-// global shortcut keys (`:`, `/`, `?`, `ctrl+r`) routed to its fields as
-// literals instead of triggering the host-level handlers.
-func (m *Model) WantsRawInput() bool { return true }
+// WantsRawInput reports true only while the form is actively editing
+// a field (INSERT). In NORMAL the form ignores letter / digit keys
+// anyway, so leaving raw-input off there lets the user reach global
+// shortcuts (`:`, `/`, `?`) — the help overlay especially.
+// Switching back to INSERT (with `enter` on a focused field) restores
+// raw-input so literal `?`, `/`, `:` etc. land in the field text.
+func (m *Model) WantsRawInput() bool { return m.mode == ModeInsert }
+
+// HasOverlay reports that the produce form is always overlay-like:
+// it sits on top of the screen the user opened it from (topics or
+// messages). The host uses this to suppress the q/esc quit-fallback
+// inside the form, so a stray `q` in NORMAL doesn't pop the screen
+// out from under the user mid-edit. The screen's own esc handler
+// (`handleEscNormal`) raises action.Back to close the form cleanly.
+func (m *Model) HasOverlay() bool { return true }
 
 // SetSize satisfies the Screen interface. The produce form is rendered by
 // the host frame, which manages width/height itself, so the screen ignores
 // the values.
 func (m *Model) SetSize(_, _ int) {}
 
-// KeyHints returns the screen-specific hints shown at the bottom row.
+// KeyHints derives the bottom-row entries from the global-shortcut
+// bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
-	hints := []layout.KeyHint{
-		{Key: "enter", Label: "edit"},
-		{Key: "tab", Label: "next field"},
-		{Key: "+/_", Label: "fullscreen"},
-		{Key: "ctrl+s", Label: "send"},
-		{Key: "ctrl+shift+s", Label: "send & keep"},
-		{Key: "ctrl+e", Label: "$EDITOR"},
-		{Key: "ctrl+p/n", Label: "history"},
-		{Key: "ctrl+r", Label: "clear"},
-		{Key: "esc", Label: "cancel"},
+	return layout.HintsFromBindings(m.bindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the same source.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.bindings())
+}
+
+// bindings concatenates the always-on globals with the NORMAL-mode
+// commands so help/hints surface every screen-level shortcut. The
+// dispatcher consumes the two slices separately because globals fire
+// in both NORMAL and INSERT, while normal-mode keys must not steal
+// editing characters in INSERT.
+func (m *Model) bindings() []keymap.Binding {
+	return append(m.globalBindings(), m.normalBindings()...)
+}
+
+// globalBindings are mode-agnostic: send / clear / history / editor.
+// They fire in both NORMAL and INSERT so the user doesn't have to
+// esc-out before sending.
+func (m *Model) globalBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"ctrl+s"}, Label: "send (close form)", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(true) }},
+		{Keys: []string{"ctrl+shift+s"}, Label: "send & keep open", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(false) }},
+		{Keys: []string{"ctrl+e"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
+		{Keys: []string{"ctrl+r"}, Label: "clear form", Category: "Produce", Hint: true, Handler: m.actClear},
+		{Keys: []string{"ctrl+p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
+		{Keys: []string{"ctrl+n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 	}
-	return hints
+}
+
+// normalBindings are NORMAL-mode only — fullscreen, navigation,
+// enter-insert, esc — and intentionally NOT consulted in INSERT so
+// `tab`, `enter`, `esc` retain their text-editing meaning there.
+func (m *Model) normalBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"+", "_", "shift++", "shift+-"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
+		{Keys: []string{"tab", "down"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
+		{Keys: []string{"shift+tab", "up"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
+		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
+		{Keys: []string{"esc"}, Label: "cancel edit / close form", Category: "Form", Hint: true, HandlerMsg: m.handleEscNormal},
+	}
+}
+
+func (m *Model) actToggleFullscreen() tea.Cmd {
+	m.setFullscreen(!m.fullscreen)
+	return nil
+}
+
+func (m *Model) actFocusNext() tea.Cmd {
+	m.resetPartitionTypeBuf()
+	m.form.FocusNext()
+	return nil
+}
+
+func (m *Model) actFocusPrev() tea.Cmd {
+	m.resetPartitionTypeBuf()
+	m.form.FocusPrev()
+	return nil
+}
+
+func (m *Model) actEditor() tea.Cmd { m.openEditor(); return nil }
+func (m *Model) actClear() tea.Cmd  { m.clear(); return nil }
+
+func (m *Model) actHistoryOlder() tea.Cmd {
+	m.historyStep(+1)
+	return m.reloadPartitionsIfTopicChanged()
+}
+
+func (m *Model) actHistoryNewer() tea.Cmd {
+	m.historyStep(-1)
+	return m.reloadPartitionsIfTopicChanged()
 }
 
 // Fullscreen reports whether the form is currently in fullscreen mode.
@@ -479,27 +553,10 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 
 // handleGlobalShortcut covers send/clear/history/editor — they should fire
 // regardless of mode so the user doesn't need to esc-into-NORMAL just to
-// send. Returns ok=true when the key was consumed.
+// send. Routed via the global slice of the bindings table for parity
+// with help/hints.
 func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (tea.Cmd, bool) {
-	switch key.String() {
-	case "ctrl+s":
-		return m.send(true), true
-	case "ctrl+shift+s":
-		return m.send(false), true
-	case "ctrl+e":
-		m.openEditor()
-		return nil, true
-	case "ctrl+r":
-		m.clear()
-		return nil, true
-	case "ctrl+p":
-		m.historyStep(+1)
-		return m.reloadPartitionsIfTopicChanged(), true
-	case "ctrl+n":
-		m.historyStep(-1)
-		return m.reloadPartitionsIfTopicChanged(), true
-	}
-	return nil, false
+	return keymap.Dispatch(m.globalBindings(), key)
 }
 
 // handleNormal is the default mode: tab/shift+tab navigate, enter is
@@ -518,25 +575,8 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 		m.form = f
 		return cmd
 	}
-	switch key.String() {
-	case "esc":
-		return m.handleEscNormal(key)
-	case "+", "_", "shift++", "shift+-":
-		// fullscreen toggle — `+` is shift+`=` (and `_` is shift+`-`) on
-		// US/RU layouts; the kitty-protocol `shift++` / `shift+-` strings
-		// also mapped here for completeness.
-		m.setFullscreen(!m.fullscreen)
-		return nil
-	case "tab", "down":
-		m.resetPartitionTypeBuf()
-		m.form.FocusNext()
-		return nil
-	case "shift+tab", "up":
-		m.resetPartitionTypeBuf()
-		m.form.FocusPrev()
-		return nil
-	case "enter":
-		return m.enterInsertOnFocused(key)
+	if cmd, ok := keymap.Dispatch(m.normalBindings(), key); ok {
+		return cmd
 	}
 	// segmented fields are "interactive without INSERT" — left/right and
 	// hjkl cycle the value live, so let the form handle them in NORMAL.

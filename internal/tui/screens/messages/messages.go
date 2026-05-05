@@ -15,6 +15,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -531,45 +533,258 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific hints shown at the bottom row.
+// KeyHints derives the bottom-row entries from the current mode's
+// bindings table, so adding a binding automatically appears here.
 func (m *Model) KeyHints() []layout.KeyHint {
+	return layout.HintsFromBindings(m.activeBindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the current
+// mode's bindings table — exact same source as the dispatcher, so
+// drift between code and documentation is structurally impossible.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.activeBindings())
+}
+
+// activeBindings returns the bindings slice for whichever sub-mode
+// the screen is in. Each sub-mode dispatcher consumes the same slice.
+func (m *Model) activeBindings() []keymap.Binding {
 	switch m.mode {
 	case ModeList:
-		// list-mode hints are built below.
+		return m.listBindings()
 	case ModeDetail:
-		return m.detail.KeyHints()
+		if m.detail != nil {
+			return m.detail.bindings()
+		}
 	case ModeSeek:
-		return []layout.KeyHint{
-			{Key: "1-7", Label: "pick"},
-			{Key: "↑↓", Label: "move"},
-			{Key: "enter", Label: "ok"},
-			{Key: "esc", Label: "back"},
-		}
+		return m.seekBindings()
 	case ModePartitions:
-		return []layout.KeyHint{
-			{Key: "enter", Label: "apply"},
-			{Key: "esc", Label: "back"},
-		}
+		return m.partitionsBindings()
 	case ModeSmartFilter:
-		return []layout.KeyHint{{Key: "esc", Label: "close"}}
+		return m.smartFilterBindings()
 	}
-	hints := []layout.KeyHint{
-		{Key: "enter", Label: "detail"},
-		{Key: "s", Label: "seek"},
-		{Key: "P", Label: "partitions"},
-		{Key: "f", Label: "smart filter"},
-		{Key: "r", Label: "refresh"},
-		{Key: "[/]", Label: "prev/next page"},
-		{Key: "/", Label: "search"},
+	return m.listBindings()
+}
+
+// listBindings is the single source of truth for messages list mode.
+func (m *Model) listBindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"enter"}, Label: "open message detail", Category: "Browse", Hint: true, Handler: func() tea.Cmd { m.openDetail(); return nil }},
+		{Keys: []string{"["}, Label: "previous page", Category: "Browse", Hint: true, Handler: m.loadEarlier},
+		{Keys: []string{"]"}, Label: "next page", Category: "Browse", Hint: true, Handler: m.loadLater},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Browse", Hint: true, Handler: m.refresh},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Browse", Handler: m.actBack},
+
+		{Keys: []string{"s"}, Label: "seek (offset / time / strategy)", Category: "Filtering", Hint: true, Handler: func() tea.Cmd { m.openSeek(); return nil }},
+		{Keys: []string{"P"}, Label: "partition filter", Category: "Filtering", Hint: true, Handler: m.openPartitions},
+		{Keys: []string{"f"}, Label: "smart filter (key/value/headers)", Category: "Filtering", Hint: true, Handler: func() tea.Cmd { m.openSmartFilter(); return nil }},
+		// `/` and `ctrl+r` are globals handled by the host — listed here
+		// (advertise-only, no Handler) so they appear in the bottom hints
+		// bar and the `?` overlay alongside screen-local actions.
+		{Keys: []string{"/"}, Label: "live filter on visible rows", Category: "Filtering", Hint: true},
 	}
-	if !m.readOnly {
-		hints = append(hints,
-			layout.KeyHint{Key: "p", Label: "produce"},
-			layout.KeyHint{Key: "R", Label: "resend"},
+	prod := []keymap.Binding{
+		{Keys: []string{"p"}, Label: "produce new message", Category: "Produce", Hint: true, Handler: m.handleProduceKey},
+		{Keys: []string{"R"}, Label: "resend selected message", Category: "Produce", Hint: true, Handler: func() tea.Cmd { m.handleResendKey(); return nil }},
+	}
+	if m.readOnly {
+		// keys still consumed (toast emitted) but hidden from help / hints.
+		for i := range prod {
+			prod[i].Category = ""
+			prod[i].Hint = false
+		}
+	}
+	return append(bs, prod...)
+}
+
+func (m *Model) actBack() tea.Cmd {
+	m.action.Back = true
+	return nil
+}
+
+// seekBindings is the source of truth for the seek popup. At the
+// menu stage we delegate to [components.Menu.Bindings] so the menu
+// component IS the single source of truth for its own keys (arrows,
+// j/k, tab, enter, esc, and 1-N digit shortcuts) — drift between
+// menu.Update and our help is structurally impossible. At the input
+// stage esc/enter dispatch through this slice into the form.
+func (m *Model) seekBindings() []keymap.Binding {
+	if m.seekPopup != nil && m.seekPopup.stage == stageInput {
+		return []keymap.Binding{
+			{Keys: []string{"enter"}, Label: "apply seek", Category: "Seek", Hint: true, Handler: m.actSeekApply},
+			{Keys: []string{"esc"}, Label: "back to strategy menu", Category: "Seek", Hint: true, Handler: m.actSeekBackToMenu},
+			{Keys: []string{"tab"}, Label: "next form field", Category: "Form"},
+		}
+	}
+	if m.seekPopup != nil && m.seekPopup.menu != nil {
+		return m.seekPopup.menu.Bindings("Seek")
+	}
+	return nil
+}
+
+// actSeekApply applies the current input form and dispatches the seek.
+func (m *Model) actSeekApply() tea.Cmd {
+	pop := m.seekPopup
+	state, err := m.parseSeekForm(pop.chosen, pop.form)
+	if err != nil {
+		m.toasts.Push(components.ToastError, err.Error())
+		return nil
+	}
+	m.applySeek(state)
+	m.closeSeek()
+	return m.dispatchSeek()
+}
+
+// actSeekBackToMenu rewinds the wizard from input back to strategy
+// selection without committing.
+func (m *Model) actSeekBackToMenu() tea.Cmd {
+	pop := m.seekPopup
+	pop.stage = stageMenu
+	pop.form = nil
+	pop.menu.Reset()
+	return nil
+}
+
+// partitionsBindings is the source of truth for the partitions popup.
+// The dispatcher is split by focus: top-level (esc/tab/enter) goes
+// through here; the list-pane and input-pane sub-dispatchers route
+// their own keys through this same table.
+func (m *Model) partitionsBindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"enter"}, Label: "apply partition filter", Category: "Partition filter", Hint: true, Handler: m.actPartApply},
+		{Keys: []string{"esc"}, Label: "back", Category: "Partition filter", Hint: true, Handler: m.actPartCancel},
+		{Keys: []string{"tab"}, Label: "switch focus (list ↔ input)", Category: "Partition filter", Hint: true, Handler: m.actPartToggleFocus},
+	}
+	// list-pane navigation only reacts when the list is focused; the
+	// input-pane sub-dispatcher (text editing — left/right/backspace/
+	// delete + literal text) is exempt since those are universal text
+	// keys not surfaced in help.
+	if m.partitionsPopup != nil && m.partitionsPopup.focus == focusList {
+		bs = append(bs,
+			keymap.Binding{Keys: []string{"space", " "}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
+			keymap.Binding{Keys: []string{"a"}, Label: "toggle all", Category: "Partition filter", Handler: m.actPartToggleAll},
+			keymap.Binding{Keys: []string{"up", "k"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
+			keymap.Binding{Keys: []string{"down", "j"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
+			keymap.Binding{Keys: []string{"home"}, Label: "first partition", Category: "Partition filter", Handler: m.actPartCursorTo(0)},
+			keymap.Binding{Keys: []string{"end"}, Label: "last partition", Category: "Partition filter", Handler: m.actPartCursorTo(-1)},
 		)
 	}
-	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
-	return hints
+	return bs
+}
+
+func (m *Model) actPartApply() tea.Cmd {
+	pop := m.partitionsPopup
+	if pop.parseErr != "" {
+		m.toasts.Push(components.ToastError, pop.parseErr)
+		return nil
+	}
+	var parts []int32
+	if pop.partitions != nil {
+		parts = m.selectedPartitions()
+		if len(parts) == len(pop.partitions) {
+			parts = nil
+		}
+	} else {
+		p, err := kafka.ParsePartitionFilter(pop.input)
+		if err != nil {
+			m.toasts.Push(components.ToastError, err.Error())
+			return nil
+		}
+		parts = p
+	}
+	m.filter = parts
+	m.partitionsPopup = nil
+	m.mode = ModeList
+	m.persistView()
+	return m.dispatchSeek()
+}
+
+func (m *Model) actPartCancel() tea.Cmd {
+	m.partitionsPopup = nil
+	m.mode = ModeList
+	return nil
+}
+
+func (m *Model) actPartToggleFocus() tea.Cmd {
+	pop := m.partitionsPopup
+	if pop.focus == focusList {
+		pop.focus = focusInput
+	} else {
+		pop.focus = focusList
+	}
+	return nil
+}
+
+func (m *Model) actPartToggle() tea.Cmd {
+	pop := m.partitionsPopup
+	if len(pop.partitions) == 0 {
+		return nil
+	}
+	p := pop.partitions[pop.listCursor]
+	if pop.selected[p] {
+		delete(pop.selected, p)
+	} else {
+		pop.selected[p] = true
+	}
+	m.syncInputFromSelection()
+	return nil
+}
+
+func (m *Model) actPartToggleAll() tea.Cmd {
+	pop := m.partitionsPopup
+	if len(pop.partitions) == 0 {
+		return nil
+	}
+	if len(pop.selected) == len(pop.partitions) {
+		pop.selected = map[int32]bool{}
+	} else {
+		for _, p := range pop.partitions {
+			pop.selected[p] = true
+		}
+	}
+	m.syncInputFromSelection()
+	return nil
+}
+
+func (m *Model) actPartCursor(delta int) func() tea.Cmd {
+	return func() tea.Cmd {
+		pop := m.partitionsPopup
+		if len(pop.partitions) == 0 {
+			return nil
+		}
+		n := len(pop.partitions)
+		pop.listCursor = (pop.listCursor + delta + n) % n
+		return nil
+	}
+}
+
+func (m *Model) actPartCursorTo(idx int) func() tea.Cmd {
+	return func() tea.Cmd {
+		pop := m.partitionsPopup
+		if len(pop.partitions) == 0 {
+			return nil
+		}
+		if idx < 0 {
+			idx = len(pop.partitions) - 1
+		}
+		pop.listCursor = idx
+		return nil
+	}
+}
+
+// smartFilterBindings drives the help/hints for the smart-filter
+// description popup. The popup currently shows static help text and
+// only dismisses on `esc`.
+func (m *Model) smartFilterBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"esc"}, Label: "close", Category: "Smart filter", Hint: true, Handler: m.actCloseSmartFilter},
+	}
+}
+
+func (m *Model) actCloseSmartFilter() tea.Cmd {
+	m.smartFilterOpen = false
+	m.mode = ModeList
+	return nil
 }
 
 // Update routes messages.
@@ -632,32 +847,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc", "q":
-		m.action.Back = true
-		return nil
-	case "enter":
-		m.openDetail()
-		return nil
-	case "s":
-		m.openSeek()
-		return nil
-	case "P":
-		return m.openPartitions()
-	case "f":
-		m.openSmartFilter()
-		return nil
-	case "[":
-		return m.loadEarlier()
-	case "]":
-		return m.loadLater()
-	case "p":
-		return m.handleProduceKey()
-	case "r":
-		return m.refresh()
-	case "R":
-		m.handleResendKey()
-		return nil
+	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
+		return cmd
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
@@ -1054,23 +1245,8 @@ func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
 
 func (m *Model) handleSeekInput(key tea.KeyPressMsg) tea.Cmd {
 	pop := m.seekPopup
-	switch key.String() {
-	case "esc":
-		// back to stage 1.
-		pop.stage = stageMenu
-		pop.form = nil
-		// reset the menu so a fresh enter is required.
-		pop.menu.Reset()
-		return nil
-	case "enter":
-		state, err := m.parseSeekForm(pop.chosen, pop.form)
-		if err != nil {
-			m.toasts.Push(components.ToastError, err.Error())
-			return nil
-		}
-		m.applySeek(state)
-		m.closeSeek()
-		return m.dispatchSeek()
+	if cmd, ok := keymap.Dispatch(m.seekBindings(), key); ok {
+		return cmd
 	}
 	pop.form, _ = pop.form.Update(key)
 	return nil
@@ -1474,94 +1650,16 @@ func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
 		m.mode = ModeList
 		return nil
 	}
-	pop := m.partitionsPopup
-	switch key.String() {
-	case "esc":
-		m.partitionsPopup = nil
-		m.mode = ModeList
-		return nil
-	case "tab":
-		if pop.focus == focusList {
-			pop.focus = focusInput
-		} else {
-			pop.focus = focusList
-		}
-		return nil
-	case "enter":
-		if pop.parseErr != "" {
-			m.toasts.Push(components.ToastError, pop.parseErr)
-			return nil
-		}
-		// final selection comes from checkboxes when known; falls back to
-		// raw input when partitions failed to load.
-		var parts []int32
-		if pop.partitions != nil {
-			parts = m.selectedPartitions()
-			// "all selected" → treat as empty filter so future fetches
-			// skip the filter entirely.
-			if len(parts) == len(pop.partitions) {
-				parts = nil
-			}
-		} else {
-			p, err := kafka.ParsePartitionFilter(pop.input)
-			if err != nil {
-				m.toasts.Push(components.ToastError, err.Error())
-				return nil
-			}
-			parts = p
-		}
-		m.filter = parts
-		m.partitionsPopup = nil
-		m.mode = ModeList
-		m.persistView()
-		return m.dispatchSeek()
+	if cmd, ok := keymap.Dispatch(m.partitionsBindings(), key); ok {
+		return cmd
 	}
-	if pop.focus == focusList {
-		m.handlePartitionsListKey(key)
-	} else {
+	// universal text-editing keys (left/right/backspace/delete + literal
+	// input) are not in the bindings table — they only matter on the
+	// input-pane focus and are handled by the input sub-dispatcher.
+	if m.partitionsPopup.focus == focusInput {
 		m.handlePartitionsInputKey(key)
 	}
 	return nil
-}
-
-// handlePartitionsListKey routes keys when the checkbox list is focused.
-func (m *Model) handlePartitionsListKey(key tea.KeyPressMsg) {
-	pop := m.partitionsPopup
-	if len(pop.partitions) == 0 {
-		return
-	}
-	switch key.String() {
-	case "up", "k":
-		pop.listCursor = (pop.listCursor - 1 + len(pop.partitions)) % len(pop.partitions)
-	case "down", "j":
-		pop.listCursor = (pop.listCursor + 1) % len(pop.partitions)
-	case "home":
-		pop.listCursor = 0
-	case "end":
-		pop.listCursor = len(pop.partitions) - 1
-	case "space", " ":
-		p := pop.partitions[pop.listCursor]
-		// keep the map clean: either present-with-true or absent. This
-		// way len(pop.selected) == count of actually selected entries.
-		if pop.selected[p] {
-			delete(pop.selected, p)
-		} else {
-			pop.selected[p] = true
-		}
-		m.syncInputFromSelection()
-	case "a":
-		// toggle between "all selected" and "none selected". Any partial
-		// state pulls towards "all" first, mirroring the standard
-		// select-all checkbox in browsers and spreadsheets.
-		if len(pop.selected) == len(pop.partitions) {
-			pop.selected = map[int32]bool{}
-		} else {
-			for _, p := range pop.partitions {
-				pop.selected[p] = true
-			}
-		}
-		m.syncInputFromSelection()
-	}
 }
 
 // handlePartitionsInputKey routes keys when the text input is focused.

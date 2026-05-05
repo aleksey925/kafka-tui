@@ -13,6 +13,7 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -203,30 +204,95 @@ func (r *ResetModel) Err() string { return r.err }
 // SetSize updates width/height.
 func (r *ResetModel) SetSize(w, h int) { r.width, r.height = w, h }
 
-// KeyHints returns the screen-specific hints.
+// KeyHints derives bottom-row entries from the per-step bindings table.
 func (r *ResetModel) KeyHints() []layout.KeyHint {
+	return layout.HintsFromBindings(r.bindings())
+}
+
+// bindings is the single source of truth for reset-flow shortcuts.
+// The dispatcher iterates this same slice — adding a key requires
+// exactly one append. Form-internal text editing (left/right/etc. in
+// the params form) is exempt: those keys are owned by the form
+// component and not dispatched here.
+func (r *ResetModel) bindings() []keymap.Binding {
 	switch r.step {
 	case StepStrategy:
-		return []layout.KeyHint{
-			{Key: "↑/↓", Label: "select"},
-			{Key: "enter", Label: "next"},
-			{Key: "esc", Label: "cancel"},
+		return []keymap.Binding{
+			{Keys: []string{"j", "down"}, Label: "next strategy", Category: "Reset", Handler: r.actStrategyMove(+1)},
+			{Keys: []string{"k", "up"}, Label: "previous strategy", Category: "Reset", Handler: r.actStrategyMove(-1)},
+			{Keys: []string{"enter"}, Label: "next step", Category: "Reset", Hint: true, Handler: r.actAdvanceFromStrategy},
+			{Keys: []string{"esc"}, Label: "cancel reset", Category: "Reset", Hint: true, Handler: r.actCancel},
 		}
 	case StepParams:
-		return []layout.KeyHint{
-			{Key: "tab", Label: "next field"},
-			{Key: "enter", Label: "next"},
-			{Key: "esc", Label: "cancel"},
+		return []keymap.Binding{
+			{Keys: []string{"tab"}, Label: "next form field", Category: "Reset"},
+			{Keys: []string{"enter"}, Label: "next step", Category: "Reset", Hint: true, Handler: r.actAdvanceFromParams},
+			{Keys: []string{"esc"}, Label: "cancel reset", Category: "Reset", Hint: true, Handler: r.actCancel},
 		}
 	case StepPreview:
-		return []layout.KeyHint{
-			{Key: "y", Label: "commit"},
-			{Key: "n/esc", Label: "cancel"},
+		return []keymap.Binding{
+			{Keys: []string{"y", "Y"}, Label: "commit reset", Category: "Reset", Hint: true, Handler: r.actCommit},
+			{Keys: []string{"n", "N"}, Label: "cancel reset", Category: "Reset", Hint: true, Handler: r.actCancel},
+			{Keys: []string{"esc"}, Label: "cancel reset", Category: "Reset", Handler: r.actCancel},
 		}
 	case StepDone:
 		return nil
 	}
 	return nil
+}
+
+func (r *ResetModel) actCancel() tea.Cmd {
+	r.action.Cancel = true
+	return nil
+}
+
+func (r *ResetModel) actStrategyMove(delta int) func() tea.Cmd {
+	return func() tea.Cmd {
+		strategies := resetStrategies()
+		idx := 0
+		for i, s := range strategies {
+			if s == r.strategy {
+				idx = i
+				break
+			}
+		}
+		idx = (idx + delta + len(strategies)) % len(strategies)
+		r.strategy = strategies[idx]
+		return nil
+	}
+}
+
+func (r *ResetModel) actAdvanceFromStrategy() tea.Cmd {
+	_, cmd := r.advanceFromStrategy()
+	return cmd
+}
+
+func (r *ResetModel) actAdvanceFromParams() tea.Cmd {
+	_, cmd := r.dispatchAfterParams()
+	return cmd
+}
+
+func (r *ResetModel) actCommit() tea.Cmd {
+	spec, err := r.spec()
+	if err != nil {
+		r.err = err.Error()
+		return nil
+	}
+	r.committing = true
+	return commitCmd(r.svc, r.group, spec)
+}
+
+// resetStrategies is the canonical order of reset strategies presented
+// in the StepStrategy picker. Hoisted so the strategy-move handler and
+// the renderer share the same source.
+func resetStrategies() []kafka.ResetStrategy {
+	return []kafka.ResetStrategy{
+		kafka.ResetEarliest,
+		kafka.ResetLatest,
+		kafka.ResetShift,
+		kafka.ResetTimestamp,
+		kafka.ResetSpecific,
+	}
 }
 
 // Update routes a message into the reset model.
@@ -245,47 +311,14 @@ func (r *ResetModel) Update(msg tea.Msg) (*ResetModel, tea.Cmd) {
 }
 
 func (r *ResetModel) handleKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
-	if key.String() == "esc" {
-		r.action.Cancel = true
-		return r, nil
+	if cmd, ok := keymap.Dispatch(r.bindings(), key); ok {
+		return r, cmd
 	}
-	switch r.step {
-	case StepStrategy:
-		return r.handleStrategyKey(key)
-	case StepParams:
-		return r.handleParamsKey(key)
-	case StepPreview:
-		return r.handlePreviewKey(key)
-	case StepDone:
-		return r, nil
-	}
-	return r, nil
-}
-
-func (r *ResetModel) handleStrategyKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
-	strategies := []kafka.ResetStrategy{
-		kafka.ResetEarliest,
-		kafka.ResetLatest,
-		kafka.ResetShift,
-		kafka.ResetTimestamp,
-		kafka.ResetSpecific,
-	}
-	idx := 0
-	for i, s := range strategies {
-		if s == r.strategy {
-			idx = i
-			break
-		}
-	}
-	switch key.String() {
-	case "j", "down":
-		idx = (idx + 1) % len(strategies)
-		r.strategy = strategies[idx]
-	case "k", "up":
-		idx = (idx - 1 + len(strategies)) % len(strategies)
-		r.strategy = strategies[idx]
-	case "enter":
-		return r.advanceFromStrategy()
+	// the params step forwards unmatched keys to the form so the user
+	// can type into text inputs.
+	if r.step == StepParams && r.form != nil {
+		f, _ := r.form.Update(key)
+		r.form = f
 	}
 	return r, nil
 }
@@ -324,17 +357,6 @@ func (r *ResetModel) buildParamsForm() *components.Form {
 	return nil
 }
 
-func (r *ResetModel) handleParamsKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
-	if key.String() == "enter" {
-		return r.dispatchAfterParams()
-	}
-	if r.form != nil {
-		f, _ := r.form.Update(key)
-		r.form = f
-	}
-	return r, nil
-}
-
 // dispatchAfterParams validates the params and either dispatches the preview
 // (normal flow) or directly commits (express flow).
 func (r *ResetModel) dispatchAfterParams() (*ResetModel, tea.Cmd) {
@@ -352,23 +374,6 @@ func (r *ResetModel) dispatchAfterParams() (*ResetModel, tea.Cmd) {
 	r.previewing = true
 	r.step = StepPreview
 	return r, previewCmd(r.svc, r.group, spec)
-}
-
-func (r *ResetModel) handlePreviewKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
-	switch strings.ToLower(key.String()) {
-	case "y":
-		spec, err := r.spec()
-		if err != nil {
-			r.err = err.Error()
-			return r, nil
-		}
-		r.committing = true
-		return r, commitCmd(r.svc, r.group, spec)
-	case "n":
-		r.action.Cancel = true
-		return r, nil
-	}
-	return r, nil
 }
 
 func (r *ResetModel) handlePreview(msg ResetPreviewMsg) {

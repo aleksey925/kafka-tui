@@ -12,6 +12,7 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -186,22 +187,72 @@ func (d *DetailModel) SetSize(w, h int) {
 // title block (group name, members, coordinator). Used to size the table.
 const headerLineCount = 4
 
-// KeyHints returns the screen-specific hints.
+// KeyHints derives bottom-row entries from the bindings table.
 func (d *DetailModel) KeyHints() []layout.KeyHint {
-	hints := []layout.KeyHint{
-		{Key: "tab", Label: "grouped/flat"},
-		{Key: "t", Label: "topics"},
-		{Key: "/", Label: "search"},
+	return layout.HintsFromBindings(d.bindings())
+}
+
+// bindings is the single source of truth for group-detail shortcuts.
+func (d *DetailModel) bindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "toggle grouped / flat view", Category: "Group", Hint: true, Handler: d.actToggleSort},
+		{Keys: []string{"t"}, Label: "jump to topics for this group", Category: "Group", Hint: true, Handler: d.actTopicJump},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Handler: d.actRefresh},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Group", Handler: d.actBack},
 	}
-	if !d.readOnly {
-		hints = append(hints,
-			layout.KeyHint{Key: "R", Label: "reset"},
-			layout.KeyHint{Key: "shift+r", Label: "express"},
-			layout.KeyHint{Key: "D", Label: "delete"},
-		)
+	mut := []keymap.Binding{
+		{Keys: []string{"R"}, Label: "reset offsets (full flow)", Category: "Mutating", Hint: true, Handler: d.actOpenReset(false)},
+		{Keys: []string{"shift+r"}, Label: "reset offsets (express)", Category: "Mutating", Hint: true, Handler: d.actOpenReset(true)},
+		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: d.actDelete},
 	}
-	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
-	return hints
+	if d.readOnly {
+		for i := range mut {
+			mut[i].Category = ""
+			mut[i].Hint = false
+		}
+	}
+	bs = append(bs, mut...)
+	bs = append(bs,
+		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Group", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Group", Hint: true},
+	)
+	return bs
+}
+
+func (d *DetailModel) actToggleSort() tea.Cmd { d.toggleSort(); return nil }
+func (d *DetailModel) actTopicJump() tea.Cmd  { d.handleTopicJump(); return nil }
+func (d *DetailModel) actBack() tea.Cmd       { d.action.Back = true; return nil }
+
+func (d *DetailModel) actOpenReset(express bool) func() tea.Cmd {
+	return func() tea.Cmd {
+		if d.readOnly {
+			d.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
+			return nil
+		}
+		if express {
+			d.action.OpenResetExpress = true
+		} else {
+			d.action.OpenReset = true
+		}
+		return nil
+	}
+}
+
+func (d *DetailModel) actDelete() tea.Cmd {
+	if d.readOnly {
+		d.toasts.Push(components.ToastWarning, "cluster is read-only — delete blocked")
+		return nil
+	}
+	d.action.Delete = true
+	return nil
+}
+
+func (d *DetailModel) actRefresh() tea.Cmd {
+	if d.loading {
+		return nil
+	}
+	d.manualRefresh = true
+	return d.RefreshCmd()
 }
 
 // Update routes a message into the detail view.
@@ -225,47 +276,7 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 		d.table = tbl
 		return d, nil
 	}
-	switch key.String() {
-	case "esc", "q":
-		d.action.Back = true
-		return d, nil
-	case "tab":
-		d.toggleSort()
-		return d, nil
-	case "R":
-		if d.readOnly {
-			d.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
-			return d, nil
-		}
-		d.action.OpenReset = true
-		return d, nil
-	case "shift+r":
-		if d.readOnly {
-			d.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
-			return d, nil
-		}
-		d.action.OpenResetExpress = true
-		return d, nil
-	case "D":
-		if d.readOnly {
-			d.toasts.Push(components.ToastWarning, "cluster is read-only — delete blocked")
-			return d, nil
-		}
-		d.action.Delete = true
-		return d, nil
-	case "t":
-		d.handleTopicJump()
-		return d, nil
-	case "r":
-		// skip duplicate loads — pressing `r` while a previous fetch (manual
-		// or from the auto-refresh tick) is in flight would queue redundant
-		// RPCs and risk attaching the manualRefresh toast to the auto-tick
-		// response.
-		if d.loading {
-			return d, nil
-		}
-		d.manualRefresh = true
-		cmd := d.RefreshCmd()
+	if cmd, ok := keymap.Dispatch(d.bindings(), key); ok {
 		return d, cmd
 	}
 	tbl, _ := d.table.Update(key)

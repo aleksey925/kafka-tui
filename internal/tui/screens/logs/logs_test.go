@@ -269,7 +269,7 @@ func TestKeyHints_IncludesExpectedLabels(t *testing.T) {
 		labels = append(labels, h.Label)
 	}
 	got := strings.Join(labels, ",")
-	for _, want := range []string{"follow", "search", "next/prev match", "back"} {
+	for _, want := range []string{"follow", "filter", "next match", "previous match"} {
 		assert.Contains(t, got, want)
 	}
 }

@@ -434,9 +434,9 @@ func TestKeyHints_ContainExpectedLabels(t *testing.T) {
 	got := strings.Join(labels, ",")
 	assert.Contains(t, got, "connect")
 	assert.Contains(t, got, "test")
-	assert.Contains(t, got, "refresh")
+	assert.Contains(t, got, "reload")
 	assert.Contains(t, got, "edit")
-	assert.Contains(t, got, "search")
+	assert.Contains(t, got, "filter")
 }
 
 func TestSearch_FiltersTable(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -163,6 +164,44 @@ func (m *Menu) Update(msg tea.Msg) (*Menu, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// Bindings returns the keystrokes Update() recognizes, in a form
+// host screens can append into their own help/hints. All entries are
+// advertise-only (no Handler) — dispatch is owned by Update; this
+// table exists so the menu's keys and the screen's documentation
+// share one source of truth and can't drift apart.
+//
+// The "category" parameter is the help section the screen wants
+// these to appear under (e.g. "Seek"). Passing an empty string drops
+// every entry from the help overlay; entries flagged Hint=true
+// (currently `enter` and `esc`) still appear in the bottom hints
+// bar, the rest are hidden entirely.
+func (m *Menu) Bindings(category string) []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"j", "down", "tab"}, Label: "next item", Category: category},
+		{Keys: []string{"k", "up", "shift+tab"}, Label: "previous item", Category: category},
+		{Keys: []string{"home"}, Label: "first item", Category: category},
+		{Keys: []string{"end"}, Label: "last item", Category: category},
+		{Keys: []string{"enter"}, Label: "select", Category: category, Hint: true},
+		{Keys: []string{"esc"}, Label: "cancel", Category: category, Hint: true},
+	}
+	// digit shortcuts are gated on item count — the menu only honors
+	// 1..N where N = min(9, len(items)). Listing only valid digits
+	// keeps the help honest when the menu has fewer than 9 rows.
+	n := min(len(m.items), 9)
+	if n > 0 {
+		digits := make([]string, n)
+		for i := range n {
+			digits[i] = strconv.Itoa(i + 1)
+		}
+		bs = append(bs, keymap.Binding{
+			Keys:     digits,
+			Label:    "jump to item by index",
+			Category: category,
+		})
+	}
+	return bs
 }
 
 // View renders the menu body (title + numbered items). Width <=0 means

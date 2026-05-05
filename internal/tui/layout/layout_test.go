@@ -5,9 +5,27 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
+
+func TestHintsFromBindings_OnlyEmitsHintFlaggedEntries(t *testing.T) {
+	// arrange
+	bs := []keymap.Binding{
+		{Keys: []string{"a"}, Label: "alpha", Hint: true},
+		{Keys: []string{"b"}, Label: "bravo"},
+		{Keys: []string{"c", "C"}, Label: "charlie", Hint: true},
+	}
+
+	// act
+	got := layout.HintsFromBindings(bs)
+
+	// assert
+	assert.Len(t, got, 2)
+	assert.Equal(t, "a", got[0].Key)
+	assert.Equal(t, "c / C", got[1].Key)
+}
 
 func TestHeader_RendersAllParts(t *testing.T) {
 	s := theme.DefaultStyles()

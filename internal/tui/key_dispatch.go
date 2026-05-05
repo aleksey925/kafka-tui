@@ -26,10 +26,10 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleNormalKey runs the default-mode pipeline: ctrl+c always quits,
-// raw-input screens get every key as a literal, then the global
-// shortcuts (`:` / `/` / `?` / `ctrl+r`) get a chance, then the esc
-// filter-clear cascade, then we forward to the active screen and use
-// the q/esc fallback only when nothing claimed the key.
+// raw-input screens get every key as a literal (so `:` / `/` / `?` /
+// `ctrl+r` reach the form), then the global shortcuts get a chance,
+// then the esc filter-clear cascade, then we forward to the active
+// screen and use the q/esc fallback only when nothing claimed the key.
 func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is always global so the user can quit even from inside a form.
 	if key.String() == "ctrl+c" {
@@ -38,8 +38,9 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	// when the active screen is editing free-form text (produce form, topic
 	// create/clone, reset params), route every key to it as a literal so
-	// `:`, `/`, `?`, `ctrl+r` reach the form instead of triggering global
-	// shortcuts.
+	// global shortcuts don't interfere with typing. Form-screens narrow
+	// this to their actively-editing sub-state — see [RawInputs] — so
+	// shortcuts like `?` still work outside the inner edit mode.
 	if m.active != nil && screenWantsRawInput(m.active) {
 		cmd := m.forwardToActive(key)
 		routeCmd := m.routeActiveAction()
@@ -104,9 +105,20 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 // screen returned no command and no Action — i.e. it didn't claim the
 // key for an overlay or transition. Returns ok=false for keys outside
 // q/esc, leaving the caller to teaBatch the screen's nil cmds.
+//
+// `hadOverlay` mirrors the same guard for both keys: when the screen
+// reports an active overlay (forms, confirms, modal sub-modes), q/esc
+// must NOT pop the screen. A user inside an overlay typing `q` should
+// at worst no-op, never get kicked back to the previous screen.
 func (m *Model) handleQuitFallback(key tea.KeyPressMsg, hadOverlay bool) (tea.Cmd, bool) {
 	switch key.String() {
 	case "q":
+		if hadOverlay {
+			// the screen has an active overlay — `q` must not pop it
+			// out from under the user. Forms ignore literal `q` already;
+			// modals like confirm dialogs only react to y/n.
+			return nil, true
+		}
 		// `q` quits at the root, otherwise pops a screen.
 		if m.router.Depth() <= 1 {
 			m.quit = true

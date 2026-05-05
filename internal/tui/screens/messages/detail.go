@@ -17,6 +17,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -202,22 +204,112 @@ func (d *DetailModel) Current() kafka.Message {
 	return d.messages[d.index]
 }
 
-// KeyHints returns the screen-specific hints.
+// KeyHints derives the bottom-row entries from the bindings table.
 func (d *DetailModel) KeyHints() []layout.KeyHint {
-	hints := []layout.KeyHint{
-		{Key: "n/p", Label: "next/prev"},
-		{Key: "1/2/3", Label: "json/raw/hex"},
-		{Key: "j/k", Label: "scroll"},
-		{Key: "w", Label: "wrap"},
-		{Key: "y", Label: "copy"},
-		{Key: "s/S", Label: "save"},
-		{Key: "e", Label: "$EDITOR"},
+	return layout.HintsFromBindings(d.bindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the same
+// bindings table used by the dispatcher — guaranteed in sync.
+func (d *DetailModel) HelpSections() []help.Section {
+	return help.SectionsFromBindings(d.bindings())
+}
+
+// bindings is the single source of truth for detail-view shortcuts.
+// Every entry is dispatched through [keymap.Dispatch] — there is no
+// parallel switch statement. Adding a key requires exactly one
+// append, so help/hints can never drift from the dispatcher.
+func (d *DetailModel) bindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"n"}, Label: "next message", Category: "Browse", Hint: true, Handler: d.actNext},
+		{Keys: []string{"p"}, Label: "previous message", Category: "Browse", Hint: true, Handler: d.actPrev},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Browse", Handler: d.actBack},
+
+		{Keys: []string{"1"}, Label: "JSON view", Category: "View", Hint: true, Handler: d.actViewJSON},
+		{Keys: []string{"2"}, Label: "raw view", Category: "View", Hint: true, Handler: d.actViewRaw},
+		{Keys: []string{"3"}, Label: "hex view", Category: "View", Hint: true, Handler: d.actViewHex},
+		{Keys: []string{"w"}, Label: "toggle wrap", Category: "View", Hint: true, Handler: d.actToggleWrap},
+
+		{Keys: []string{"j", "down"}, Label: "scroll down", Category: "Movement", Handler: d.actScrollDown},
+		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: d.actScrollUp},
+		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: d.actPageDown},
+		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: d.actPageUp},
+		// `gg` is a two-key chord — first press arms gPrimed, second
+		// `g` (still routed through this handler since the dispatcher
+		// iterates the same table) fires scrollTop and disarms.
+		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Handler: d.actChordG},
+		{Keys: []string{"G", "end"}, Label: "scroll to bottom", Category: "Movement", Handler: d.actScrollBottom},
+		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Handler: d.actScrollTop},
+		{Keys: []string{"h", "left"}, Label: "scroll left (no-wrap)", Category: "Movement", Handler: d.actHScrollLeft},
+		{Keys: []string{"l", "right"}, Label: "scroll right (no-wrap)", Category: "Movement", Handler: d.actHScrollRight},
+
+		{Keys: []string{"y"}, Label: "copy record", Category: "Export", Hint: true, Handler: d.actCopy},
+		{Keys: []string{"s"}, Label: "save value to file", Category: "Export", Hint: true, Handler: d.actSaveValue},
+		{Keys: []string{"S"}, Label: "save full JSON", Category: "Export", Handler: d.actSaveFull},
+		{Keys: []string{"e"}, Label: "open in $EDITOR", Category: "Export", Handler: d.actEditor},
 	}
-	if !d.readOnly {
-		hints = append(hints, layout.KeyHint{Key: "R", Label: "resend"})
+	// `R` stays bound in read-only mode too — actResend → resend()
+	// gates internally and emits a warn toast, so the user gets feedback
+	// instead of a silent no-op. Category / Hint are cleared so the
+	// dead-on-arrival action doesn't appear in help or the hints bar.
+	resendBinding := keymap.Binding{
+		Keys: []string{"R"}, Label: "resend message",
+		Category: "Produce", Hint: true, Handler: d.actResend,
 	}
-	hints = append(hints, layout.KeyHint{Key: "esc", Label: "back"})
-	return hints
+	if d.readOnly {
+		resendBinding.Category = ""
+		resendBinding.Hint = false
+	}
+	bs = append(bs, resendBinding)
+	return bs
+}
+
+func (d *DetailModel) actNext() tea.Cmd       { d.move(+1); return nil }
+func (d *DetailModel) actPrev() tea.Cmd       { d.move(-1); return nil }
+func (d *DetailModel) actBack() tea.Cmd       { d.action.Back = true; return nil }
+func (d *DetailModel) actViewJSON() tea.Cmd   { d.setView(ViewJSON); return nil }
+func (d *DetailModel) actViewRaw() tea.Cmd    { d.setView(ViewRaw); return nil }
+func (d *DetailModel) actViewHex() tea.Cmd    { d.setView(ViewHex); return nil }
+func (d *DetailModel) actToggleWrap() tea.Cmd { d.toggleWrap(); return nil }
+func (d *DetailModel) actCopy() tea.Cmd       { d.copyRecord(); return nil }
+func (d *DetailModel) actSaveValue() tea.Cmd  { d.saveValue(); return nil }
+func (d *DetailModel) actSaveFull() tea.Cmd   { d.saveFullJSON(); return nil }
+func (d *DetailModel) actEditor() tea.Cmd     { d.openEditor(); return nil }
+func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
+
+func (d *DetailModel) actScrollDown() tea.Cmd   { d.scrollBy(+1); return nil }
+func (d *DetailModel) actScrollUp() tea.Cmd     { d.scrollBy(-1); return nil }
+func (d *DetailModel) actPageDown() tea.Cmd     { d.scrollBy(+d.pageStep()); return nil }
+func (d *DetailModel) actPageUp() tea.Cmd       { d.scrollBy(-d.pageStep()); return nil }
+func (d *DetailModel) actScrollBottom() tea.Cmd { d.scrollBottom(); return nil }
+func (d *DetailModel) actScrollTop() tea.Cmd    { d.scrollTop(); return nil }
+
+func (d *DetailModel) actHScrollLeft() tea.Cmd {
+	if !d.wrap {
+		d.hScrollBy(-d.hStep())
+	}
+	return nil
+}
+
+func (d *DetailModel) actHScrollRight() tea.Cmd {
+	if !d.wrap {
+		d.hScrollBy(+d.hStep())
+	}
+	return nil
+}
+
+// actChordG handles the `gg` two-key chord. The first `g` arms the
+// chord, the second `g` (still routed through this same handler
+// because the dispatcher iterates the bindings table on every key)
+// fires scrollTop and disarms.
+func (d *DetailModel) actChordG() tea.Cmd {
+	if d.gPrimed {
+		d.gPrimed = false
+		d.scrollTop()
+		return nil
+	}
+	d.gPrimed = true
+	return nil
 }
 
 // Update routes a key message into the detail view.
@@ -226,77 +318,13 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	if !ok {
 		return d, nil
 	}
-	str := key.String()
-	if d.gPrimed {
+	// any non-`g` key disarms the gg chord — pressing `g` then anything
+	// else should not silently arm the next `g` press.
+	if d.gPrimed && key.String() != "g" {
 		d.gPrimed = false
-		if str == "g" {
-			d.scrollTop()
-			return d, nil
-		}
-		// any other key after `g` falls through to normal handling.
 	}
-	if d.handleScrollKey(str) {
-		return d, nil
-	}
-	switch str {
-	case "esc", "q":
-		d.action.Back = true
-	case "n":
-		d.move(+1)
-	case "p":
-		d.move(-1)
-	case "1":
-		d.setView(ViewJSON)
-	case "2":
-		d.setView(ViewRaw)
-	case "3":
-		d.setView(ViewHex)
-	case "y":
-		d.copyRecord()
-	case "s":
-		d.saveValue()
-	case "S":
-		d.saveFullJSON()
-	case "e":
-		d.openEditor()
-	case "R":
-		d.resend()
-	case "w":
-		d.toggleWrap()
-	}
+	keymap.Dispatch(d.bindings(), key)
 	return d, nil
-}
-
-// handleScrollKey routes the viewport-navigation keys. Returns true when the
-// key was consumed; non-scroll keys fall through to the main switch.
-func (d *DetailModel) handleScrollKey(str string) bool {
-	switch str {
-	case "j", "down":
-		d.scrollBy(+1)
-	case "k", "up":
-		d.scrollBy(-1)
-	case "ctrl+f", "pgdown":
-		d.scrollBy(+d.pageStep())
-	case "ctrl+b", "pgup":
-		d.scrollBy(-d.pageStep())
-	case "g":
-		d.gPrimed = true
-	case "G", "end":
-		d.scrollBottom()
-	case "home":
-		d.scrollTop()
-	case "h", "left":
-		if !d.wrap {
-			d.hScrollBy(-d.hStep())
-		}
-	case "l", "right":
-		if !d.wrap {
-			d.hScrollBy(+d.hStep())
-		}
-	default:
-		return false
-	}
-	return true
 }
 
 func (d *DetailModel) move(delta int) {

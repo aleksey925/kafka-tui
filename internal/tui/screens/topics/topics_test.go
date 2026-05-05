@@ -229,16 +229,28 @@ func TestWantsRawInput_TracksFormModes(t *testing.T) {
 
 	assert.False(t, m.WantsRawInput(), "list mode does not edit text")
 
+	// open the create form — it starts in NORMAL, so raw-input must
+	// stay off (so global shortcuts like `?` keep working).
 	_ = m.Update(keyPress("n"))
 	require.Equal(t, topics.ModeCreate, m.CurrentMode())
-	assert.True(t, m.WantsRawInput(), "create form edits text")
+	assert.False(t, m.WantsRawInput(), "create form in NORMAL is not raw")
 
+	// enter INSERT — typing into the name field; raw-input takes over.
+	_ = m.Update(keyPress("enter"))
+	assert.True(t, m.WantsRawInput(), "create form in INSERT is raw")
+
+	// esc out of INSERT (back to form NORMAL) → raw-input lifts.
 	_ = m.Update(keyPress("esc"))
+	assert.False(t, m.WantsRawInput(), "leaving INSERT lifts raw-input")
+
+	// esc again closes the create overlay; back at the list.
+	_ = m.Update(keyPress("esc"))
+	require.Equal(t, topics.ModeList, m.CurrentMode())
 	assert.False(t, m.WantsRawInput())
 
 	_ = m.Update(keyPress("y"))
 	require.Equal(t, topics.ModeClone, m.CurrentMode())
-	assert.True(t, m.WantsRawInput(), "clone form edits text")
+	assert.False(t, m.WantsRawInput(), "clone form starts in NORMAL")
 }
 
 func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {

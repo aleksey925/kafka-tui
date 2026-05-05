@@ -10,9 +10,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
 
@@ -166,42 +166,31 @@ func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
 	}, body)
 }
 
+// renderHelp draws the full-screen `?` overlay. The screen-specific
+// sections come first (so the user sees what they care about right
+// away); the host-owned General/Commands/Navigation blocks follow.
 func (m *Model) renderHelp() string {
-	title := m.styles.HelpTitle.Render("Help")
-	versionLine := m.styles.StatusInfo.Render(m.build.Display())
-
-	globalHints := []layout.KeyHint{
-		{Key: ":", Label: "open command bar"},
-		{Key: "/", Label: "open search"},
-		{Key: "?", Label: "toggle help"},
-		{Key: "ctrl+r", Label: "toggle auto-refresh"},
-		{Key: "esc/q", Label: "back / quit"},
-		{Key: "ctrl+c", Label: "quit"},
+	var sections []help.Section
+	if m.active != nil {
+		sections = append(sections, screenHelpSections(m.active)...)
 	}
-	commands := []layout.KeyHint{
-		{Key: ":topics", Label: "topics list"},
-		{Key: ":groups", Label: "consumer groups"},
-		{Key: ":clusters", Label: "cluster list"},
-		{Key: ":cluster <name>", Label: "switch cluster"},
-		{Key: ":logs", Label: "log viewer"},
-		{Key: ":config sources", Label: "config provenance"},
+	sections = append(sections, help.GeneralSections()...)
+
+	screenName := ""
+	if m.active != nil {
+		screenName = m.active.Title()
 	}
 
-	body := strings.Join([]string{
-		title,
-		"",
-		m.styles.HelpTitle.Render("Global"),
-		layout.KeyHints(m.styles, globalHints),
-		"",
-		m.styles.HelpTitle.Render("Commands"),
-		layout.KeyHints(m.styles, commands),
-	}, "\n")
-
-	if m.width > 0 {
-		footer := lipgloss.PlaceHorizontal(m.width, lipgloss.Right, versionLine)
-		body += "\n\n" + footer
-	} else {
-		body += "\n\n" + versionLine
+	width := m.width
+	if width <= 0 {
+		width = 80
 	}
-	return body
+	return help.Render(help.Options{
+		Width:    width,
+		Height:   m.height,
+		Screen:   screenName,
+		Sections: sections,
+		Footer:   m.build.Display(),
+		Styles:   m.styles,
+	})
 }

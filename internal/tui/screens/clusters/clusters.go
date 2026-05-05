@@ -23,6 +23,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -418,17 +420,39 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific hints shown at the bottom row.
+// KeyHints derives the bottom-row entries from the active bindings
+// table — chooser when its overlay is open, list mode otherwise.
 func (m *Model) KeyHints() []layout.KeyHint {
-	return []layout.KeyHint{
-		{Key: "enter", Label: "connect"},
-		{Key: "t", Label: "test"},
-		{Key: "T", Label: "test all"},
-		{Key: "r", Label: "refresh"},
-		{Key: "e", Label: "edit"},
-		{Key: "/", Label: "search"},
+	return layout.HintsFromBindings(m.activeBindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the same source.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.activeBindings())
+}
+
+func (m *Model) activeBindings() []keymap.Binding {
+	if m.editing {
+		return m.editChooserBindings()
+	}
+	return m.listBindings()
+}
+
+// listBindings is the single source of truth for cluster-list shortcuts.
+func (m *Model) listBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"enter"}, Label: "connect to cluster", Category: "Cluster", Hint: true, Handler: m.connectCurrent},
+		{Keys: []string{"t"}, Label: "test connectivity", Category: "Cluster", Hint: true, Handler: m.testCurrent},
+		{Keys: []string{"T"}, Label: "test all clusters", Category: "Cluster", Hint: true, Handler: m.testAll},
+		{Keys: []string{"r"}, Label: "reload config from disk", Category: "Cluster", Hint: true, Handler: m.actReload},
+		{Keys: []string{"e"}, Label: "edit clusters.yaml", Category: "Cluster", Hint: true, Handler: m.openEditChooser},
+		{Keys: []string{"q"}, Label: "quit", Category: "Cluster", Handler: m.actQuit},
+		{Keys: []string{"/"}, Label: "filter rows", Category: "Cluster", Hint: true},
 	}
 }
+
+func (m *Model) actReload() tea.Cmd { m.action.Reload = true; return nil }
+func (m *Model) actQuit() tea.Cmd   { m.action.Quit = true; return nil }
 
 // Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
@@ -462,25 +486,12 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		_, _ = m.toasts.Update(key)
 	}
 
-	switch key.String() {
-	case "enter":
-		return m.connectCurrent()
-	case "t":
-		return m.testCurrent()
-	case "T":
-		return m.testAll()
-	case "r":
-		// re-read config from disk; host will SetClusters on success.
-		m.action.Reload = true
-		return nil
-	case "e":
-		return m.openEditChooser()
-	case "q":
-		m.action.Quit = true
-		return nil
-	case "esc":
+	if key.String() == "esc" {
 		// no-op on the root screen — esc must not quit the app.
 		return nil
+	}
+	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
+		return cmd
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
@@ -488,30 +499,43 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleEditChooserKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc", "q":
-		m.editing = false
-		return nil
-	case "j", "down":
-		if len(m.editChoices) > 0 {
-			m.editIdx = (m.editIdx + 1) % len(m.editChoices)
-		}
-		return nil
-	case "k", "up":
-		if len(m.editChoices) > 0 {
-			m.editIdx = (m.editIdx - 1 + len(m.editChoices)) % len(m.editChoices)
-		}
-		return nil
-	case "enter":
+	cmd, _ := keymap.Dispatch(m.editChooserBindings(), key)
+	return cmd
+}
+
+// editChooserBindings drives the inline `e` chooser overlay (one row
+// per discovered clusters.yaml). The dispatcher iterates this same
+// slice — adding a chooser key requires one append.
+func (m *Model) editChooserBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Edit chooser", Hint: true, Handler: m.actChooserCancel},
+		{Keys: []string{"j", "down"}, Label: "next target", Category: "Edit chooser", Handler: m.actChooserMove(+1)},
+		{Keys: []string{"k", "up"}, Label: "previous target", Category: "Edit chooser", Handler: m.actChooserMove(-1)},
+		{Keys: []string{"enter"}, Label: "open in $EDITOR", Category: "Edit chooser", Hint: true, Handler: m.actChooserPick},
+	}
+}
+
+func (m *Model) actChooserCancel() tea.Cmd { m.editing = false; return nil }
+
+func (m *Model) actChooserMove(delta int) func() tea.Cmd {
+	return func() tea.Cmd {
 		if len(m.editChoices) == 0 {
-			m.editing = false
 			return nil
 		}
-		path := m.editChoices[m.editIdx].Path
-		m.editing = false
-		return m.runEditor(path)
+		n := len(m.editChoices)
+		m.editIdx = (m.editIdx + delta + n) % n
+		return nil
 	}
-	return nil
+}
+
+func (m *Model) actChooserPick() tea.Cmd {
+	if len(m.editChoices) == 0 {
+		m.editing = false
+		return nil
+	}
+	path := m.editChoices[m.editIdx].Path
+	m.editing = false
+	return m.runEditor(path)
 }
 
 // openEditChooser is invoked on the `e` hotkey. With multiple targets it

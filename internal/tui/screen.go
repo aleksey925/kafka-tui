@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
 
@@ -102,6 +103,15 @@ type RawInputs interface {
 // after every Update.
 type Flasher interface {
 	LatestFlash() (components.Toast, bool)
+}
+
+// HelpProvider is implemented by screens that want to contribute their
+// own categorized key/description sections to the `?` overlay (k9s-style).
+// The bottom hints bar is intentionally narrow (≤ 6 entries) — the help
+// overlay is where the full set of bindings lives. Screens that don't
+// implement this interface fall back to the global sections only.
+type HelpProvider interface {
+	HelpSections() []help.Section
 }
 
 // Closer is implemented by screens that own background resources
@@ -204,6 +214,15 @@ func screenLatestFlash(s Screen) (components.Toast, bool) {
 		return f.LatestFlash()
 	}
 	return components.Toast{}, false
+}
+
+// screenHelpSections returns the screen's contributed help categories,
+// or nil when the screen does not implement [HelpProvider].
+func screenHelpSections(s Screen) []help.Section {
+	if hp, ok := s.(HelpProvider); ok {
+		return hp.HelpSections()
+	}
+	return nil
 }
 
 // closeScreen invokes [Closer.Close] when the screen owns background

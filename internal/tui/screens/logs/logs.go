@@ -17,6 +17,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -187,21 +189,67 @@ func (m *Model) SetSize(w, h int) {
 	m.clampViewport()
 }
 
-// KeyHints returns the screen-specific hints.
+// KeyHints derives bottom-row entries from the bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
-	hint := "f"
-	label := "follow"
+	return layout.HintsFromBindings(m.bindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the dispatcher's
+// bindings table.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.bindings())
+}
+
+// bindings is the single source of truth for log-viewer shortcuts.
+func (m *Model) bindings() []keymap.Binding {
+	followLabel := "follow tail"
 	if m.follow {
-		hint = "f"
-		label = "stop follow"
+		followLabel = "stop follow"
 	}
-	return []layout.KeyHint{
-		{Key: hint, Label: label},
-		{Key: "/", Label: "search"},
-		{Key: "n/N", Label: "next/prev match"},
-		{Key: "gg/G", Label: "top/bottom"},
-		{Key: "esc/q", Label: "back"},
+	return []keymap.Binding{
+		{Keys: []string{"f"}, Label: followLabel, Category: "Logs", Hint: true, Handler: m.toggleFollow},
+		{Keys: []string{"n"}, Label: "next match", Category: "Search", Hint: true, Handler: m.actNextMatch},
+		{Keys: []string{"N"}, Label: "previous match", Category: "Search", Hint: true, Handler: m.actPrevMatch},
+		{Keys: []string{"j", "down"}, Label: "scroll down", Category: "Movement", Handler: m.actMoveDown},
+		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: m.actMoveUp},
+		{Keys: []string{"ctrl+d"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
+		{Keys: []string{"ctrl+u"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
+		// `gg` is a two-key chord: pressing `g` arms the chord, the
+		// next key (when `g`) scrolls to top. Documented as "gg" but
+		// dispatched off the first `g`.
+		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Hint: true, Handler: m.actChordG},
+		{Keys: []string{"G"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Logs", Handler: m.actBack},
+		{Keys: []string{"/"}, Label: "filter lines", Category: "Search", Hint: true},
 	}
+}
+
+func (m *Model) actNextMatch() tea.Cmd { m.jumpMatch(+1); return nil }
+func (m *Model) actPrevMatch() tea.Cmd { m.jumpMatch(-1); return nil }
+func (m *Model) actBack() tea.Cmd      { m.action.Back = true; return nil }
+func (m *Model) actMoveDown() tea.Cmd  { m.move(+1); return nil }
+func (m *Model) actMoveUp() tea.Cmd    { m.move(-1); return nil }
+func (m *Model) actPageDown() tea.Cmd  { m.move(+m.pageStep()); return nil }
+func (m *Model) actPageUp() tea.Cmd    { m.move(-m.pageStep()); return nil }
+func (m *Model) actScrollBottom() tea.Cmd {
+	m.cursor = max(0, len(m.lines)-1)
+	m.clampViewport()
+	return nil
+}
+
+// actChordG handles the `gg` two-key chord. The first `g` arms the
+// chord; the second `g` (still routed through this same handler
+// because the dispatcher iterates the bindings table on every key)
+// scrolls to top and disarms.
+func (m *Model) actChordG() tea.Cmd {
+	if m.gPrimed {
+		m.gPrimed = false
+		m.cursor = 0
+		m.clampViewport()
+		return nil
+	}
+	m.gPrimed = true
+	return nil
 }
 
 // Update routes messages.
@@ -236,37 +284,13 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		}
 		// otherwise fall through; treat the second key normally
 	}
-	switch key.String() {
-	case "esc", "q":
-		m.action.Back = true
-		return nil
-	case "f":
-		return m.toggleFollow()
-	case "n":
-		m.jumpMatch(+1)
-		return nil
-	case "N":
-		m.jumpMatch(-1)
-		return nil
-	case "j", "down":
-		m.move(+1)
-		return nil
-	case "k", "up":
-		m.move(-1)
-		return nil
-	case "ctrl+d":
-		m.move(+m.pageStep())
-		return nil
-	case "ctrl+u":
-		m.move(-m.pageStep())
-		return nil
-	case "g":
-		m.gPrimed = true
-		return nil
-	case "G":
-		m.cursor = max(0, len(m.lines)-1)
-		m.clampViewport()
-		return nil
+	// any non-`g` key disarms the gg chord — pressing `g` then anything
+	// else should not silently arm the next `g` press.
+	if m.gPrimed && key.String() != "g" {
+		m.gPrimed = false
+	}
+	if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
+		return cmd
 	}
 	return nil
 }

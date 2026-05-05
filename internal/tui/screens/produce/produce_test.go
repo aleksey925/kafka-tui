@@ -55,10 +55,25 @@ func TestNew_RendersHeaderAndFields(t *testing.T) {
 	assert.False(t, ok, "topic must not exist as a form field")
 }
 
-func TestWantsRawInput_AlwaysTrue(t *testing.T) {
+// TestWantsRawInput_TracksInsertMode pins the carve-out: raw-input
+// only kicks in once the user has entered INSERT mode. NORMAL mode
+// stays non-raw so global shortcuts like `?` (help) keep working.
+func TestWantsRawInput_TracksInsertMode(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 
-	assert.True(t, m.WantsRawInput())
+	// fresh form starts in NORMAL — `?` etc. must remain global.
+	assert.False(t, m.WantsRawInput())
+
+	// tab to the Key text field (past Partition + Compression segmented
+	// fields), then enter to flip into INSERT.
+	_ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("tab"))
+	_ = m.Update(keyPress("enter"))
+	assert.True(t, m.WantsRawInput(), "INSERT must enable raw-input")
+
+	// esc returns to NORMAL → raw-input lifts again.
+	_ = m.Update(keyPress("esc"))
+	assert.False(t, m.WantsRawInput())
 }
 
 func TestEsc_RaisesBackAction(t *testing.T) {

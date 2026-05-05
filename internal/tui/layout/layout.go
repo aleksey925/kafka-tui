@@ -10,6 +10,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -279,6 +280,21 @@ func padRight(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-w)
+}
+
+// HintsFromBindings projects [keymap.Binding] entries flagged
+// Hint=true into the bottom-bar [KeyHint] form, preserving slice
+// order. Lives in layout so the dependency arrow points
+// layout → keymap, never the reverse.
+func HintsFromBindings(bindings []keymap.Binding) []KeyHint {
+	out := make([]KeyHint, 0, len(bindings))
+	for _, b := range bindings {
+		if !b.Hint || len(b.Keys) == 0 {
+			continue
+		}
+		out = append(out, KeyHint{Key: b.Display(), Label: b.Label})
+	}
+	return out
 }
 
 // KeyHints renders the bottom row of `key label` pairs joined by spaces.

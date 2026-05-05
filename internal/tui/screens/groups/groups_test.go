@@ -210,7 +210,7 @@ func TestKeyHints_ContainExpectedLabels(t *testing.T) {
 	assert.Contains(t, got, "reset")
 	assert.Contains(t, got, "express")
 	assert.Contains(t, got, "delete")
-	assert.Contains(t, got, "search")
+	assert.Contains(t, got, "filter")
 }
 
 func TestKeyHints_OmitDestructiveInReadOnly(t *testing.T) {

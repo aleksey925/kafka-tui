@@ -15,6 +15,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -130,15 +132,30 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific hints.
+// KeyHints derives the bottom-row entries from the bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
-	return []layout.KeyHint{
-		{Key: "tab", Label: "switch table"},
-		{Key: "/", Label: "search"},
-		{Key: "s/S", Label: "sort"},
-		{Key: "esc/q", Label: "back"},
+	return layout.HintsFromBindings(m.bindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the same source.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.bindings())
+}
+
+// bindings is the single source of truth for config-sources shortcuts.
+// Sort and search keys are claimed by the underlying table component
+// (advertise-only here so they appear in help and hints alike).
+func (m *Model) bindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "switch focused table", Category: "Config sources", Hint: true, Handler: m.actSwitchTable},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Config sources", Handler: m.actBack},
+		{Keys: []string{"/"}, Label: "filter rows", Category: "Config sources", Hint: true},
+		{Keys: []string{"s", "S"}, Label: "cycle sort", Category: "Config sources", Hint: true},
 	}
 }
+
+func (m *Model) actSwitchTable() tea.Cmd { m.focusClusters = !m.focusClusters; return nil }
+func (m *Model) actBack() tea.Cmd        { m.action.Back = true; return nil }
 
 // Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
@@ -153,13 +170,8 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc", "q":
-		m.action.Back = true
-		return nil
-	case "tab":
-		m.focusClusters = !m.focusClusters
-		return nil
+	if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
+		return cmd
 	}
 	tbl, _ := m.activeTable().Update(key)
 	if m.focusClusters {

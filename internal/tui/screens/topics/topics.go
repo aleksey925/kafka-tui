@@ -21,6 +21,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -222,11 +224,22 @@ func (m *Model) ConsumeAction() Action {
 // CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
-// WantsRawInput reports true while the create / clone form is open so the host
-// routes typed characters straight into the form fields instead of activating
-// global shortcuts.
+// WantsRawInput reports true only while the create / clone form is
+// actively editing a field (INSERT) or has a segmented popup open. In
+// NORMAL the form ignores letter keys, so leaving raw-input off there
+// lets the user open the help overlay with `?` and use other global
+// shortcuts. Switching back to INSERT restores raw-input so literal
+// `?`, `:`, `/` land in the field text.
 func (m *Model) WantsRawInput() bool {
-	return m.mode == ModeCreate || m.mode == ModeClone
+	switch m.mode {
+	case ModeCreate:
+		return m.create.Mode() == FormInsert || m.create.Form().PopupActive()
+	case ModeClone:
+		return m.clone.Mode() == FormInsert || m.clone.Form().PopupActive()
+	case ModeList, ModeCloning:
+		return false
+	}
+	return false
 }
 
 // Toasts exposes the toast queue (for tests).
@@ -302,11 +315,16 @@ func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 // ActiveFilter returns the table's current search query.
 func (m *Model) ActiveFilter() string { return m.table.Search() }
 
-// HasOverlay reports whether a modal (delete confirm or in-flight clone
-// progress popup) is on top of the list. Forms (create/clone) are
-// already handled via WantsRawInput, so they're not counted here.
+// HasOverlay reports whether a modal (delete confirm, in-flight clone
+// progress popup, or an open create/clone form) is on top of the list.
+// Forms are included so the host's q/esc fallback yields to the form
+// instead of popping the screen — the form's own dispatcher decides
+// what `q` / `esc` mean inside its NORMAL/INSERT state machine.
 func (m *Model) HasOverlay() bool {
-	return m.confirm != nil || m.mode == ModeCloning
+	return m.confirm != nil ||
+		m.mode == ModeCloning ||
+		m.mode == ModeCreate ||
+		m.mode == ModeClone
 }
 
 // SetSize updates width/height. Reserves chrome rows.
@@ -320,27 +338,73 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific hints shown at the bottom row.
+// KeyHints returns the screen-specific bottom-row hints, derived
+// from whichever bindings table the current mode is dispatching from
+// — so the hints can never drift from the real dispatcher.
 func (m *Model) KeyHints() []layout.KeyHint {
-	hints := []layout.KeyHint{
-		{Key: "enter/m", Label: "messages"},
-		{Key: "c", Label: "configs"},
-		{Key: "g", Label: "groups"},
-		{Key: "/", Label: "search"},
+	return layout.HintsFromBindings(m.activeBindings())
+}
+
+// HelpSections returns the categorized bindings shown in the `?`
+// overlay. Same source as the dispatcher.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.activeBindings())
+}
+
+// activeBindings picks the bindings slice that the dispatcher is
+// currently consuming. Sub-mode dispatchers (create / clone / cloning
+// / confirm) each consume their own slice — KeyHints and
+// HelpSections mirror them.
+func (m *Model) activeBindings() []keymap.Binding {
+	switch m.mode {
+	case ModeCreate:
+		return m.createBindings()
+	case ModeClone:
+		return m.cloneBindings()
+	case ModeCloning:
+		return m.cloningBindings()
+	case ModeList:
+		return m.listBindings()
 	}
-	if !m.readOnly {
-		hints = append(hints,
-			layout.KeyHint{Key: "n", Label: "new"},
-			layout.KeyHint{Key: "D", Label: "delete"},
-			layout.KeyHint{Key: "y", Label: "clone"},
-			layout.KeyHint{Key: "p", Label: "produce"},
-		)
+	return m.listBindings()
+}
+
+// listBindings is the single source of truth for list-mode shortcuts.
+// Both the dispatcher (handleListKey) and the user-facing surfaces
+// (KeyHints, HelpSections) consume this slice — adding a binding
+// requires exactly one append.
+func (m *Model) listBindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"enter", "m"}, Label: "browse messages", Category: "Topic", Hint: true, Handler: m.actMessages},
+		{Keys: []string{"c"}, Label: "topic configs", Category: "Topic", Hint: true, Handler: m.actConfigs},
+		{Keys: []string{"g"}, Label: "consumer groups for topic", Category: "Topic", Hint: true, Handler: m.actGroups},
+		{Keys: []string{"i"}, Label: "toggle internal topics", Category: "Topic", Handler: m.actToggleInternal},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
+		{Keys: []string{"esc", "q"}, Label: "back / quit", Category: "Topic", Handler: m.actQuit},
 	}
-	hints = append(hints,
-		layout.KeyHint{Key: "r", Label: "refresh"},
-		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
+	mut := []keymap.Binding{
+		{Keys: []string{"n"}, Label: "new topic", Category: "Mutating", Hint: true, Handler: m.actNewTopic},
+		{Keys: []string{"y"}, Label: "clone topic", Category: "Mutating", Hint: true, Handler: m.actCloneTopic},
+		{Keys: []string{"p"}, Label: "produce to topic", Category: "Mutating", Hint: true, Handler: m.actProduceTopic},
+		{Keys: []string{"D"}, Label: "delete topic", Category: "Mutating", Hint: true, Handler: m.actDeleteTopic},
+	}
+	if m.readOnly {
+		// keys still claimed (toast emitted) but hidden from hints / help —
+		// the user shouldn't see actions that won't work.
+		for i := range mut {
+			mut[i].Category = ""
+			mut[i].Hint = false
+		}
+	}
+	bs = append(bs, mut...)
+	// `/` and `ctrl+r` are globals handled by the host — listed here
+	// (advertise-only, no Handler) so they appear in the chrome's hints
+	// bar and the `?` overlay alongside screen-local actions.
+	bs = append(bs,
+		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Topic", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Topic", Hint: true},
 	)
-	return hints
+	return bs
 }
 
 // Update routes messages.
@@ -393,84 +457,102 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	return m.handleListKey(key)
 }
 
-// handleListKey handles all hotkeys in list mode (no overlay open).
+// handleListKey routes a keystroke through the bindings table; keys
+// not claimed by any binding fall through to the table component for
+// row-navigation (j/k/arrow/pgup/pgdn).
 func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "enter", "m":
-		if row, ok := m.table.SelectedRow(); ok {
-			m.action.Messages = row.ID
-		}
-		return nil
-	case "c":
-		if row, ok := m.table.SelectedRow(); ok {
-			m.action.Configs = row.ID
-		}
-		return nil
-	case "g":
-		if row, ok := m.table.SelectedRow(); ok {
-			m.action.Groups = row.ID
-		}
-		return nil
-	case "i":
-		m.showInternal = !m.showInternal
-		m.refreshTable()
-		return nil
-	case "r":
-		// skip duplicate loads — pressing `r` while a previous fetch is
-		// still in flight would just queue redundant RPCs.
-		if m.loading {
-			return nil
-		}
-		m.manualRefresh = true
-		cmd := m.refreshCmd()
+	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
 		return cmd
-	case "n", "p", "y", "D":
-		return m.handleMutatingKey(key.String())
-	case "esc", "q":
-		m.action.Quit = true
-		return nil
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
 	return nil
 }
 
-// handleMutatingKey gates write hotkeys behind the read-only flag.
-func (m *Model) handleMutatingKey(key string) tea.Cmd {
-	if m.readOnly {
-		m.toasts.Push(components.ToastWarning, "cluster is read-only — "+actionLabel(key)+" blocked")
-		return nil
-	}
-	switch key {
-	case "n":
-		m.openCreateForm()
-		return nil
-	case "p":
-		if row, ok := m.table.SelectedRow(); ok {
-			m.action.Produce = row.ID
-		}
-		return nil
-	case "y":
-		m.openCloneForm()
-		return nil
-	case "D":
-		return m.openDeleteConfirm()
+// --- list-mode binding handlers ---
+
+func (m *Model) actMessages() tea.Cmd {
+	if row, ok := m.table.SelectedRow(); ok {
+		m.action.Messages = row.ID
 	}
 	return nil
 }
 
-func actionLabel(key string) string {
-	switch key {
-	case "n":
-		return "create"
-	case "p":
-		return "produce"
-	case "y":
-		return "clone"
-	case "D":
-		return "delete"
+func (m *Model) actConfigs() tea.Cmd {
+	if row, ok := m.table.SelectedRow(); ok {
+		m.action.Configs = row.ID
 	}
-	return key
+	return nil
+}
+
+func (m *Model) actGroups() tea.Cmd {
+	if row, ok := m.table.SelectedRow(); ok {
+		m.action.Groups = row.ID
+	}
+	return nil
+}
+
+func (m *Model) actToggleInternal() tea.Cmd {
+	m.showInternal = !m.showInternal
+	m.refreshTable()
+	return nil
+}
+
+func (m *Model) actRefresh() tea.Cmd {
+	// skip duplicate loads — pressing `r` while a previous fetch is
+	// still in flight would just queue redundant RPCs.
+	if m.loading {
+		return nil
+	}
+	m.manualRefresh = true
+	return m.refreshCmd()
+}
+
+func (m *Model) actQuit() tea.Cmd {
+	m.action.Quit = true
+	return nil
+}
+
+// blockedReadOnly emits the standard "cluster is read-only — X blocked"
+// toast and returns a nil cmd so the caller can `return m.blocked(...)`.
+// Centralizes the gate logic without coupling handlers to a magic key
+// string the way an actMutating(key) factory would.
+func (m *Model) blockedReadOnly(action string) tea.Cmd {
+	m.toasts.Push(components.ToastWarning, "cluster is read-only — "+action+" blocked")
+	return nil
+}
+
+func (m *Model) actNewTopic() tea.Cmd {
+	if m.readOnly {
+		return m.blockedReadOnly("create")
+	}
+	m.openCreateForm()
+	return nil
+}
+
+func (m *Model) actCloneTopic() tea.Cmd {
+	if m.readOnly {
+		return m.blockedReadOnly("clone")
+	}
+	m.openCloneForm()
+	return nil
+}
+
+func (m *Model) actProduceTopic() tea.Cmd {
+	if m.readOnly {
+		return m.blockedReadOnly("produce")
+	}
+	if row, ok := m.table.SelectedRow(); ok {
+		m.action.Produce = row.ID
+	}
+	return nil
+}
+
+func (m *Model) actDeleteTopic() tea.Cmd {
+	if m.readOnly {
+		return m.blockedReadOnly("delete")
+	}
+	return m.openDeleteConfirm()
 }
 
 // openDeleteConfirm pops the delete-confirmation modal for the focused topic.
@@ -504,29 +586,8 @@ func (m *Model) openCloneForm() {
 }
 
 func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc":
-		// in INSERT, or while a segmented popup is open in NORMAL, esc is
-		// owned by the form (returns to NORMAL / closes the popup). Only a
-		// "plain" NORMAL esc closes the overlay.
-		if m.create.Mode() == FormInsert || m.create.Form().PopupActive() {
-			c, _ := m.create.Update(key)
-			m.create = c
-			return nil
-		}
-		m.create = nil
-		m.mode = ModeList
-		return nil
-	case "ctrl+s":
-		spec, err := m.create.Spec()
-		if err != nil {
-			m.create.SetError(err.Error())
-			return nil
-		}
-		m.create = nil
-		m.mode = ModeList
-		m.toasts.Push(components.ToastInfo, "creating "+spec.Name+"…")
-		return createCmd(m.svc, spec)
+	if cmd, ok := keymap.Dispatch(m.createBindings(), key); ok {
+		return cmd
 	}
 	c, _ := m.create.Update(key)
 	m.create = c
@@ -534,26 +595,8 @@ func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc":
-		if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
-			c, _ := m.clone.Update(key)
-			m.clone = c
-			return nil
-		}
-		m.clone = nil
-		m.mode = ModeList
-		return nil
-	case "ctrl+s":
-		src, dst, err := m.clone.Submit()
-		if err != nil {
-			m.clone.SetError(err.Error())
-			return nil
-		}
-		m.mode = ModeCloning
-		m.progress = kafka.CloneProgress{}
-		m.toasts.Push(components.ToastInfo, "cloning "+src+" → "+dst+"…")
-		return cloneStartCmd(m.svc, src, dst, m.clone.Options())
+	if cmd, ok := keymap.Dispatch(m.cloneBindings(), key); ok {
+		return cmd
 	}
 	c, _ := m.clone.Update(key)
 	m.clone = c
@@ -561,12 +604,82 @@ func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
-	if key.String() == "esc" {
-		// in-flight clone — ESC abandons the screen but the goroutine continues
-		// in the background; we just return to the list.
-		m.mode = ModeList
+	cmd, _ := keymap.Dispatch(m.cloningBindings(), key)
+	return cmd
+}
+
+// createBindings is the source of truth for the create-topic form.
+// esc has dual semantics: in INSERT or with a popup it's owned by the
+// form (returns to NORMAL / closes popup); in plain NORMAL it closes
+// the overlay. HandlerMsg routes the original keystroke into the form.
+func (m *Model) createBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"ctrl+s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
+		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Create topic", Hint: true, HandlerMsg: m.actCreateEsc},
+	}
+}
+
+func (m *Model) cloneBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"ctrl+s"}, Label: "submit (clone topic)", Category: "Clone topic", Hint: true, Handler: m.actCloneSubmit},
+		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Clone topic", Hint: true, HandlerMsg: m.actCloneEsc},
+	}
+}
+
+func (m *Model) cloningBindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"esc"}, Label: "leave (clone keeps running in background)", Category: "Cloning", Hint: true, Handler: m.actCloningLeave},
+	}
+}
+
+func (m *Model) actCreateSubmit() tea.Cmd {
+	spec, err := m.create.Spec()
+	if err != nil {
+		m.create.SetError(err.Error())
 		return nil
 	}
+	m.create = nil
+	m.mode = ModeList
+	m.toasts.Push(components.ToastInfo, "creating "+spec.Name+"…")
+	return createCmd(m.svc, spec)
+}
+
+func (m *Model) actCreateEsc(key tea.KeyPressMsg) tea.Cmd {
+	if m.create.Mode() == FormInsert || m.create.Form().PopupActive() {
+		c, _ := m.create.Update(key)
+		m.create = c
+		return nil
+	}
+	m.create = nil
+	m.mode = ModeList
+	return nil
+}
+
+func (m *Model) actCloneSubmit() tea.Cmd {
+	src, dst, err := m.clone.Submit()
+	if err != nil {
+		m.clone.SetError(err.Error())
+		return nil
+	}
+	m.mode = ModeCloning
+	m.progress = kafka.CloneProgress{}
+	m.toasts.Push(components.ToastInfo, "cloning "+src+" → "+dst+"…")
+	return cloneStartCmd(m.svc, src, dst, m.clone.Options())
+}
+
+func (m *Model) actCloneEsc(key tea.KeyPressMsg) tea.Cmd {
+	if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
+		c, _ := m.clone.Update(key)
+		m.clone = c
+		return nil
+	}
+	m.clone = nil
+	m.mode = ModeList
+	return nil
+}
+
+func (m *Model) actCloningLeave() tea.Cmd {
+	m.mode = ModeList
 	return nil
 }
 

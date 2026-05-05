@@ -26,6 +26,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -326,32 +328,71 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific hints shown at the bottom row.
+// KeyHints derives the bottom-row entries from the active mode's
+// bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
+	return layout.HintsFromBindings(m.activeBindings())
+}
+
+// HelpSections derives the `?`-overlay sections from the same source
+// as the dispatcher.
+func (m *Model) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.activeBindings())
+}
+
+func (m *Model) activeBindings() []keymap.Binding {
 	switch m.mode {
-	case ModeDetail:
-		return m.detail.KeyHints()
-	case ModeReset:
-		return m.reset.KeyHints()
 	case ModeList:
-		// fall through to the default list hints below.
+		return m.listBindings()
+	case ModeDetail:
+		if m.detail != nil {
+			return m.detail.bindings()
+		}
+	case ModeReset:
+		if m.reset != nil {
+			return m.reset.bindings()
+		}
 	}
-	hints := []layout.KeyHint{
-		{Key: "enter", Label: "detail"},
-		{Key: "/", Label: "search"},
+	return m.listBindings()
+}
+
+// listBindings is the single source of truth for the groups list mode.
+func (m *Model) listBindings() []keymap.Binding {
+	bs := []keymap.Binding{
+		{Keys: []string{"enter"}, Label: "open group detail", Category: "Group", Hint: true, Handler: m.openDetail},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Hint: true, Handler: m.actListRefresh},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Group", Handler: m.actListBack},
 	}
-	if !m.readOnly {
-		hints = append(hints,
-			layout.KeyHint{Key: "R", Label: "reset"},
-			layout.KeyHint{Key: "shift+r", Label: "express"},
-			layout.KeyHint{Key: "D", Label: "delete"},
-		)
+	mut := []keymap.Binding{
+		{Keys: []string{"R"}, Label: "reset offsets (full flow)", Category: "Mutating", Hint: true, Handler: func() tea.Cmd { return m.openReset(false) }},
+		{Keys: []string{"shift+r"}, Label: "reset offsets (express)", Category: "Mutating", Hint: true, Handler: func() tea.Cmd { return m.openReset(true) }},
+		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: m.openDeleteConfirm},
 	}
-	hints = append(hints,
-		layout.KeyHint{Key: "r", Label: "refresh"},
-		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
+	if m.readOnly {
+		for i := range mut {
+			mut[i].Category = ""
+			mut[i].Hint = false
+		}
+	}
+	bs = append(bs, mut...)
+	bs = append(bs,
+		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Group", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Group", Hint: true},
 	)
-	return hints
+	return bs
+}
+
+func (m *Model) actListRefresh() tea.Cmd {
+	if m.loading {
+		return nil
+	}
+	m.manualRefresh = true
+	return m.refreshCmd()
+}
+
+func (m *Model) actListBack() tea.Cmd {
+	m.action.Back = true
+	return nil
 }
 
 // Update routes messages.
@@ -423,25 +464,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
-	switch key.String() {
-	case "esc", "q":
-		m.action.Back = true
-		return nil
-	case "enter":
-		return m.openDetail()
-	case "r":
-		if m.loading {
-			return nil
-		}
-		m.manualRefresh = true
-		cmd := m.refreshCmd()
+	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
 		return cmd
-	case "R":
-		return m.openReset(false)
-	case "shift+r":
-		return m.openReset(true)
-	case "D":
-		return m.openDeleteConfirm()
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
