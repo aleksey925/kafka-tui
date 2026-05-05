@@ -34,6 +34,8 @@ func (m *Model) routeActiveAction() tea.Cmd {
 		return m.routeConfigSrcAction(s)
 	case *topics.ConfigsModel:
 		return m.routeTopicConfigsAction(s)
+	case *topics.ConfigEditModel:
+		return m.routeTopicConfigEditAction(s)
 	}
 	return nil
 }
@@ -65,6 +67,10 @@ func (m *Model) routeTopicsAction(s *topics.Model) tea.Cmd {
 	case a.Configs != "":
 		m.lastTopic = a.Configs
 		m.navTopic = a.Configs
+		// fresh entry into the configs screen — drop a stale focus seed
+		// from a previous topic / edit session so the cursor lands at
+		// the top, not on a key that may not exist here.
+		m.lastConfigKey = ""
 		return m.pushScreenCmd(ScreenTopicConfigs)
 	case a.Groups != "":
 		m.lastTopic = a.Groups
@@ -159,7 +165,56 @@ func (m *Model) routeTopicConfigsAction(s *topics.ConfigsModel) tea.Cmd {
 		m.popScreen()
 		return m.activeInit()
 	}
+	if a.Edit != "" {
+		m.navTopic = s.Topic()
+		m.navConfigKey = a.Edit
+		m.navConfigValue = currentValueForKey(s, a.Edit)
+		// remember the focused key so popScreen() restores the cursor
+		// when the user returns from the edit screen.
+		m.lastConfigKey = a.Edit
+		return m.pushScreenCmd(ScreenTopicConfigEdit)
+	}
 	return nil
+}
+
+// currentValueForKey is small enough to inline, but lives next to the
+// router so the configs screen public surface stays minimal.
+func currentValueForKey(s *topics.ConfigsModel, key string) string {
+	for _, c := range s.Configs() {
+		if c.Key == key {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+func (m *Model) routeTopicConfigEditAction(s *topics.ConfigEditModel) tea.Cmd {
+	a := s.ConsumeAction()
+	if !a.Back {
+		return nil
+	}
+	pending := pendingEditToast(s, a)
+	m.popScreen()
+	if pending != nil {
+		if q, ok := activeToastQueue(m.active); ok {
+			q.Push(pending.Level, pending.Message)
+		}
+	}
+	return m.activeInit()
+}
+
+// pendingEditToast forwards the edit screen's success toast to the
+// underlying configs screen so the user sees confirmation after popping
+// back. Failed saves keep the form open and surface the toast locally.
+func pendingEditToast(s *topics.ConfigEditModel, a topics.ConfigEditAction) *components.Toast {
+	if !a.Saved {
+		return nil
+	}
+	t, ok := s.LatestFlash()
+	if !ok {
+		return nil
+	}
+	return &t
 }
 
 // popOrReplaceToClusters pops to expose the clusters list, or replaces

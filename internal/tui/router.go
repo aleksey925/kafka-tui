@@ -11,15 +11,16 @@ import (
 type ScreenID string
 
 const (
-	ScreenClusters     ScreenID = "clusters"
-	ScreenTopics       ScreenID = "topics"
-	ScreenTopicConfigs ScreenID = "topic-configs"
-	ScreenMessages     ScreenID = "messages"
-	ScreenProduce      ScreenID = "produce"
-	ScreenGroups       ScreenID = "groups"
-	ScreenLogs         ScreenID = "logs"
-	ScreenConfigSrc    ScreenID = "config-sources"
-	ScreenHelpOverlay  ScreenID = "help"
+	ScreenClusters        ScreenID = "clusters"
+	ScreenTopics          ScreenID = "topics"
+	ScreenTopicConfigs    ScreenID = "topic-configs"
+	ScreenTopicConfigEdit ScreenID = "topic-config-edit"
+	ScreenMessages        ScreenID = "messages"
+	ScreenProduce         ScreenID = "produce"
+	ScreenGroups          ScreenID = "groups"
+	ScreenLogs            ScreenID = "logs"
+	ScreenConfigSrc       ScreenID = "config-sources"
+	ScreenHelpOverlay     ScreenID = "help"
 )
 
 // Command is the parsed result of a `:` command bar entry.

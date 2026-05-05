@@ -104,6 +104,8 @@ func activeToastQueue(s Screen) (*components.Toasts, bool) {
 		return a.Toasts(), true
 	case *topics.ConfigsModel:
 		return a.Toasts(), true
+	case *topics.ConfigEditModel:
+		return a.Toasts(), true
 	}
 	return nil, false
 }

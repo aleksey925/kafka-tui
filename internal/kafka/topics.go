@@ -219,6 +219,31 @@ func (c *Client) DescribeTopicConfigs(ctx context.Context, topic string) ([]Topi
 	return out, nil
 }
 
+// AlterTopicConfig sets a single topic-level configuration entry to value
+// using IncrementalAlterConfigs (Kafka 2.3+). An empty value is allowed
+// only when the broker accepts it; callers wanting to reset a key to its
+// default should use the dedicated reset path instead (not yet exposed).
+func (c *Client) AlterTopicConfig(ctx context.Context, topic, key, value string) error {
+	v := value
+	rs, err := c.adm.AlterTopicConfigs(ctx, []kadm.AlterConfig{
+		{Op: kadm.SetConfig, Name: key, Value: &v},
+	}, topic)
+	if err != nil {
+		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, err)
+	}
+	r, err := rs.On(topic, nil)
+	if err != nil {
+		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, err)
+	}
+	if r.Err != nil {
+		if r.ErrMessage != "" {
+			return fmt.Errorf("kafka: alter config %q on %q: %s: %w", key, topic, r.ErrMessage, r.Err)
+		}
+		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, r.Err)
+	}
+	return nil
+}
+
 // DescribeAllTopicConfigs returns the full config set for a topic.
 func (c *Client) DescribeAllTopicConfigs(ctx context.Context, topic string) ([]TopicConfig, error) {
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topic)

@@ -37,6 +37,10 @@ func (m *Model) instantiate(id ScreenID) {
 		if m.client != nil {
 			m.active = m.newTopicConfigs()
 		}
+	case ScreenTopicConfigEdit:
+		if m.client != nil {
+			m.active = m.newTopicConfigEdit()
+		}
 	case ScreenMessages:
 		if m.client != nil {
 			m.active = m.newMessages()
@@ -62,6 +66,8 @@ func (m *Model) clearNavSeeds() {
 	m.navTopic = ""
 	m.navPrefill = nil
 	m.navGroupFilter = ""
+	m.navConfigKey = ""
+	m.navConfigValue = ""
 }
 
 func (m *Model) newClusters() *clusters.Model {
@@ -94,10 +100,23 @@ func (m *Model) newTopics() *topics.Model {
 
 func (m *Model) newTopicConfigs() *topics.ConfigsModel {
 	return topics.NewConfigsModel(topics.ConfigsOptions{
-		Service: m.client,
-		Topic:   m.navTopic,
-		Now:     m.now,
-		Styles:  m.styles,
+		Service:  m.client,
+		Topic:    m.navTopic,
+		ReadOnly: m.clusterRO,
+		FocusKey: m.lastConfigKey,
+		Now:      m.now,
+		Styles:   m.styles,
+	})
+}
+
+func (m *Model) newTopicConfigEdit() *topics.ConfigEditModel {
+	return topics.NewConfigEditModel(topics.ConfigEditOptions{
+		Service:      m.client,
+		Topic:        m.navTopic,
+		Key:          m.navConfigKey,
+		CurrentValue: m.navConfigValue,
+		Now:          m.now,
+		Styles:       m.styles,
 	})
 }
 

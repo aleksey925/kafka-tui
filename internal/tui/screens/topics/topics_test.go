@@ -521,6 +521,10 @@ type clonedPair struct {
 	src, dst string
 }
 
+type alteredConfig struct {
+	topic, key, value string
+}
+
 type fakeService struct {
 	mu       sync.Mutex
 	topics   []kafka.TopicSummary
@@ -529,6 +533,8 @@ type fakeService struct {
 	deleted  []string
 	created  []kafka.CreateTopicSpec
 	cloned   []clonedPair
+	altered  []alteredConfig
+	alterErr error
 	configs  map[string][]kafka.TopicConfig
 	parts    map[string][]kafka.PartitionDetail
 	cloneErr error
@@ -649,6 +655,37 @@ func (f *fakeService) DeleteTopic(_ context.Context, topic string) error {
 	return nil
 }
 
+func (f *fakeService) AlterTopicConfig(_ context.Context, topic, key, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.alterErr != nil {
+		return f.alterErr
+	}
+	f.altered = append(f.altered, alteredConfig{topic: topic, key: key, value: value})
+	cfgs := f.configs[topic]
+	updated := make([]kafka.TopicConfig, 0, len(cfgs)+1)
+	replaced := false
+	for _, c := range cfgs {
+		if c.Key == key {
+			updated = append(updated, kafka.TopicConfig{Key: key, Value: value, Source: "DYNAMIC_TOPIC_CONFIG"})
+			replaced = true
+			continue
+		}
+		updated = append(updated, c)
+	}
+	if !replaced {
+		updated = append(updated, kafka.TopicConfig{Key: key, Value: value, Source: "DYNAMIC_TOPIC_CONFIG"})
+	}
+	f.configs[topic] = updated
+	return nil
+}
+
+func (f *fakeService) Altered() []alteredConfig {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]alteredConfig(nil), f.altered...)
+}
+
 func (f *fakeService) CloneTopic(_ context.Context, src, dst string, _ kafka.CloneOptions) (<-chan kafka.CloneProgress, error) {
 	f.mu.Lock()
 	f.cloned = append(f.cloned, clonedPair{src: src, dst: dst})
@@ -686,8 +723,16 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	case "ctrl+s":
 		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
+	case "ctrl+d":
+		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
+	case "ctrl+u":
+		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

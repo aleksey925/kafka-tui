@@ -99,6 +99,42 @@ func TestClient_DescribeTopicConfigs__kfake(t *testing.T) {
 	assert.Greater(t, len(all), len(configs))
 }
 
+func TestClient_AlterTopicConfig__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "alter-me",
+		Partitions:        1,
+		ReplicationFactor: 1,
+		Configs:           map[string]string{ConfigRetentionMs: "60000"},
+	}))
+
+	require.NoError(t, c.AlterTopicConfig(ctx, "alter-me", ConfigRetentionMs, "120000"))
+
+	got, err := c.DescribeTopicConfigs(ctx, "alter-me")
+	require.NoError(t, err)
+	byKey := make(map[string]string, len(got))
+	for _, cfg := range got {
+		byKey[cfg.Key] = cfg.Value
+	}
+	assert.Equal(t, "120000", byKey[ConfigRetentionMs])
+}
+
+func TestClient_AlterTopicConfig__missingTopic__error(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	err := c.AlterTopicConfig(ctx, "nope", ConfigRetentionMs, "1000")
+	require.Error(t, err)
+}
+
 func TestClient_DescribeTopicConfigs__missing__error(t *testing.T) {
 	t.Parallel()
 

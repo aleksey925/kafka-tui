@@ -30,6 +30,7 @@ type Service interface {
 	CreateTopic(ctx context.Context, spec kafka.CreateTopicSpec) error
 	DeleteTopic(ctx context.Context, topic string) error
 	CloneTopic(ctx context.Context, src, dst string, opts kafka.CloneOptions) (<-chan kafka.CloneProgress, error)
+	AlterTopicConfig(ctx context.Context, topic, key, value string) error
 
 	// Batch fetchers — one RPC per category regardless of topic count.
 	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.TopicWatermarks, error)

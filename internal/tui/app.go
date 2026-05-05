@@ -88,9 +88,16 @@ type Model struct {
 	navTopic       string
 	navPrefill     *kafka.Message
 	navGroupFilter string
+	// navConfigKey + navConfigValue seed the topic-config edit screen
+	// with the key under the cursor and the broker-reported current value.
+	navConfigKey   string
+	navConfigValue string
 
 	// lastTopic restores the topics screen cursor when navigating back.
 	lastTopic string
+	// lastConfigKey restores the configs screen cursor after the user
+	// returns from the edit screen.
+	lastConfigKey string
 
 	// flashSeenAt tracks the CreatedAt of the last promoted toast so an
 	// older or repeated push isn't re-shown.

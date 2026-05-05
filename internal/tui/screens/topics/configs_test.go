@@ -35,30 +35,42 @@ func driveConfigs(t *testing.T, m *topics.ConfigsModel, cmd tea.Cmd) {
 	}
 }
 
-func TestConfigsScreen_LoadsAndRendersConfigsAndPartitions(t *testing.T) {
+func TestConfigsScreen_GroupsRowsByCategory(t *testing.T) {
 	svc := newConfigsFake()
 	svc.configs["alpha"] = []kafka.TopicConfig{
-		{Key: kafka.ConfigCleanupPolicy, Value: "compact", Source: "DYNAMIC_TOPIC_CONFIG"},
+		{Key: "min.compaction.lag.ms", Value: "0", Source: "DEFAULT_CONFIG"},
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
 		{Key: kafka.ConfigRetentionMs, Value: "60000", Source: "STATIC_BROKER_CONFIG"},
-	}
-	svc.parts["alpha"] = []kafka.PartitionDetail{
-		{Partition: 0, Leader: 1, Replicas: []int32{1, 2}, ISR: []int32{1, 2}},
-		{Partition: 1, Leader: 2, Replicas: []int32{2, 3}, ISR: []int32{2}},
 	}
 
 	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
 	driveConfigs(t, m, m.Init())
 
-	assert.Len(t, m.Configs(), 2)
-	assert.Len(t, m.Partitions(), 2)
+	// configs are loaded
+	assert.Len(t, m.Configs(), 3)
+
 	out := m.View()
 	assert.Contains(t, out, "Topic configs · alpha")
-	assert.Contains(t, out, "Partitions · alpha")
-	assert.Contains(t, out, kafka.ConfigCleanupPolicy)
-	assert.Contains(t, out, "compact")
-	assert.Contains(t, out, "DYNAMIC_TOPIC_CONFIG")
-	// partition table shows leader and replicas
-	assert.Contains(t, out, "1,2")
+	// every category that has at least one row appears as a header
+	assert.Contains(t, out, "Compaction")
+	assert.Contains(t, out, "Compression")
+	assert.Contains(t, out, "Retention")
+	// row body shows key + value (source moved to the help popup)
+	assert.Contains(t, out, "compression.type")
+	assert.Contains(t, out, "producer")
+}
+
+func TestConfigsScreen_UnknownKeyFallsBackToOther(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "vendor.custom.feature", Value: "on", Source: "DYNAMIC_TOPIC_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	driveConfigs(t, m, m.Init())
+
+	out := m.View()
+	assert.Contains(t, out, "Other")
+	assert.Contains(t, out, "vendor.custom.feature")
 }
 
 func TestConfigsScreen_LoadErrorRaisesToast(t *testing.T) {
@@ -70,21 +82,6 @@ func TestConfigsScreen_LoadErrorRaisesToast(t *testing.T) {
 	assert.Contains(t, out, "metadata timeout")
 }
 
-func TestConfigsScreen_TabSwitchesFocus(t *testing.T) {
-	svc := newConfigsFake()
-	svc.configs["alpha"] = []kafka.TopicConfig{{Key: "k", Value: "v", Source: "s"}}
-	svc.parts["alpha"] = []kafka.PartitionDetail{{Partition: 0, Leader: 1}}
-
-	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
-	driveConfigs(t, m, m.Init())
-
-	require.False(t, m.FocusPartitions())
-	_ = m.Update(keyPress("tab"))
-	assert.True(t, m.FocusPartitions())
-	_ = m.Update(keyPress("tab"))
-	assert.False(t, m.FocusPartitions())
-}
-
 func TestConfigsScreen_EscRaisesBack(t *testing.T) {
 	svc := newConfigsFake()
 	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
@@ -93,44 +90,167 @@ func TestConfigsScreen_EscRaisesBack(t *testing.T) {
 	assert.True(t, m.ConsumeAction().Back)
 }
 
-// TestConfigsScreen_SetSearchAppliesToBothTables pins the screen-level
-// filter contract: the host-driven `/` prompt narrows both sub-tables
-// (configs and partitions), so an esc-cascade can clear the filter
-// regardless of which sub-table currently has focus.
-func TestConfigsScreen_SetSearchAppliesToBothTables(t *testing.T) {
+func TestConfigsScreen_EnterRaisesEdit(t *testing.T) {
 	svc := newConfigsFake()
 	svc.configs["alpha"] = []kafka.TopicConfig{
-		{Key: "retention.ms", Value: "1000"},
-		{Key: "cleanup.policy", Value: "compact"},
-	}
-	svc.parts["alpha"] = []kafka.PartitionDetail{
-		{Partition: 0, Leader: 1},
-		{Partition: 1, Leader: 2},
+		{Key: kafka.ConfigCleanupPolicy, Value: "delete", Source: "DEFAULT_CONFIG"},
 	}
 	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
 	driveConfigs(t, m, m.Init())
 
-	// applying "retention" hides cleanup.policy on the configs table; the
-	// partitions table holds rows like "p-0"/"p-1" which don't contain
-	// "retention" either, so it should also collapse to no rows.
-	m.SetSearch("retention")
+	_ = m.Update(keyPress("enter"))
+	assert.Equal(t, kafka.ConfigCleanupPolicy, m.ConsumeAction().Edit)
+}
+
+func TestConfigsScreen_EditBlockedInReadOnly(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: kafka.ConfigCleanupPolicy, Value: "delete", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{
+		Service:  svc,
+		Topic:    "alpha",
+		ReadOnly: true,
+	})
+	driveConfigs(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('e'))
+	assert.Empty(t, m.ConsumeAction().Edit, "edit must not propagate in read-only")
+
+	flash, ok := m.LatestFlash()
+	require.True(t, ok)
+	assert.Contains(t, flash.Message, "read-only")
+}
+
+func TestConfigsScreen_HelpToggleShowsDocumentation(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	m.SetSize(120, 30)
+	driveConfigs(t, m, m.Init())
+
+	require.False(t, m.HelpOpen())
+	_ = m.Update(keyPressRune('h'))
+	require.True(t, m.HelpOpen())
+
 	out := m.View()
-	assert.Contains(t, out, "retention.ms")
-	assert.NotContains(t, out, "cleanup.policy")
-	assert.Contains(t, out, "(no rows)", "partitions table must reflect the same filter")
-	assert.Equal(t, "retention", m.ActiveFilter(),
-		"ActiveFilter must report the screen-level query regardless of focus")
+	// the bundled doc for compression.type mentions the gzip codec.
+	assert.Contains(t, out, "gzip")
+	assert.Contains(t, out, "type: select")
 
-	// switching focus to the partitions table must NOT change the active
-	// filter — both tables are filtered by the same string so the host
-	// can clear it on any focus.
-	_ = m.Update(keyPress("tab"))
-	require.True(t, m.FocusPartitions())
-	assert.Equal(t, "retention", m.ActiveFilter())
+	// pressing esc closes the overlay before yielding to the host.
+	_ = m.Update(keyPress("esc"))
+	assert.False(t, m.HelpOpen())
+	assert.False(t, m.ConsumeAction().Back, "esc must close the overlay first")
+}
 
-	// clearing through the host's esc-cascade resets both tables.
+func TestConfigsScreen_SetSearchFiltersRows(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: kafka.ConfigRetentionMs, Value: "60000", Source: "DEFAULT_CONFIG"},
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	driveConfigs(t, m, m.Init())
+
+	// the filter matches key, value, source, and category — "compression"
+	// hits exactly one row by both key and category.
+	m.SetSearch("compression")
+	out := m.View()
+	assert.Contains(t, out, "compression.type")
+	assert.NotContains(t, out, kafka.ConfigRetentionMs)
+	assert.Equal(t, "compression", m.ActiveFilter())
+
 	m.SetSearch("")
 	assert.Empty(t, m.ActiveFilter())
+}
+
+func TestConfigsScreen_ViewportScrollsWithCursor(t *testing.T) {
+	svc := newConfigsFake()
+	cfgs := make([]kafka.TopicConfig, 0, 30)
+	for _, k := range []string{
+		"min.compaction.lag.ms", "max.compaction.lag.ms", "min.cleanable.dirty.ratio",
+		"compression.type", "compression.gzip.level", "compression.lz4.level", "compression.zstd.level",
+		"retention.ms", "retention.bytes", "delete.retention.ms",
+	} {
+		cfgs = append(cfgs, kafka.TopicConfig{Key: k, Value: "v"})
+	}
+	svc.configs["alpha"] = cfgs
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	// only 6 list lines fit (height 8, minus 2 chrome rows).
+	m.SetSize(120, 8)
+	driveConfigs(t, m, m.Init())
+
+	// cursor at top: first key visible, last key not.
+	out := m.View()
+	require.Contains(t, out, "min.cleanable.dirty.ratio") // first row in Compaction
+	assert.NotContains(t, out, "delete.retention.ms")     // last row, off-screen
+
+	// page down repeatedly — viewport must follow until the bottom row
+	// is reachable.
+	for range 4 {
+		_ = m.Update(keyPress("ctrl+d"))
+	}
+	out = m.View()
+	assert.Contains(t, out, "delete.retention.ms")
+	assert.NotContains(t, out, "min.cleanable.dirty.ratio")
+}
+
+func TestConfigsScreen_HelpRendersAsCenteredPopup(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	m.SetSize(120, 30)
+	driveConfigs(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('h'))
+	require.True(t, m.HelpOpen())
+
+	out := m.View()
+	// popup overlays the list area so the row body must NOT remain
+	// visible behind it.
+	assert.NotContains(t, out, "▸ ")
+	// popup contents include the documentation and source.
+	assert.Contains(t, out, "DEFAULT_CONFIG")
+	assert.Contains(t, out, "type: select")
+}
+
+func TestConfigsScreen_FocusKeyPositionsCursorAfterLoad(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
+		{Key: kafka.ConfigCleanupPolicy, Value: "compact", Source: "DEFAULT_CONFIG"},
+		{Key: kafka.ConfigRetentionMs, Value: "60000", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{
+		Service:  svc,
+		Topic:    "alpha",
+		FocusKey: kafka.ConfigRetentionMs,
+	})
+	driveConfigs(t, m, m.Init())
+
+	// without FocusKey the cursor would land on compression.type
+	// (sorted first by category). FocusKey overrides that for one load.
+	assert.Equal(t, kafka.ConfigRetentionMs, m.SelectedKey())
+}
+
+func TestConfigsScreen_DownArrowMovesCursor(t *testing.T) {
+	svc := newConfigsFake()
+	svc.configs["alpha"] = []kafka.TopicConfig{
+		{Key: "compression.type", Value: "producer", Source: "DEFAULT_CONFIG"},
+		{Key: kafka.ConfigCleanupPolicy, Value: "compact", Source: "DEFAULT_CONFIG"},
+	}
+	m := topics.NewConfigsModel(topics.ConfigsOptions{Service: svc, Topic: "alpha"})
+	driveConfigs(t, m, m.Init())
+
+	// rows are sorted by category, then key — Compression < Retention.
+	require.Equal(t, "compression.type", m.SelectedKey())
+	_ = m.Update(keyPress("down"))
+	assert.Equal(t, kafka.ConfigCleanupPolicy, m.SelectedKey())
 }
 
 // ----- helpers -----
