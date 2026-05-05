@@ -95,11 +95,6 @@ func WithSelectable(on bool) TableOption {
 	return func(t *Table) { t.selectable = on }
 }
 
-// WithHeight sets the visible body height (rows). 0 means "fit all".
-func WithHeight(rows int) TableOption {
-	return func(t *Table) { t.height = rows }
-}
-
 // WithStyles overrides the theme styles (mostly for tests).
 func WithStyles(s theme.Styles) TableOption {
 	return func(t *Table) { t.styles = s }

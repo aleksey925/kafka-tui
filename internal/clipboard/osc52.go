@@ -27,24 +27,11 @@ const (
 	OSC52MaxBytes = 75_000
 )
 
-// OSC52Options configures [NewOSC52].
-type OSC52Options struct {
-	// Writer receives the escape sequence. When nil, /dev/tty is opened
-	// on demand; if /dev/tty is not available, os.Stderr is used as a
-	// final fallback.
-	Writer io.Writer
-}
-
 // OSC52 emits the OSC 52 escape sequence for the system clipboard.
 type OSC52 struct {
 	mu     sync.Mutex
 	writer io.Writer
 	owned  io.Closer // when non-nil, closed by Close()
-}
-
-// NewOSC52 constructs an [OSC52] writer.
-func NewOSC52(opts OSC52Options) *OSC52 {
-	return &OSC52{writer: opts.Writer}
 }
 
 // DefaultOSC52 returns an [OSC52] writer that opens /dev/tty lazily on
@@ -90,14 +77,6 @@ func (o *OSC52) Copy(ctx context.Context, payload string) error {
 		return fmt.Errorf("clipboard: osc52 write: %w", err)
 	}
 	return nil
-}
-
-// EncodeSequence returns the OSC 52 escape sequence for payload without
-// writing it. Useful for tests and for callers that want to forward the
-// sequence through a different channel (e.g. a Bubble Tea command).
-func EncodeSequence(payload string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(payload))
-	return osc52Prefix + encoded + osc52Terminator
 }
 
 func (o *OSC52) acquireWriter() (io.Writer, error) {

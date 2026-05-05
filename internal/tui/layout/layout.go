@@ -281,37 +281,6 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
-// Status renders the right-aligned refresh indicator.
-//
-// Examples:
-//
-//	"auto: 5s, refreshed 3s ago"
-//	"manual"
-//	"paused"
-func Status(s theme.Styles, info StatusInfo) string {
-	switch info.Mode {
-	case RefreshOff:
-		return ""
-	case RefreshManual:
-		return s.StatusInfo.Render("manual")
-	case RefreshPaused:
-		return s.StatusWarn.Render("paused")
-	case RefreshAuto:
-		body := "auto: " + formatDuration(info.Interval)
-		if !info.LastRefresh.IsZero() {
-			now := info.Now
-			if now.IsZero() {
-				now = time.Now()
-			}
-			elapsed := max(0, now.Sub(info.LastRefresh))
-			body += ", refreshed " + formatDuration(elapsed.Round(time.Second)) + " ago"
-		}
-		return s.StatusInfo.Render(body)
-	default:
-		return ""
-	}
-}
-
 // KeyHints renders the bottom row of `key label` pairs joined by spaces.
 func KeyHints(s theme.Styles, hints []KeyHint) string {
 	if len(hints) == 0 {

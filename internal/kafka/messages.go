@@ -46,18 +46,6 @@ const (
 	ValueFormatJSON
 )
 
-// String returns the lowercase name of the format ("json", "utf8", "binary").
-func (f ValueFormat) String() string {
-	switch f {
-	case ValueFormatJSON:
-		return "json"
-	case ValueFormatUTF8:
-		return "utf8"
-	default:
-		return "binary"
-	}
-}
-
 // DetectValueFormat reports the inferred display format for a record value
 // in the order JSON → UTF-8 → binary used by §7.4 of the spec.
 func DetectValueFormat(v []byte) ValueFormat {

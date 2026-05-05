@@ -1,12 +1,9 @@
 package clipboard_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -159,83 +156,6 @@ func TestNew__auto__concurrencyDoesNotSerializeTransports(t *testing.T) {
 	// assert
 	assert.Equal(t, []string{"x"}, native.payloads())
 	assert.Equal(t, []string{"x"}, osc52.payloads())
-}
-
-func TestEncodeSequence__producesOSC52Frame(t *testing.T) {
-	// act
-	seq := clipboard.EncodeSequence("hello world")
-
-	// assert
-	require.True(t, strings.HasPrefix(seq, "\x1b]52;c;"), "missing OSC 52 prefix: %q", seq)
-	require.True(t, strings.HasSuffix(seq, "\x07"), "missing BEL terminator: %q", seq)
-	body := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b]52;c;"), "\x07")
-	decoded, err := base64.StdEncoding.DecodeString(body)
-	require.NoError(t, err)
-	assert.Equal(t, "hello world", string(decoded))
-}
-
-func TestEncodeSequence__emptyPayload__emitsValidFrameWithEmptyBody(t *testing.T) {
-	// act
-	seq := clipboard.EncodeSequence("")
-
-	// assert — empty payload still produces a well-formed frame so the
-	// terminal can clear the clipboard if it chooses to.
-	assert.Equal(t, "\x1b]52;c;\x07", seq)
-}
-
-func TestOSC52Copy__writesEncodedPayloadToInjectedWriter(t *testing.T) {
-	// arrange
-	var buf bytes.Buffer
-	c := clipboard.NewOSC52(clipboard.OSC52Options{Writer: &buf})
-
-	// act
-	require.NoError(t, c.Copy(context.Background(), "secret"))
-
-	// assert
-	assert.Equal(t, clipboard.EncodeSequence("secret"), buf.String())
-}
-
-func TestOSC52Copy__rejectsOversizedPayload(t *testing.T) {
-	// arrange
-	var buf bytes.Buffer
-	c := clipboard.NewOSC52(clipboard.OSC52Options{Writer: &buf})
-	payload := strings.Repeat("a", clipboard.OSC52MaxBytes+1)
-
-	// act
-	err := c.Copy(context.Background(), payload)
-
-	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "too large")
-	assert.Empty(t, buf.String(), "no bytes should be written when validation fails")
-}
-
-func TestOSC52Copy__cancelledContextReturnsError(t *testing.T) {
-	// arrange
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var buf bytes.Buffer
-	c := clipboard.NewOSC52(clipboard.OSC52Options{Writer: &buf})
-
-	// act
-	err := c.Copy(ctx, "payload")
-
-	// assert
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, buf.String())
-}
-
-func TestOSC52Copy__propagatesWriterError(t *testing.T) {
-	// arrange
-	w := failingWriter{err: errors.New("io down")}
-	c := clipboard.NewOSC52(clipboard.OSC52Options{Writer: w})
-
-	// act
-	err := c.Copy(context.Background(), "x")
-
-	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "io down")
 }
 
 func TestNative__darwin__usesPbcopy(t *testing.T) {
@@ -391,12 +311,6 @@ func (g *rendezvousClipboard) Copy(ctx context.Context, payload string) error {
 	return g.recordingClipboard.Copy(ctx, payload)
 }
 
-// failingWriter always returns its configured error. Used for OSC 52
-// writer-error tests.
-type failingWriter struct{ err error }
-
-func (f failingWriter) Write(_ []byte) (int, error) { return 0, f.err }
-
 // fakeRunner captures invocations of the native command runner.
 type fakeRunner struct {
 	mu        sync.Mutex
@@ -458,13 +372,4 @@ func TestDefaultOSC52_CloseIsIdempotent(t *testing.T) {
 	require.NotNil(t, o)
 	require.NoError(t, o.Close())
 	require.NoError(t, o.Close(), "Close on a never-acquired writer must be a no-op")
-}
-
-func TestOSC52_Close_ReleasesAcquiredWriter(t *testing.T) {
-	var buf bytes.Buffer
-	o := clipboard.NewOSC52(clipboard.OSC52Options{Writer: &buf})
-	require.NoError(t, o.Copy(context.Background(), "hi"))
-
-	// Close on an injected (non-owned) writer must not surface an error.
-	require.NoError(t, o.Close())
 }

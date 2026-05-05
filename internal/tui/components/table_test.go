@@ -51,7 +51,8 @@ func TestTable_NavigationGGandG(t *testing.T) {
 }
 
 func TestTable_NavigationCtrlDU(t *testing.T) {
-	tbl := components.NewTable(simpleColumns(), components.WithHeight(10))
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetHeight(10)
 	tbl.SetRows(simpleRows(50))
 
 	tbl, _ = tbl.Update(keyPressMsg("ctrl+d"))
@@ -264,7 +265,8 @@ func TestTable_ViewShowsSortIndicator(t *testing.T) {
 }
 
 func TestTable_ViewportScrollsWithCursor(t *testing.T) {
-	tbl := components.NewTable(simpleColumns(), components.WithHeight(3))
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetHeight(3)
 	tbl.SetRows(simpleRows(20))
 
 	for range 5 {

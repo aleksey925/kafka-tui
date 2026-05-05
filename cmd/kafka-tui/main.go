@@ -113,7 +113,11 @@ func run(flags *cli.Flags) error {
 	globalPath, projectPath := configPaths()
 
 	dialer := tui.NewKafkaDialer("kafka-tui")
-	clip := clipboard.New(clipboard.Options{})
+	method, err := clipboard.ParseMethod(loaded.Config.Clipboard.Method)
+	if err != nil {
+		return fmt.Errorf("init clipboard: %w", err)
+	}
+	clip := clipboard.New(clipboard.Options{Method: method})
 
 	boot := &tui.Bootstrap{
 		Loaded:            loaded,

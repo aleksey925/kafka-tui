@@ -113,13 +113,6 @@ func TestDetectValueFormat(t *testing.T) {
 	}
 }
 
-func TestValueFormat_String(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "json", ValueFormatJSON.String())
-	assert.Equal(t, "utf8", ValueFormatUTF8.String())
-	assert.Equal(t, "binary", ValueFormatBinary.String())
-}
-
 func TestClient_FetchLastN__kfake(t *testing.T) {
 	t.Parallel()
 
