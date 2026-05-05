@@ -36,7 +36,7 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version))
-	assert.Equal(t, 1, version)
+	assert.Equal(t, 2, version)
 
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestApplyMigrations_Idempotent(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	var rowCount int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&rowCount))
-	assert.Equal(t, 1, rowCount)
+	assert.Equal(t, 2, rowCount)
 }
 
 func TestAddProduce_RoundTripsEveryField(t *testing.T) {
@@ -439,6 +439,70 @@ func openRaw(t *testing.T, path string) *sql.DB {
 	db, err := sql.Open("sqlite", "file:"+path)
 	require.NoError(t, err)
 	return db
+}
+
+func TestMessagesView_RoundTrip(t *testing.T) {
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ts := time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC)
+	view := state.MessagesView{
+		SeekMode:   3,
+		Partition:  2,
+		Offset:     500,
+		Timestamp:  ts,
+		HasPart:    true,
+		Partitions: "0-2,5",
+	}
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", view))
+
+	got, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, view.SeekMode, got.SeekMode)
+	assert.Equal(t, view.Partition, got.Partition)
+	assert.Equal(t, view.Offset, got.Offset)
+	assert.True(t, ts.Equal(got.Timestamp))
+	assert.Equal(t, view.HasPart, got.HasPart)
+	assert.Equal(t, view.Partitions, got.Partitions)
+}
+
+func TestMessagesView_AbsentReturnsFalse(t *testing.T) {
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestMessagesView_PerClusterIsolation(t *testing.T) {
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 1}))
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c2", "orders", state.MessagesView{SeekMode: 2}))
+
+	v1, _, _ := store.LoadMessagesView(t.Context(), "c1", "orders")
+	v2, _, _ := store.LoadMessagesView(t.Context(), "c2", "orders")
+	assert.Equal(t, 1, v1.SeekMode)
+	assert.Equal(t, 2, v2.SeekMode)
+}
+
+func TestMessagesView_UpsertOverwrites(t *testing.T) {
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 1, Partitions: "0"}))
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 5, Partitions: "0-4"}))
+
+	got, _, _ := store.LoadMessagesView(t.Context(), "c1", "orders")
+	assert.Equal(t, 5, got.SeekMode)
+	assert.Equal(t, "0-4", got.Partitions)
 }
 
 func entry(cluster, topic string, partition int32, ts time.Time) state.ProduceEntry {

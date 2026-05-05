@@ -276,6 +276,99 @@ func scanEntry(s scanner) (ProduceEntry, error) {
 	return entry, nil
 }
 
+// MessagesView is the persisted shape of the messages screen's seek +
+// partition configuration. Stored per (cluster, topic).
+//
+// SeekMode is kept as an int so the state package does not need to import
+// the screen package; the caller is responsible for the mapping.
+type MessagesView struct {
+	SeekMode   int
+	Partition  int32
+	Offset     int64
+	Timestamp  time.Time
+	HasPart    bool
+	Partitions string
+}
+
+// messagesViewParams is the JSON-encoded shape of the seek_params column.
+type messagesViewParams struct {
+	Partition int32 `json:"partition,omitempty"`
+	Offset    int64 `json:"offset,omitempty"`
+	Timestamp int64 `json:"ts_nanos,omitempty"`
+	HasPart   bool  `json:"has_part,omitempty"`
+}
+
+// LoadMessagesView returns the persisted seek + partition view for the
+// given (cluster, topic). The bool is false when no row exists.
+func (s *Store) LoadMessagesView(ctx context.Context, cluster, topic string) (MessagesView, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT seek_mode, seek_params, partitions
+			FROM messages_view_state
+			WHERE cluster_name = ? AND topic = ?`,
+		cluster, topic,
+	)
+	var (
+		mode       int
+		paramsJSON string
+		parts      string
+	)
+	err := row.Scan(&mode, &paramsJSON, &parts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MessagesView{}, false, nil
+	}
+	if err != nil {
+		return MessagesView{}, false, fmt.Errorf("state: load messages_view_state: %w", err)
+	}
+	var p messagesViewParams
+	if paramsJSON != "" {
+		if err := json.Unmarshal([]byte(paramsJSON), &p); err != nil {
+			return MessagesView{}, false, fmt.Errorf("state: decode seek_params: %w", err)
+		}
+	}
+	view := MessagesView{
+		SeekMode:   mode,
+		Partition:  p.Partition,
+		Offset:     p.Offset,
+		HasPart:    p.HasPart,
+		Partitions: parts,
+	}
+	if p.Timestamp != 0 {
+		view.Timestamp = time.Unix(0, p.Timestamp).UTC()
+	}
+	return view, true, nil
+}
+
+// SaveMessagesView upserts the persisted seek + partition view.
+func (s *Store) SaveMessagesView(ctx context.Context, cluster, topic string, view MessagesView) error {
+	params := messagesViewParams{
+		Partition: view.Partition,
+		Offset:    view.Offset,
+		HasPart:   view.HasPart,
+	}
+	if !view.Timestamp.IsZero() {
+		params.Timestamp = view.Timestamp.UnixNano()
+	}
+	buf, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("state: encode seek_params: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO messages_view_state
+			(cluster_name, topic, seek_mode, seek_params, partitions, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(cluster_name, topic) DO UPDATE SET
+				seek_mode  = excluded.seek_mode,
+				seek_params= excluded.seek_params,
+				partitions = excluded.partitions,
+				updated_at = excluded.updated_at`,
+		cluster, topic, view.SeekMode, string(buf), view.Partitions, time.Now().UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("state: upsert messages_view_state: %w", err)
+	}
+	return nil
+}
+
 // nullableBlob returns a nil interface for empty payloads so SQLite stores
 // SQL NULL rather than an empty BLOB. This keeps the read path symmetrical
 // with how the produce form treats absent keys/values.

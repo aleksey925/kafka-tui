@@ -432,7 +432,9 @@ func (t *Table) rebuildView() {
 	// preserve currently focused row id so the cursor stays on it.
 	focusID := ""
 	if len(t.view) > 0 && t.cursor < len(t.view) {
-		focusID = t.rows[t.view[t.cursor]].ID
+		if idx := t.view[t.cursor]; idx >= 0 && idx < len(t.rows) {
+			focusID = t.rows[idx].ID
+		}
 	}
 
 	t.view = t.view[:0]

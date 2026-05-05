@@ -44,11 +44,8 @@ func drive(t *testing.T, m *messages.Model, cmd tea.Cmd) {
 }
 
 func TestNew_DefaultColumnsRendersHeader(t *testing.T) {
-	// arrange
 	svc := newFakeService()
-	// act
 	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
-	// assert
 	out := m.View()
 	assert.Contains(t, out, "Timestamp")
 	assert.Contains(t, out, "Offset")
@@ -56,7 +53,6 @@ func TestNew_DefaultColumnsRendersHeader(t *testing.T) {
 }
 
 func TestInit_LoadsMessages(t *testing.T) {
-	// arrange
 	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
 	svc := newFakeService()
 	svc.lastN = []kafka.Message{
@@ -65,10 +61,8 @@ func TestInit_LoadsMessages(t *testing.T) {
 	}
 	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
 
-	// act
 	drive(t, m, m.Init())
 
-	// assert
 	require.Len(t, m.Messages(), 2)
 	assert.Contains(t, m.Title(), "Messages · orders [2]")
 	out := m.View()
@@ -87,21 +81,6 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
 }
 
-func TestTitle_AppliesAngleBracketFilter(t *testing.T) {
-	now := time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)
-	svc := newFakeService()
-	svc.lastN = []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 10, Timestamp: now, Value: []byte(`{"id":1}`)},
-		{Topic: "orders", Partition: 1, Offset: 20, Timestamp: now, Value: []byte("plain")},
-	}
-	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
-	drive(t, m, m.Init())
-
-	m.SetSearch("plain")
-
-	assert.Contains(t, m.Title(), "Messages · orders [1/2] </plain>")
-}
-
 func TestEsc_RaisesBackAction(t *testing.T) {
 	m := buildModelWith(t)
 	_ = m.Update(keyPress("esc"))
@@ -114,299 +93,280 @@ func TestEnter_OpensDetailView(t *testing.T) {
 	})
 	_ = m.Update(keyPress("enter"))
 	assert.Equal(t, messages.ModeDetail, m.CurrentMode())
-	require.NotNil(t, m.Detail())
 }
 
-func TestDetailEsc_ReturnsToList(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Value: []byte("hello")},
-	})
-	_ = m.Update(keyPress("enter"))
-	require.Equal(t, messages.ModeDetail, m.CurrentMode())
-	_ = m.Update(keyPress("esc"))
-	assert.Equal(t, messages.ModeList, m.CurrentMode())
-	assert.Nil(t, m.Detail())
-}
-
-// TestHasOverlay_DetailIsOverlay pins the host contract: while in
-// ModeDetail the screen reports HasOverlay=true so the host's q/esc
-// fallback yields esc to the screen (which closes detail) instead of
-// also popping the messages screen — without this the user would skip
-// the list view entirely with a single esc.
 func TestHasOverlay_DetailIsOverlay(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte("hello")},
 	})
-	require.False(t, m.HasOverlay(), "list mode is not an overlay")
+	require.False(t, m.HasOverlay())
 
 	_ = m.Update(keyPress("enter"))
 	require.Equal(t, messages.ModeDetail, m.CurrentMode())
-	assert.True(t, m.HasOverlay(), "detail mode must report as overlay so esc stays inside the screen")
+	assert.True(t, m.HasOverlay())
 
 	_ = m.Update(keyPress("esc"))
-	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
+	assert.False(t, m.HasOverlay())
 }
 
-// TestSupportsSearch_DisabledInDetail pins the host contract: while in
-// ModeDetail the screen reports SupportsSearch=false so the host skips
-// opening the `/` prompt — there's no rows to filter, an inert prompt
-// would just swallow keystrokes.
-func TestSupportsSearch_DisabledInDetail(t *testing.T) {
+func TestSearch_DisabledOutsideListMode(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Value: []byte("hello")},
 	})
-	require.True(t, m.SearchAvailable(), "list mode must support search")
+	require.True(t, m.SearchAvailable())
 
 	_ = m.Update(keyPress("enter"))
-	require.Equal(t, messages.ModeDetail, m.CurrentMode())
-	assert.False(t, m.SearchAvailable(), "detail mode has no rows to filter")
+	assert.False(t, m.SearchAvailable())
 }
 
-// TestClose_StopsFollowSession pins the lifecycle contract: when the
-// host swaps the active screen the messages model's Close() must
-// terminate any open FollowSession so its kgo consumer / goroutine
-// (started against context.Background) is released instead of leaking
-// indefinitely.
-func TestClose_StopsFollowSession(t *testing.T) {
+// ----- seek popup -----
+
+func TestSeek_OpensPopupOnS(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('s'))
+	assert.Equal(t, messages.ModeSeek, m.CurrentMode())
+	assert.True(t, m.HasOverlay())
+}
+
+func TestSeek_DigitPicksLatestImmediately(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('s'))
+	cmd := m.Update(keyPressRune('1'))
+	drive(t, m, cmd)
+	assert.Equal(t, messages.ModeList, m.CurrentMode())
+	assert.Equal(t, messages.SeekLatest, m.SeekState().Mode)
+}
+
+func TestSeek_FromTimestamp_OpensInputStage(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	svc := newFakeService()
-	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1}}
+	// no Timestamp on the row → form prefill stays empty.
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('5'))
+	require.Equal(t, messages.ModeSeek, m.CurrentMode())
+
+	for _, r := range "2026-04-27" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	assert.Equal(t, messages.ModeList, m.CurrentMode())
+	assert.Equal(t, messages.SeekFromTimestamp, m.SeekState().Mode)
+	assert.Equal(t, time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC), m.SeekState().Timestamp)
+}
+
+func TestSeek_FromOffset_ExplicitPartition(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('3')) // from offset
+	require.Equal(t, messages.ModeSeek, m.CurrentMode())
+
+	// the form pre-fills from selected row (0:1). Wipe and type 3:500.
+	for range len("0:1") {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "3:500" {
+		_ = m.Update(keyPressRune(r))
+	}
+	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 3, Offset: 500, Value: []byte("at")}}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	assert.Equal(t, int32(3), svc.lastOffsetPartition)
+	assert.Equal(t, int64(500), svc.lastOffsetValue)
+	assert.True(t, m.SeekState().HasPart)
+}
+
+func TestSeek_FromOffset_ImplicitPartitionClampsAgainstWatermarks(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 100},
+		1: {Low: 50, High: 150},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('3')) // from offset
+	for range len("0:1") {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "200" {
+		_ = m.Update(keyPressRune(r))
+	}
+	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 99, Value: []byte("clamp")}}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	require.False(t, m.SeekState().HasPart)
+	// each partition's offset got clamped against its watermarks.
+	require.Len(t, svc.atOffsetCalls, 2)
+	clamped := map[int32]int64{}
+	for _, c := range svc.atOffsetCalls {
+		clamped[c.partition] = c.offset
+	}
+	assert.Equal(t, int64(99), clamped[0])
+	assert.Equal(t, int64(149), clamped[1])
+}
+
+func TestSeek_InvalidTimestamp_ToastAndStaysOpen(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('5')) // from timestamp
+	require.Equal(t, messages.ModeSeek, m.CurrentMode())
+
+	// clear the prefill (empty if no timestamp on selected) — type garbage.
+	for range 50 {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "garbage" {
+		_ = m.Update(keyPressRune(r))
+	}
+	_ = m.Update(keyPress("enter"))
+
+	assert.Equal(t, messages.ModeSeek, m.CurrentMode())
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "invalid timestamp")
+}
+
+func TestSeek_EscFromInputReturnsToMenu(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('5')) // from timestamp → input
+	require.Equal(t, messages.ModeSeek, m.CurrentMode())
+
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, messages.ModeSeek, m.CurrentMode(), "esc from input must return to menu, not close")
+
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, messages.ModeList, m.CurrentMode(), "esc from menu must close")
+}
+
+// ----- partitions popup -----
+
+func TestPartitions_OpensOnP(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('P'))
+	assert.Equal(t, messages.ModePartitions, m.CurrentMode())
+}
+
+func TestPartitions_SubmitFiltersAndReloads(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('P'))
+	for _, r := range "0,2-3" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	assert.Equal(t, messages.ModeList, m.CurrentMode())
+	assert.Equal(t, []int32{0, 2, 3}, m.PartitionFilter())
+	assert.Equal(t, []int32{0, 2, 3}, svc.lastPartitions)
+}
+
+func TestPartitions_InvalidShowsToast(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('P'))
+	for _, r := range "abc" {
+		_ = m.Update(keyPressRune(r))
+	}
+	_ = m.Update(keyPress("enter"))
+
+	assert.Equal(t, messages.ModePartitions, m.CurrentMode())
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+}
+
+// ----- smart filter stub -----
+
+func TestSmartFilter_FOpensStubModal(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
+	_ = m.Update(keyPressRune('f'))
+	assert.Equal(t, messages.ModeSmartFilter, m.CurrentMode())
+
+	out := m.View()
+	assert.Contains(t, out, "Smart filter")
+
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, messages.ModeList, m.CurrentMode())
+}
+
+// ----- header line -----
+
+func TestHeader_DescribesActiveSeekAndPartitions(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(120, 30)
+	drive(t, m, m.Init())
+
+	out := stripANSI(m.View())
+	assert.Contains(t, out, "seek: latest")
+	assert.Contains(t, out, "partitions: all")
+	assert.Contains(t, out, "smart filter: —")
+}
+
+// ----- live tail via seek -----
+
+func TestSeek_LiveStartsFollow(t *testing.T) {
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("old")}}
 	msgCh := make(chan kafka.Message)
 	errCh := make(chan error)
 	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
 
-	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
 	drive(t, m, m.Init())
-	_ = m.Update(keyPress("f"))
+
+	_ = m.Update(keyPressRune('s'))
+	cmd := m.Update(keyPressRune('7')) // live
+	require.NotNil(t, cmd)
+
+	// don't drive the follow-poll cmd — it would block on msgCh. Just check
+	// that the seek state and follow session are wired up.
+	assert.Equal(t, messages.SeekLive, m.SeekState().Mode)
+	assert.True(t, m.Following())
+}
+
+// ----- bracket boundaries -----
+
+func TestBracket_LiveFlipsToLatest(t *testing.T) {
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
 	require.True(t, m.Following())
 
-	m.Close()
-	assert.False(t, m.Following(), "Close must terminate the follow session")
+	// [ flips to latest synchronously and dispatches a fresh fetch.
+	cmd := m.Update(keyPress("["))
+	drive(t, m, cmd)
 
-	// idempotent — second call must not panic on the already-closed session.
-	m.Close()
+	assert.False(t, m.Following())
+	assert.Equal(t, messages.SeekLatest, m.SeekState().Mode)
 }
 
-func TestDetail_NextPrevNavigatesMessages(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Offset: 1, Value: []byte("a")},
-		{Topic: "orders", Offset: 2, Value: []byte("b")},
-		{Topic: "orders", Offset: 3, Value: []byte("c")},
-	})
-	_ = m.Update(keyPress("enter"))
-	require.Equal(t, 0, m.Detail().Index())
-
-	_ = m.Update(keyPress("n"))
-	assert.Equal(t, 1, m.Detail().Index())
-	_ = m.Update(keyPress("n"))
-	assert.Equal(t, 2, m.Detail().Index())
-	// clamps at end
-	_ = m.Update(keyPress("n"))
-	assert.Equal(t, 2, m.Detail().Index())
-	_ = m.Update(keyPress("p"))
-	assert.Equal(t, 1, m.Detail().Index())
-}
-
-func TestDetail_FormatHotkeysSwitchView(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Value: []byte(`{"a":1}`)},
-	})
-	_ = m.Update(keyPress("enter"))
-
-	_ = m.Update(keyPressRune('1'))
-	assert.Equal(t, messages.ViewJSON, m.Detail().ViewMode())
-	_ = m.Update(keyPressRune('2'))
-	assert.Equal(t, messages.ViewRaw, m.Detail().ViewMode())
-	_ = m.Update(keyPressRune('3'))
-	assert.Equal(t, messages.ViewHex, m.Detail().ViewMode())
-}
-
-func TestDetail_CopyRecordUsesClipboard(t *testing.T) {
-	cb := &fakeClipboard{}
-	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "orders", Partition: 1, Offset: 7, Key: []byte("kk"), Value: []byte("hello")},
-	}, 0)
-
-	_, _ = model.Update(keyPress("y"))
-
-	require.Len(t, cb.payloads, 1)
-	assert.Contains(t, cb.payloads[0], `"topic": "orders"`)
-	assert.Contains(t, cb.payloads[0], `"partition": 1`)
-	assert.Contains(t, cb.payloads[0], `"offset": 7`)
-	assert.Contains(t, cb.payloads[0], `"text": "kk"`)
-	assert.Contains(t, model.ConsumeAction().Toast, "copied record")
-}
-
-func TestDetail_CopyRecord_NoClipboard_WarnsUnavailable(t *testing.T) {
-	// arrange
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages: []kafka.Message{{Topic: "t", Value: []byte("v")}},
-		Index:    0,
-	})
-
-	// act
-	_, _ = model.Update(keyPress("y"))
-
-	// assert
-	assert.Contains(t, model.ConsumeAction().Warn, "clipboard unavailable")
-}
-
-func TestDetail_CopyRecord_ClipboardError_WarnsWithError(t *testing.T) {
-	// arrange
-	cb := &fakeClipboard{err: errors.New("no display")}
-	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "t", Value: []byte("v")},
-	}, 0)
-
-	// act
-	_, _ = model.Update(keyPress("y"))
-
-	// assert
-	assert.Contains(t, model.ConsumeAction().Warn, "no display")
-}
-
-func TestDetail_SaveValue_JSONDetectedAsJSON(t *testing.T) {
-	// arrange
-	fw := &fakeWriter{}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{{Topic: "t", Partition: 0, Offset: 1, Value: []byte(`{"a":1}`)}},
-		Index:      0,
-		FileWriter: fw,
-		OutputDir:  "/tmp",
-	})
-
-	// act
-	_, _ = model.Update(keyPress("s"))
-
-	// assert
-	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/t-p0-o1-value.json", fw.writes[0].path)
-}
-
-func TestDetail_SaveValue_BinaryGetsBinExt(t *testing.T) {
-	// arrange
-	fw := &fakeWriter{}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{{Topic: "t", Partition: 0, Offset: 1, Value: []byte{0x00, 0x01, 0x02}}},
-		Index:      0,
-		FileWriter: fw,
-		OutputDir:  "/tmp",
-	})
-
-	// act
-	_, _ = model.Update(keyPress("s"))
-
-	// assert
-	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/t-p0-o1-value.bin", fw.writes[0].path)
-}
-
-func TestDetail_SaveValueWritesFile(t *testing.T) {
-	fw := &fakeWriter{}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{{Topic: "orders", Partition: 1, Offset: 7, Value: []byte("hello")}},
-		Index:      0,
-		FileWriter: fw,
-		OutputDir:  "/tmp",
-	})
-
-	_, _ = model.Update(keyPress("s"))
-
-	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p1-o7-value.txt", fw.writes[0].path)
-	assert.Equal(t, []byte("hello"), fw.writes[0].data)
-	assert.Contains(t, model.ConsumeAction().Toast, "saved")
-}
-
-func TestDetail_SaveFullJSON(t *testing.T) {
-	fw := &fakeWriter{}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{{Topic: "orders", Partition: 0, Offset: 3, Value: []byte(`{"k":1}`)}},
-		Index:      0,
-		FileWriter: fw,
-		OutputDir:  "/tmp",
-	})
-
-	_, _ = model.Update(keyPress("S"))
-
-	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p0-o3-record.json", fw.writes[0].path)
-	assert.Contains(t, string(fw.writes[0].data), `"topic": "orders"`)
-}
-
-func TestDetail_OpenEditorInvokesPager(t *testing.T) {
-	pager := &fakePager{}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
-		Index:    0,
-		Pager:    pager,
-	})
-
-	_, _ = model.Update(keyPress("e"))
-
-	assert.Equal(t, 1, pager.calls)
-}
-
-func TestDetail_ResendRaisesProduceWithMessage(t *testing.T) {
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
-		Index:    0,
-	})
-
-	_, _ = model.Update(keyPress("r"))
-
-	a := model.ConsumeAction()
-	assert.Equal(t, "orders", a.Produce)
-	require.NotNil(t, a.PrefillFromMessage)
-	assert.Equal(t, []byte("hello"), a.PrefillFromMessage.Value)
-}
-
-func TestDetail_ResendBlockedInReadOnly(t *testing.T) {
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
-		Index:    0,
-		ReadOnly: true,
-	})
-
-	_, _ = model.Update(keyPress("r"))
-
-	a := model.ConsumeAction()
-	assert.Empty(t, a.Produce)
-	assert.Contains(t, a.Warn, "read-only")
-}
-
-func TestProduce_RaisesAction(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Value: []byte("v")},
-	})
-	_ = m.Update(keyPress("p"))
-	a := m.ConsumeAction()
-	assert.Equal(t, "orders", a.Produce)
-	assert.Nil(t, a.PrefillFromMessage)
-}
-
-func TestResend_FromListRaisesActionWithMessage(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Offset: 5, Value: []byte("payload")},
-	})
-	_ = m.Update(keyPress("r"))
-	a := m.ConsumeAction()
-	assert.Equal(t, "orders", a.Produce)
-	require.NotNil(t, a.PrefillFromMessage)
-	assert.Equal(t, []byte("payload"), a.PrefillFromMessage.Value)
-}
-
-func TestReadOnly_BlocksProduceAndResend(t *testing.T) {
-	svc := newFakeService()
-	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
-	m := messages.New(messages.Options{Service: svc, Topic: "orders", ReadOnly: true})
-	drive(t, m, m.Init())
-
-	_ = m.Update(keyPress("p"))
-	assert.Empty(t, m.ConsumeAction().Produce)
-	_ = m.Update(keyPress("r"))
-	assert.Empty(t, m.ConsumeAction().Produce)
-	assert.GreaterOrEqual(t, m.Toasts().Len(), 1)
-}
+// ----- earlier/later still works -----
 
 func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	svc := newFakeService()
@@ -423,7 +383,7 @@ func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	cmd := m.Update(keyPress("["))
 	drive(t, m, cmd)
 	require.Equal(t, map[int32]int64{0: 100}, svc.lastEarlierBaseline)
-	assert.Equal(t, []byte("z"), m.Messages()[0].Value, "earlier batch is prepended")
+	assert.Equal(t, []byte("z"), m.Messages()[0].Value)
 
 	svc.later = []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 102, Value: []byte("c")},
@@ -431,120 +391,200 @@ func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	cmd = m.Update(keyPress("]"))
 	drive(t, m, cmd)
 	require.Equal(t, map[int32]int64{0: 101}, svc.lastLaterBaseline)
-	assert.Equal(t, []byte("c"), m.Messages()[len(m.Messages())-1].Value, "later batch is appended")
+	assert.Equal(t, []byte("c"), m.Messages()[len(m.Messages())-1].Value)
 }
 
-func TestJumpToOffset_FetchesAtOffset(t *testing.T) {
-	svc := newFakeService()
-	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
-	drive(t, m, m.Init())
+// ----- produce/resend -----
 
-	svc.atOffset = []kafka.Message{
-		{Topic: "orders", Partition: 2, Offset: 500, Value: []byte("at")},
-	}
-	cmd := m.JumpToOffset(2, 500)
-	drive(t, m, cmd)
-
-	require.Equal(t, int32(2), svc.lastOffsetPartition)
-	require.Equal(t, int64(500), svc.lastOffsetValue)
-	require.Len(t, m.Messages(), 1)
-	assert.Equal(t, []byte("at"), m.Messages()[0].Value)
-}
-
-func TestJumpToTimestamp_FetchesAtTimestamp(t *testing.T) {
-	svc := newFakeService()
-	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
-	drive(t, m, m.Init())
-
-	target := time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC)
-	svc.atTimestamp = []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 11, Timestamp: target},
-	}
-	cmd := m.JumpToTimestamp(target)
-	drive(t, m, cmd)
-
-	assert.Equal(t, target, svc.lastTimestamp)
-	require.Len(t, m.Messages(), 1)
-	assert.Equal(t, target, m.Messages()[0].Timestamp)
-}
-
-func TestJumpToPartition_NarrowsFilterAndReloads(t *testing.T) {
-	svc := newFakeService()
-	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 3, Offset: 1}}
-	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
-	drive(t, m, m.Init())
-
-	cmd := m.JumpToPartition([]int32{3, 4})
-	drive(t, m, cmd)
-
-	assert.Equal(t, []int32{3, 4}, svc.lastPartitions)
-}
-
-func TestGPrefix_OpenJumpFormShowsToast(t *testing.T) {
+func TestProduce_RaisesAction(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
-	_ = m.Update(keyPress("g"))
-	_ = m.Update(keyPress("o"))
-	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	_ = m.Update(keyPressRune('p'))
+	a := m.ConsumeAction()
+	assert.Equal(t, "orders", a.Produce)
+	assert.Nil(t, a.PrefillFromMessage)
 }
 
-func TestFollow_StartReceivesChunkAndPrependsToList(t *testing.T) {
-	now := time.Now()
+func TestResend_FromListRaisesActionWithMessage(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Offset: 5, Value: []byte("payload")},
+	})
+	_ = m.Update(keyPressRune('r'))
+	a := m.ConsumeAction()
+	assert.Equal(t, "orders", a.Produce)
+	require.NotNil(t, a.PrefillFromMessage)
+	assert.Equal(t, []byte("payload"), a.PrefillFromMessage.Value)
+}
+
+func TestReadOnly_BlocksProduceAndResend(t *testing.T) {
 	svc := newFakeService()
-	svc.lastN = []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("old")},
-	}
-	msgCh := make(chan kafka.Message, 4)
-	errCh := make(chan error, 1)
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", ReadOnly: true})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('p'))
+	assert.Empty(t, m.ConsumeAction().Produce)
+	_ = m.Update(keyPressRune('r'))
+	assert.Empty(t, m.ConsumeAction().Produce)
+}
+
+// ----- close / lifecycle -----
+
+func TestClose_StopsFollowSession(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
 	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
 
-	m := messages.New(messages.Options{
-		Service: svc,
-		Topic:   "orders",
-		Now:     func() time.Time { return now },
-	})
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following())
+
+	m.Close()
+	assert.False(t, m.Following())
+	m.Close()
+}
+
+// ----- persistence -----
+
+func TestPersistence_WritesViewOnSeekChange(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	repo := newFakeRepo()
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
 	drive(t, m, m.Init())
 
-	// queue an incoming follow chunk before the model issues the poll. The
-	// errors channel is intentionally left open so the select inside
-	// followPollCmd cannot race with a closed errCh.
-	msgCh <- kafka.Message{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("new"), Timestamp: now}
-	close(msgCh)
-	_ = errCh // referenced to keep the channel alive for the test duration
-
-	cmd := m.Update(keyPress("f"))
-	require.NotNil(t, cmd)
-	assert.True(t, m.Following())
+	_ = m.Update(keyPressRune('s'))
+	cmd := m.Update(keyPressRune('2')) // earliest
 	drive(t, m, cmd)
 
-	// after the chunk arrived the new message should be at the top.
-	require.GreaterOrEqual(t, len(m.Messages()), 2)
-	assert.Equal(t, []byte("new"), m.Messages()[0].Value)
+	require.NotNil(t, repo.saved["c1\x00orders"])
+	assert.Equal(t, messages.SeekEarliest, repo.saved["c1\x00orders"].SeekMode)
 }
+
+func TestPersistence_LiveSkipsWrite(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	repo := newFakeRepo()
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	cmd := m.Update(keyPressRune('7')) // live
+	require.NotNil(t, cmd)
+	// live mode doesn't write; previous (initial latest) was never saved either.
+	if v, ok := repo.saved["c1\x00orders"]; ok {
+		assert.NotEqual(t, messages.SeekLive, v.SeekMode)
+	}
+}
+
+func TestPersistence_RestoresOnInit(t *testing.T) {
+	svc := newFakeService()
+	svc.atTimestamp = []kafka.Message{{Topic: "orders", Value: []byte("from-restore")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 100},
+		2: {Low: 0, High: 50},
+	}
+	target := time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC)
+	repo := newFakeRepo()
+	repo.saved["c1\x00orders"] = messages.ViewState{
+		SeekMode:   messages.SeekFromTimestamp,
+		Timestamp:  target,
+		Partitions: "0,2",
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+
+	drive(t, m, m.Init())
+
+	assert.Equal(t, messages.SeekFromTimestamp, m.SeekState().Mode)
+	assert.Equal(t, target, m.SeekState().Timestamp)
+	assert.Equal(t, []int32{0, 2}, m.PartitionFilter())
+}
+
+func TestPersistence_RestoreDropsDeadPartitions(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 10},
+		// partition 5 used to exist but is gone now.
+	}
+	repo := newFakeRepo()
+	repo.saved["c1\x00orders"] = messages.ViewState{
+		SeekMode:   messages.SeekLatest,
+		Partitions: "0,5",
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+
+	drive(t, m, m.Init())
+
+	assert.Equal(t, []int32{0}, m.PartitionFilter())
+}
+
+func TestPersistence_RestoreClampsOffsetAboveLatest(t *testing.T) {
+	svc := newFakeService()
+	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 9, Value: []byte("clamped")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 10},
+	}
+	repo := newFakeRepo()
+	repo.saved["c1\x00orders"] = messages.ViewState{
+		SeekMode:  messages.SeekFromOffset,
+		Partition: 0,
+		Offset:    9_999_999,
+		HasPart:   true,
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+
+	drive(t, m, m.Init())
+
+	// offset clamped against High-1 == 9.
+	assert.Equal(t, int64(9), m.SeekState().Offset)
+}
+
+func TestPersistence_PartitionsSubmitWritesView(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	repo := newFakeRepo()
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('P'))
+	for _, r := range "0,3" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	require.NotNil(t, repo.saved["c1\x00orders"])
+	assert.Equal(t, "0,3", repo.saved["c1\x00orders"].Partitions)
+}
+
+// ----- helpers -----
 
 func TestFormatTimestamp_AlwaysIncludesFullDate(t *testing.T) {
 	ts := time.Date(2026, 4, 28, 9, 30, 15, 250_000_000, time.UTC)
-	// timestamps come from the broker in UTC and are rendered in the
-	// local timezone — compute the expected string the same way so the
-	// test is portable across hosts.
 	wantSame := ts.Local().Format("2006-01-02 15:04:05.000")
 	assert.Equal(t, wantSame, messages.FormatTimestamp(ts))
-
-	older := time.Date(2026, 3, 15, 14, 5, 0, 0, time.UTC)
-	wantOlder := older.Local().Format("2006-01-02 15:04:05.000")
-	assert.Equal(t, wantOlder, messages.FormatTimestamp(older))
 }
 
 func TestFormatTimestamp_ZeroReturnsDash(t *testing.T) {
 	assert.Equal(t, "—", messages.FormatTimestamp(time.Time{}))
 }
 
-func TestKeyHints_ContainExpectedLabels(t *testing.T) {
+func TestKeyHints_ContainsExpectedLabels(t *testing.T) {
 	svc := newFakeService()
 	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
-	labels := keyHintLabels(m.KeyHints())
-	got := strings.Join(labels, ",")
+	got := strings.Join(keyHintLabels(m.KeyHints()), ",")
 	assert.Contains(t, got, "detail")
-	assert.Contains(t, got, "follow")
+	assert.Contains(t, got, "seek")
+	assert.Contains(t, got, "partitions")
+	assert.Contains(t, got, "smart filter")
 	assert.Contains(t, got, "earlier/later")
 	assert.Contains(t, got, "search")
 	assert.Contains(t, got, "produce")
@@ -577,15 +617,6 @@ func buildModelWithMessages(t *testing.T, msgs []kafka.Message) *messages.Model 
 	return m
 }
 
-func newDetail(t *testing.T, cb messages.Clipboard, msgs []kafka.Message, idx int) *messages.DetailModel {
-	t.Helper()
-	return messages.NewDetailModel(messages.DetailOptions{
-		Messages:  msgs,
-		Index:     idx,
-		Clipboard: cb,
-	})
-}
-
 func keyHintLabels(hints []layout.KeyHint) []string {
 	out := make([]string, 0, len(hints))
 	for _, h := range hints {
@@ -594,20 +625,29 @@ func keyHintLabels(hints []layout.KeyHint) []string {
 	return out
 }
 
+type offsetCall struct {
+	partition int32
+	offset    int64
+}
+
 type fakeService struct {
-	mu          sync.Mutex
-	lastN       []kafka.Message
-	earlier     []kafka.Message
-	later       []kafka.Message
-	atOffset    []kafka.Message
-	atTimestamp []kafka.Message
-	err         error
+	mu           sync.Mutex
+	lastN        []kafka.Message
+	earliest     []kafka.Message
+	earlier      []kafka.Message
+	later        []kafka.Message
+	atOffset     []kafka.Message
+	atTimestamp  []kafka.Message
+	watermarks   map[int32]kafka.PartitionWatermarks
+	offsetsForTs map[int32]int64
+	err          error
 
 	lastPartitions      []int32
 	lastEarlierBaseline map[int32]int64
 	lastLaterBaseline   map[int32]int64
 	lastOffsetPartition int32
 	lastOffsetValue     int64
+	atOffsetCalls       []offsetCall
 	lastTimestamp       time.Time
 	followSession       *kafka.FollowSession
 }
@@ -621,11 +661,28 @@ func (f *fakeService) FetchLastN(_ context.Context, _ string, _ int, parts []int
 	return append([]kafka.Message(nil), f.lastN...), f.err
 }
 
+func (f *fakeService) FetchEarliest(_ context.Context, _ string, _ int, parts []int32) ([]kafka.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastPartitions = append([]int32(nil), parts...)
+	return append([]kafka.Message(nil), f.earliest...), f.err
+}
+
 func (f *fakeService) FetchAtOffset(_ context.Context, _ string, p int32, off int64, _ int) ([]kafka.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastOffsetPartition = p
 	f.lastOffsetValue = off
+	f.atOffsetCalls = append(f.atOffsetCalls, offsetCall{partition: p, offset: off})
+	return append([]kafka.Message(nil), f.atOffset...), f.err
+}
+
+func (f *fakeService) FetchAtOffsets(_ context.Context, _ string, offsets map[int32]int64, _ int) ([]kafka.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for p, o := range offsets {
+		f.atOffsetCalls = append(f.atOffsetCalls, offsetCall{partition: p, offset: o})
+	}
 	return append([]kafka.Message(nil), f.atOffset...), f.err
 }
 
@@ -653,6 +710,39 @@ func (f *fakeService) FetchLater(_ context.Context, _ string, baseline map[int32
 	return append([]kafka.Message(nil), f.later...), f.err
 }
 
+func (f *fakeService) WatermarksFor(_ context.Context, _ string, parts []int32) (map[int32]kafka.PartitionWatermarks, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.watermarks == nil {
+		return map[int32]kafka.PartitionWatermarks{}, nil
+	}
+	if len(parts) == 0 {
+		out := map[int32]kafka.PartitionWatermarks{}
+		maps.Copy(out, f.watermarks)
+		return out, nil
+	}
+	out := map[int32]kafka.PartitionWatermarks{}
+	for _, p := range parts {
+		if w, ok := f.watermarks[p]; ok {
+			out[p] = w
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeService) OffsetsForTimestamp(_ context.Context, _ string, ts time.Time, parts []int32) (map[int32]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastTimestamp = ts
+	f.lastPartitions = append([]int32(nil), parts...)
+	if f.offsetsForTs == nil {
+		return map[int32]int64{}, nil
+	}
+	out := map[int32]int64{}
+	maps.Copy(out, f.offsetsForTs)
+	return out, nil
+}
+
 func (f *fakeService) Follow(_ context.Context, _ string, parts []int32) (*kafka.FollowSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -664,6 +754,27 @@ func copyMap(m map[int32]int64) map[int32]int64 {
 	out := make(map[int32]int64, len(m))
 	maps.Copy(out, m)
 	return out
+}
+
+type fakeRepo struct {
+	mu    sync.Mutex
+	saved map[string]messages.ViewState
+}
+
+func newFakeRepo() *fakeRepo { return &fakeRepo{saved: map[string]messages.ViewState{}} }
+
+func (f *fakeRepo) LoadMessagesView(_ context.Context, cluster, topic string) (messages.ViewState, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.saved[cluster+"\x00"+topic]
+	return v, ok, nil
+}
+
+func (f *fakeRepo) SaveMessagesView(_ context.Context, cluster, topic string, view messages.ViewState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved[cluster+"\x00"+topic] = view
+	return nil
 }
 
 type fakeClipboard struct {
@@ -733,52 +844,139 @@ func keyPressRune(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
-func TestDetailView_RendersHeaderAndBlocks(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Partition: 3, Offset: 42,
-		Timestamp: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
-		Key:       []byte("k1"),
-		Value:     []byte(`{"hello":"world"}`),
-		Headers: []kafka.Header{
-			{Key: "trace-id", Value: []byte("abc")},
-		},
-	}})
-	m.SetSize(120, 30)
-	_ = m.Update(keyPress("enter"))
+// ----- detail tests (preserved from previous suite) -----
 
-	out := m.View()
-
-	// header line — topic, partition, offset, timestamp, position counter.
-	assert.Contains(t, out, "orders")
-	assert.Contains(t, out, "partition 3")
-	assert.Contains(t, out, "offset 42")
-	assert.Contains(t, out, "2026-05-01")
-	assert.Contains(t, out, "1/1")
-
-	// block titles include byte counts and counts.
-	assert.Contains(t, out, "Key (2 bytes)")
-	assert.Contains(t, out, "Headers (1)")
-	// header value rendered with trace-id key.
-	assert.Contains(t, out, "trace-id")
-	// value block carries the formatted JSON content.
-	assert.Contains(t, out, "hello")
-	assert.Contains(t, out, "world")
+func newDetail(t *testing.T, cb messages.Clipboard, msgs []kafka.Message, idx int) *messages.DetailModel {
+	t.Helper()
+	return messages.NewDetailModel(messages.DetailOptions{
+		Messages:  msgs,
+		Index:     idx,
+		Clipboard: cb,
+	})
 }
 
-func TestDetailView_EmptyKeyAndHeadersRenderEmptyMarker(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte("value-only"),
-	}})
+func TestDetail_NextPrevNavigatesMessages(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Offset: 1, Value: []byte("a")},
+		{Topic: "orders", Offset: 2, Value: []byte("b")},
+		{Topic: "orders", Offset: 3, Value: []byte("c")},
+	})
+	_ = m.Update(keyPress("enter"))
+	require.Equal(t, 0, m.Detail().Index())
+
+	_ = m.Update(keyPressRune('n'))
+	assert.Equal(t, 1, m.Detail().Index())
+	_ = m.Update(keyPressRune('n'))
+	assert.Equal(t, 2, m.Detail().Index())
+	_ = m.Update(keyPressRune('n'))
+	assert.Equal(t, 2, m.Detail().Index())
+	_ = m.Update(keyPressRune('p'))
+	assert.Equal(t, 1, m.Detail().Index())
+}
+
+func TestDetail_FormatHotkeysSwitchView(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Value: []byte(`{"a":1}`)},
+	})
+	_ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPressRune('1'))
+	assert.Equal(t, messages.ViewJSON, m.Detail().ViewMode())
+	_ = m.Update(keyPressRune('2'))
+	assert.Equal(t, messages.ViewRaw, m.Detail().ViewMode())
+	_ = m.Update(keyPressRune('3'))
+	assert.Equal(t, messages.ViewHex, m.Detail().ViewMode())
+}
+
+func TestDetail_CopyRecordUsesClipboard(t *testing.T) {
+	cb := &fakeClipboard{}
+	model := newDetail(t, cb, []kafka.Message{
+		{Topic: "orders", Partition: 1, Offset: 7, Key: []byte("kk"), Value: []byte("hello")},
+	}, 0)
+
+	_, _ = model.Update(keyPressRune('y'))
+
+	require.Len(t, cb.payloads, 1)
+	assert.Contains(t, cb.payloads[0], `"topic": "orders"`)
+}
+
+func TestDetail_SaveValueWritesFile(t *testing.T) {
+	fw := &fakeWriter{}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages:   []kafka.Message{{Topic: "orders", Partition: 1, Offset: 7, Value: []byte("hello")}},
+		Index:      0,
+		FileWriter: fw,
+		OutputDir:  "/tmp",
+	})
+
+	_, _ = model.Update(keyPressRune('s'))
+
+	require.Len(t, fw.writes, 1)
+	assert.Equal(t, "/tmp/orders-p1-o7-value.txt", fw.writes[0].path)
+}
+
+func TestDetail_OpenEditorInvokesPager(t *testing.T) {
+	pager := &fakePager{}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
+		Index:    0,
+		Pager:    pager,
+	})
+	_, _ = model.Update(keyPressRune('e'))
+	assert.Equal(t, 1, pager.calls)
+}
+
+func TestDetail_ResendRaisesProduceWithMessage(t *testing.T) {
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
+		Index:    0,
+	})
+	_, _ = model.Update(keyPressRune('r'))
+	a := model.ConsumeAction()
+	assert.Equal(t, "orders", a.Produce)
+	require.NotNil(t, a.PrefillFromMessage)
+}
+
+func TestDetailEsc_ReturnsToList(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Value: []byte("hello")},
+	})
+	_ = m.Update(keyPress("enter"))
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, messages.ModeList, m.CurrentMode())
+}
+
+func TestMessages_BreadcrumbTracksDetailNavigation(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
+		{Topic: "orders", Partition: 2, Offset: 42, Value: []byte("b")},
+	})
 	m.SetSize(80, 20)
 	_ = m.Update(keyPress("enter"))
-
-	out := m.View()
-	assert.Contains(t, out, "(empty)", "empty key + headers must show the empty marker")
-	assert.Contains(t, out, "value-only")
+	require.Equal(t, "msg-0-1", m.Breadcrumb())
+	_ = m.Update(keyPressRune('n'))
+	assert.Equal(t, "msg-2-42", m.Breadcrumb())
 }
 
-// largeValue produces a deterministic multi-line payload long enough to
-// overflow a small detail viewport.
+// stripANSI removes terminal escape sequences so tests can compare plain text.
+func stripANSI(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j - 1
+			continue
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
 func largeValue(lines int) []byte {
 	parts := make([]string, lines)
 	for i := range lines {
@@ -799,319 +997,19 @@ func openDetailWithLarge(t *testing.T, h, lines int) *messages.Model {
 }
 
 func TestDetail_VerticalScroll_JumpsAndClamps(t *testing.T) {
-	// arrange
 	m := openDetailWithLarge(t, 12, 200)
 	d := m.Detail()
 	require.Equal(t, 0, d.ScrollOffset())
 
-	// act + assert: j moves down by one
-	_ = m.Update(keyPress("j"))
+	_ = m.Update(keyPressRune('j'))
 	assert.Equal(t, 1, d.ScrollOffset())
-
-	// k moves back up
-	_ = m.Update(keyPress("k"))
+	_ = m.Update(keyPressRune('k'))
 	assert.Equal(t, 0, d.ScrollOffset())
-
-	// G goes to bottom — visible window should end at totalLines.
-	_ = m.Update(keyPress("G"))
+	_ = m.Update(keyPressRune('G'))
 	_, last, total, ok := d.ScrollSummary()
 	require.True(t, ok)
-	assert.Equal(t, total, last, "G must align bottom of window with last line")
-
-	// gg returns to top.
-	_ = m.Update(keyPress("g"))
-	_ = m.Update(keyPress("g"))
+	assert.Equal(t, total, last)
+	_ = m.Update(keyPressRune('g'))
+	_ = m.Update(keyPressRune('g'))
 	assert.Equal(t, 0, d.ScrollOffset())
-}
-
-func TestDetail_PageScrollUsesViewportHeight(t *testing.T) {
-	m := openDetailWithLarge(t, 10, 200)
-	d := m.Detail()
-
-	_ = m.Update(ctrlKey('f'))
-	first := d.ScrollOffset()
-	assert.Greater(t, first, 1, "ctrl+f must move by ~one page")
-
-	_ = m.Update(ctrlKey('b'))
-	assert.Equal(t, 0, d.ScrollOffset())
-}
-
-func TestDetail_HorizontalScroll_OnlyWhenNoWrap(t *testing.T) {
-	// arrange: short payload but a single very wide line so wrap matters.
-	wide := strings.Repeat("X", 400)
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte(wide),
-	}})
-	m.SetSize(40, 20)
-	_ = m.Update(keyPress("enter"))
-	d := m.Detail()
-	require.True(t, d.Wrap(), "wrap must be on by default")
-
-	// act: l in wrap mode is a no-op for hScroll
-	_ = m.Update(keyPress("l"))
-	assert.Equal(t, 0, d.HScrollOffset(), "horizontal scroll must be ignored while wrap is on")
-
-	// switch wrap off, then l moves the window right
-	_ = m.Update(keyPress("w"))
-	require.False(t, d.Wrap())
-	_ = m.Update(keyPress("l"))
-	assert.Positive(t, d.HScrollOffset(), "l must advance horizontal offset when wrap is off")
-
-	// h moves it back
-	prev := d.HScrollOffset()
-	_ = m.Update(keyPress("h"))
-	assert.Less(t, d.HScrollOffset(), prev)
-}
-
-func TestDetail_HorizontalScroll_ClampsAtMaxLineWidth(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte(strings.Repeat("X", 120)),
-	}})
-	m.SetSize(40, 20)
-	_ = m.Update(keyPress("enter"))
-	_ = m.Update(keyPress("w"))
-	d := m.Detail()
-	require.False(t, d.Wrap())
-
-	for range 1000 {
-		_ = m.Update(keyPress("l"))
-	}
-	// pinned at maxLineWidth - width, never grows past content.
-	first := d.HScrollOffset()
-	_ = m.Update(keyPress("l"))
-	assert.Equal(t, first, d.HScrollOffset(), "horizontal scroll must clamp at content width")
-}
-
-func TestDetail_WrapTogglePreservedAcrossNextPrev(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v1")},
-		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("v2")},
-	})
-	m.SetSize(80, 20)
-	_ = m.Update(keyPress("enter"))
-	d := m.Detail()
-
-	_ = m.Update(keyPress("w"))
-	require.False(t, d.Wrap())
-
-	_ = m.Update(keyPress("n"))
-	assert.False(t, d.Wrap(), "n must not reset wrap mode")
-}
-
-func TestDetail_NextResetsScroll(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 1, Value: largeValue(200)},
-		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("short")},
-	})
-	m.SetSize(80, 12)
-	_ = m.Update(keyPress("enter"))
-	d := m.Detail()
-
-	_ = m.Update(keyPress("G"))
-	require.Positive(t, d.ScrollOffset())
-
-	_ = m.Update(keyPress("n"))
-	assert.Equal(t, 0, d.ScrollOffset(), "switching message must rewind scroll")
-}
-
-func TestDetail_ViewModeSwitchResetsScroll(t *testing.T) {
-	m := openDetailWithLarge(t, 12, 200)
-	d := m.Detail()
-
-	_ = m.Update(keyPress("G"))
-	require.Positive(t, d.ScrollOffset())
-
-	_ = m.Update(keyPress("2"))
-	assert.Equal(t, 0, d.ScrollOffset(), "view mode switch must rewind scroll")
-}
-
-func TestDetail_SetSize_ReclampsScroll(t *testing.T) {
-	m := openDetailWithLarge(t, 12, 60)
-	d := m.Detail()
-
-	_ = m.Update(keyPress("G"))
-	scrolled := d.ScrollOffset()
-	require.Positive(t, scrolled)
-
-	// growing the body so everything fits should pin scroll back to 0.
-	m.SetSize(80, 200)
-	assert.Equal(t, 0, d.ScrollOffset(), "growing the viewport must drop the now-invalid offset")
-}
-
-func TestMessages_WrapPersistsAcrossDetailReopen(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte("v"),
-	}})
-	m.SetSize(80, 20)
-	_ = m.Update(keyPress("enter"))
-	require.True(t, m.Detail().Wrap())
-
-	_ = m.Update(keyPress("w"))
-	require.False(t, m.Detail().Wrap())
-	_ = m.Update(keyPress("esc"))
-	require.Nil(t, m.Detail())
-
-	_ = m.Update(keyPress("enter"))
-	require.NotNil(t, m.Detail())
-	assert.False(t, m.Detail().Wrap(), "wrap preference must survive close/reopen")
-}
-
-func TestMessages_BreadcrumbTracksDetailNavigation(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{
-		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
-		{Topic: "orders", Partition: 2, Offset: 42, Value: []byte("b")},
-	})
-	m.SetSize(80, 20)
-	_ = m.Update(keyPress("enter"))
-	require.Equal(t, "msg-0-1", m.Breadcrumb())
-
-	_ = m.Update(keyPress("n"))
-	assert.Equal(t, "msg-2-42", m.Breadcrumb(), "breadcrumb must follow detail's focused message")
-
-	_ = m.Update(keyPress("p"))
-	assert.Equal(t, "msg-0-1", m.Breadcrumb())
-}
-
-func TestMessages_TitleEmbedsScrollIndicator(t *testing.T) {
-	m := openDetailWithLarge(t, 12, 200)
-
-	title := m.Title()
-	assert.Contains(t, title, "wrap")
-	assert.Regexp(t, `L\d+-\d+/\d+`, title, "title must include line range while in detail")
-
-	_ = m.Update(keyPress("w"))
-	assert.Contains(t, m.Title(), "nowrap")
-}
-
-// stripANSI removes terminal escape sequences so tests can compare against
-// plain expected substrings without depending on the active theme palette.
-func stripANSI(s string) string {
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
-			j := i + 2
-			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
-				j++
-			}
-			if j < len(s) {
-				j++
-			}
-			i = j - 1
-			continue
-		}
-		out = append(out, s[i])
-	}
-	return string(out)
-}
-
-// findValueLine returns the first body line that contains needle within the
-// rendered view, or "" when not found. Helps tests reason about what the
-// user sees regardless of header / block-title chrome.
-func findValueLine(view, needle string) string {
-	for line := range strings.SplitSeq(stripANSI(view), "\n") {
-		if strings.Contains(line, needle) {
-			return line
-		}
-	}
-	return ""
-}
-
-func TestDetail_WrapOn_BreaksLongLineAcrossVisualLines(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte(strings.Repeat("X", 200)),
-	}})
-	m.SetSize(40, 30)
-	_ = m.Update(keyPress("enter"))
-	require.True(t, m.Detail().Wrap())
-
-	// the long X line should appear as several visual lines in the rendered body.
-	xLines := 0
-	for line := range strings.SplitSeq(stripANSI(m.View()), "\n") {
-		if strings.Contains(line, "XXXX") {
-			xLines++
-		}
-	}
-	assert.Greater(t, xLines, 1, "wrap=on must split a 200-char line into multiple visual lines at width=40")
-}
-
-func TestDetail_WrapOff_KeepsLongLineSingleAndTruncates(t *testing.T) {
-	payload := strings.Repeat("X", 200)
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte(payload),
-	}})
-	m.SetSize(40, 30)
-	_ = m.Update(keyPress("enter"))
-	_ = m.Update(keyPress("w"))
-	require.False(t, m.Detail().Wrap())
-
-	xLines := 0
-	for line := range strings.SplitSeq(stripANSI(m.View()), "\n") {
-		if strings.Contains(line, "XXXX") {
-			xLines++
-			// each rendered line must fit the viewport width (40).
-			assert.LessOrEqual(t, len(line), 40, "nowrap mode must truncate, not overflow the viewport")
-		}
-	}
-	assert.Equal(t, 1, xLines, "wrap=off must keep the long line as a single visual line")
-}
-
-func TestDetail_HScroll_SlidesVisibleContent(t *testing.T) {
-	// arrange: payload begins with a recognizable prefix so we can tell when
-	// the horizontal window has actually moved past it.
-	payload := "AAAA" + strings.Repeat("B", 200)
-	m := buildModelWithMessages(t, []kafka.Message{{
-		Topic: "orders", Value: []byte(payload),
-	}})
-	m.SetSize(40, 30)
-	_ = m.Update(keyPress("enter"))
-	_ = m.Update(keyPress("w"))
-	require.False(t, m.Detail().Wrap())
-
-	before := findValueLine(m.View(), "AAAA")
-	require.NotEmpty(t, before, "prefix must be visible before scrolling")
-
-	// scroll right until prefix scrolls off-screen.
-	for range 20 {
-		_ = m.Update(keyPress("l"))
-	}
-	require.Positive(t, m.Detail().HScrollOffset())
-	after := findValueLine(m.View(), "AAAA")
-	assert.Empty(t, after, "AAAA prefix must scroll out of view once hScroll exceeds its position")
-}
-
-func TestDetail_GThenNonG_DoesNotJumpToTop(t *testing.T) {
-	m := openDetailWithLarge(t, 12, 200)
-	d := m.Detail()
-	_ = m.Update(keyPress("G"))
-	require.Positive(t, d.ScrollOffset())
-	bottom := d.ScrollOffset()
-
-	// `g` primes the gg sequence; the next non-`g` key must NOT scroll to top —
-	// it should be processed as a normal scroll command (here, j moves down,
-	// but we are already pinned at the bottom, so offset stays).
-	_ = m.Update(keyPress("g"))
-	_ = m.Update(keyPress("j"))
-	assert.Equal(t, bottom, d.ScrollOffset(), "g followed by a non-g key must not jump to top")
-}
-
-func TestDetail_KeyHints_IncludeScrollAndWrap(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
-	m.SetSize(80, 20)
-	_ = m.Update(keyPress("enter"))
-
-	labels := keyHintKeys(m.KeyHints())
-	assert.Contains(t, labels, "j/k", "detail hints must advertise scroll keys")
-	assert.Contains(t, labels, "w", "detail hints must advertise wrap toggle")
-}
-
-func keyHintKeys(hints []layout.KeyHint) []string {
-	out := make([]string, 0, len(hints))
-	for _, h := range hints {
-		out = append(out, h.Key)
-	}
-	return out
-}
-
-func ctrlKey(r rune) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
 }

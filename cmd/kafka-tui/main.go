@@ -17,6 +17,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/state"
 	"github.com/aleksey925/kafka-tui/internal/tui"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
+	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
@@ -115,20 +116,21 @@ func run(flags *cli.Flags) error {
 	clip := clipboard.New(clipboard.Options{})
 
 	boot := &tui.Bootstrap{
-		Loaded:          loaded,
-		Clusters:        clusterList,
-		CLIName:         cliClu,
-		GlobalPath:      globalPath,
-		ProjectPath:     projectPath,
-		LogPath:         logger.ResolvedAt,
-		Dialer:          dialer,
-		Pinger:          tui.NewClusterPinger(dialer, 5*time.Second),
-		Editor:          clusters.DefaultEditor(),
-		History:         produceHistory(store, logger.Logger),
-		Clipboard:       clip,
-		Pager:           produce.DefaultPagerOpener(),
-		StartupWarnings: loaded.Warnings,
-		ReadOnly:        flags.Inline.ReadOnly,
+		Loaded:            loaded,
+		Clusters:          clusterList,
+		CLIName:           cliClu,
+		GlobalPath:        globalPath,
+		ProjectPath:       projectPath,
+		LogPath:           logger.ResolvedAt,
+		Dialer:            dialer,
+		Pinger:            tui.NewClusterPinger(dialer, 5*time.Second),
+		Editor:            clusters.DefaultEditor(),
+		History:           produceHistory(store, logger.Logger),
+		MessagesViewState: messagesViewState(store, logger.Logger),
+		Clipboard:         clip,
+		Pager:             produce.DefaultPagerOpener(),
+		StartupWarnings:   loaded.Warnings,
+		ReadOnly:          flags.Inline.ReadOnly,
 		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
 			fresh, err := config.Load(loaderOpts)
 			if err != nil {
@@ -248,6 +250,15 @@ func produceHistory(store *state.Store, log *slog.Logger) produce.History {
 		return nil
 	}
 	return tui.NewStateHistory(store, log)
+}
+
+// messagesViewState builds the persistent view-state repository when the
+// store opened successfully. nil disables persistence.
+func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateRepository {
+	if store == nil {
+		return nil
+	}
+	return tui.NewStateMessagesView(store, log)
 }
 
 // resolveLogPath loads config (without failing on missing files) and returns

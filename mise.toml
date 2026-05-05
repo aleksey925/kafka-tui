@@ -2,5 +2,6 @@
 go = "1.25"
 golangci-lint = "2.7.2"
 goreleaser = "2.13.2"
+node = "25.2"
 prek = "0.3.10"
 prettier = "3.8.3"

@@ -278,6 +278,127 @@ func TestClient_FetchEarlierLater__kfake(t *testing.T) {
 	assert.EqualValues(t, 7, later[len(later)-1].Offset)
 }
 
+func TestClient_FetchEarliest__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "earliest",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+	produceN(t, ctx, c, "earliest", 5)
+
+	msgs, err := c.FetchEarliest(ctx, "earliest", 3, nil)
+	require.NoError(t, err)
+	require.Len(t, msgs, 3)
+	for i, m := range msgs {
+		assert.Equal(t, int64(i), m.Offset)
+	}
+}
+
+func TestClient_FetchAtOffsets__multiPartitionSingleClient(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "at-offsets",
+		Partitions:        3,
+		ReplicationFactor: 1,
+	}))
+	produceTo(t, ctx, c, "at-offsets", []int32{0, 0, 1, 1, 2, 2})
+
+	msgs, err := c.FetchAtOffsets(ctx, "at-offsets", map[int32]int64{
+		0: 0,
+		1: 1,
+	}, 5)
+	require.NoError(t, err)
+	parts := map[int32]int{}
+	for _, m := range msgs {
+		parts[m.Partition]++
+	}
+	assert.Equal(t, 2, parts[0])
+	assert.Equal(t, 1, parts[1])
+	assert.Zero(t, parts[2], "partition 2 was not requested")
+}
+
+func TestClient_FetchAtOffsets__clampsOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "at-offsets-clamp",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+	produceN(t, ctx, c, "at-offsets-clamp", 3)
+
+	msgs, err := c.FetchAtOffsets(ctx, "at-offsets-clamp", map[int32]int64{0: -50}, 5)
+	require.NoError(t, err)
+	assert.Len(t, msgs, 3)
+}
+
+func TestClient_WatermarksFor__filter(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "wmfor",
+		Partitions:        3,
+		ReplicationFactor: 1,
+	}))
+	produceTo(t, ctx, c, "wmfor", []int32{0, 1, 1, 2, 2, 2})
+
+	got, err := c.WatermarksFor(ctx, "wmfor", []int32{1, 2})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	assert.EqualValues(t, 2, got[1].High)
+	assert.EqualValues(t, 3, got[2].High)
+	_, ok := got[0]
+	assert.False(t, ok, "partition 0 must be excluded by filter")
+
+	all, err := c.WatermarksFor(ctx, "wmfor", nil)
+	require.NoError(t, err)
+	assert.Len(t, all, 3)
+}
+
+func TestClient_OffsetsForTimestamp__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "off-ts",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	records := []*kgo.Record{
+		{Topic: "off-ts", Value: []byte("a"), Timestamp: base},
+		{Topic: "off-ts", Value: []byte("b"), Timestamp: base.Add(time.Minute)},
+		{Topic: "off-ts", Value: []byte("c"), Timestamp: base.Add(2 * time.Minute)},
+	}
+	require.NoError(t, c.kc.ProduceSync(ctx, records...).FirstErr())
+
+	out, err := c.OffsetsForTimestamp(ctx, "off-ts", base.Add(time.Minute), nil)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, out[0])
+}
+
 func TestClient_Follow__kfake(t *testing.T) {
 	t.Parallel()
 

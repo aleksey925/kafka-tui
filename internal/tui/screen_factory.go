@@ -115,9 +115,11 @@ func (m *Model) newMessages() *messages.Model {
 	return messages.New(messages.Options{
 		Service:   m.client,
 		Topic:     m.navTopic,
+		Cluster:   m.activeClu,
 		ReadOnly:  m.clusterRO,
 		Columns:   cfg.Messages.Columns,
 		Clipboard: m.boot.Clipboard,
+		ViewState: m.boot.MessagesViewState,
 		Now:       m.now,
 		Styles:    m.styles,
 	})

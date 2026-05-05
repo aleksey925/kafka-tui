@@ -282,6 +282,132 @@ func (c *Client) FetchAtTimestamp(ctx context.Context, topic string, ts time.Tim
 	return c.fetchUntilOffsets(ctx, topic, starts, ends)
 }
 
+// FetchEarliest reads up to `n` messages forward starting at the earliest
+// available offset of each requested partition. The result is sorted in
+// ascending (partition, offset) order.
+func (c *Client) FetchEarliest(ctx context.Context, topic string, n int, partitions []int32) ([]Message, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	wm, err := c.TopicWatermarks(ctx, topic)
+	if err != nil {
+		return nil, err
+	}
+	parts := selectPartitions(wm, partitions)
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	per := perPartitionShare(n, len(parts))
+	starts, ends := map[int32]kgo.Offset{}, map[int32]int64{}
+	for p, w := range parts {
+		if w.High <= w.Low {
+			continue
+		}
+		end := min(w.Low+int64(per), w.High)
+		starts[p] = kgo.NewOffset().At(w.Low)
+		ends[p] = end
+	}
+	if len(starts) == 0 {
+		return nil, nil
+	}
+	msgs, err := c.fetchUntilOffsets(ctx, topic, starts, ends)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(msgs, func(i, j int) bool {
+		if msgs[i].Partition != msgs[j].Partition {
+			return msgs[i].Partition < msgs[j].Partition
+		}
+		return msgs[i].Offset < msgs[j].Offset
+	})
+	if len(msgs) > n {
+		msgs = msgs[:n]
+	}
+	return msgs, nil
+}
+
+// FetchAtOffsets reads up to `perPartition` records from each (partition,
+// offset) pair via a single transient consumer client. Offsets outside a
+// partition's [low, high) window are clamped silently. The result is sorted
+// in ascending (partition, offset) order. Used by the messages screen for
+// fuzzy multi-partition seek.
+func (c *Client) FetchAtOffsets(ctx context.Context, topic string, offsets map[int32]int64, perPartition int) ([]Message, error) {
+	if perPartition <= 0 || len(offsets) == 0 {
+		return nil, nil
+	}
+	wm, err := c.TopicWatermarks(ctx, topic)
+	if err != nil {
+		return nil, err
+	}
+	starts, ends := map[int32]kgo.Offset{}, map[int32]int64{}
+	for p, off := range offsets {
+		w, ok := wm.Partitions[p]
+		if !ok {
+			continue
+		}
+		from := max(off, w.Low)
+		end := min(from+int64(perPartition), w.High)
+		if from >= end {
+			continue
+		}
+		starts[p] = kgo.NewOffset().At(from)
+		ends[p] = end
+	}
+	if len(starts) == 0 {
+		return nil, nil
+	}
+	msgs, err := c.fetchUntilOffsets(ctx, topic, starts, ends)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(msgs, func(i, j int) bool {
+		if msgs[i].Partition != msgs[j].Partition {
+			return msgs[i].Partition < msgs[j].Partition
+		}
+		return msgs[i].Offset < msgs[j].Offset
+	})
+	return msgs, nil
+}
+
+// WatermarksFor returns low/high offsets per requested partition. An empty
+// `partitions` list returns watermarks for every partition of the topic.
+// Used by the messages screen to clamp single-number offset jumps and to
+// drive page-step bounds.
+func (c *Client) WatermarksFor(ctx context.Context, topic string, partitions []int32) (map[int32]PartitionWatermarks, error) {
+	wm, err := c.TopicWatermarks(ctx, topic)
+	if err != nil {
+		return nil, err
+	}
+	return selectPartitions(wm, partitions), nil
+}
+
+// OffsetsForTimestamp returns, per partition, the offset of the first
+// message with timestamp >= ts. Partitions without a matching record (or
+// not in the requested filter when one is given) are absent from the map.
+func (c *Client) OffsetsForTimestamp(ctx context.Context, topic string, ts time.Time, partitions []int32) (map[int32]int64, error) {
+	listed, err := c.adm.ListOffsetsAfterMilli(ctx, ts.UnixMilli(), topic)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: list offsets after milli: %w", err)
+	}
+	want := map[int32]struct{}{}
+	for _, p := range partitions {
+		want[p] = struct{}{}
+	}
+	out := map[int32]int64{}
+	for p, o := range listed[topic] {
+		if o.Err != nil || o.Offset < 0 {
+			continue
+		}
+		if len(want) > 0 {
+			if _, ok := want[p]; !ok {
+				continue
+			}
+		}
+		out[p] = o.Offset
+	}
+	return out, nil
+}
+
 // FetchEarlier loads up to `count` messages older than `baseline` across
 // partitions. `baseline[p]` is the lowest offset already shown for partition p
 // (exclusive upper bound for this fetch). Returned messages are in

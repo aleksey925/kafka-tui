@@ -75,6 +75,9 @@ type Bootstrap struct {
 	History produce.History
 	// Clipboard is forwarded to messages detail for copy hotkeys. nil disables copy.
 	Clipboard messages.Clipboard
+	// MessagesViewState persists per-(cluster, topic) seek state. nil
+	// disables persistence; the screen always starts at `latest`.
+	MessagesViewState messages.ViewStateRepository
 	// Pager opens the produce value field in $EDITOR. nil disables ctrl+e.
 	Pager produce.PagerOpener
 	// StartupWarnings is surfaced as toasts on the clusters screen.

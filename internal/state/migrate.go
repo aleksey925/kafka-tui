@@ -40,6 +40,20 @@ var migrations = []migration{
 				ON produce_history (cluster, topic, ts DESC)`,
 		},
 	},
+	{
+		version: 2,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS messages_view_state (
+				cluster_name TEXT    NOT NULL,
+				topic        TEXT    NOT NULL,
+				seek_mode    INTEGER NOT NULL,
+				seek_params  TEXT    NOT NULL DEFAULT '{}',
+				partitions   TEXT    NOT NULL DEFAULT '',
+				updated_at   INTEGER NOT NULL,
+				PRIMARY KEY (cluster_name, topic)
+			)`,
+		},
+	},
 }
 
 // applyMigrations runs every migration whose version is greater than the
