@@ -45,9 +45,10 @@ func TestNew_RendersHeaderAndFields(t *testing.T) {
 	// act
 	out := m.View()
 
-	// Topic shows up only in the header line (`Produce → orders`); it is
-	// not an editable field of the form.
-	for _, want := range []string{"Produce → orders", "Partition", "Compression", "Key", "Headers", "Value"} {
+	// Topic appears in the screen title (rendered by the host frame), not
+	// as an editable form field.
+	assert.Equal(t, "Produce → orders", m.Title())
+	for _, want := range []string{"Partition", "Compression", "Key", "Headers", "Value"} {
 		assert.Contains(t, out, want)
 	}
 	_, ok := m.Form().Field("topic")
@@ -144,24 +145,6 @@ func TestSend_ValidationErrorOnEmptyTopic(t *testing.T) {
 	assert.Contains(t, m.View(), "topic is required")
 }
 
-func TestSend_ValidationErrorOnInvalidPartition(t *testing.T) {
-	svc := newFakeService()
-	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
-	m.Form().FocusKey("partition")
-	_ = m.Update(keyPress("enter")) // NORMAL → INSERT
-	// replace "auto" with garbage by clearing then typing
-	for range "auto" {
-		_ = m.Update(keyPress("backspace"))
-	}
-	typeText(m, "partition", "abc")
-
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
-
-	assert.Empty(t, svc.Sent())
-	assert.Contains(t, m.View(), "partition")
-}
-
 func TestPartition_AutoEqualsKafkaAuto(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
@@ -173,22 +156,137 @@ func TestPartition_AutoEqualsKafkaAuto(t *testing.T) {
 	assert.Equal(t, kafka.PartitionAuto, svc.Sent()[0].Partition)
 }
 
-func TestPartition_ManualNumberPropagated(t *testing.T) {
+func TestPartition_SegmentedOptionsLoadFromService(t *testing.T) {
 	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3, 4)
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	got, ok := m.Form().Field("partition")
+	require.True(t, ok)
+	assert.Equal(t, []string{"auto", "0", "1", "2", "3", "4"}, got.Options)
+}
+
+func TestPartition_CycleSelectsManualNumber(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3, 4)
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
 
 	m.Form().FocusKey("partition")
-	_ = m.Update(keyPress("enter")) // NORMAL → INSERT
-	for range "auto" {
-		_ = m.Update(keyPress("backspace"))
+	// auto → 0 → 1 → 2 → 3
+	for range 4 {
+		_ = m.Update(keyPress("right"))
 	}
-	typeText(m, "partition", "3")
 
 	cmd := m.Update(keyPress("ctrl+s"))
 	drive(t, m, cmd)
 
 	require.Len(t, svc.Sent(), 1)
 	assert.Equal(t, int32(3), svc.Sent()[0].Partition)
+}
+
+// Regression: when the user toggles between two topics via history faster
+// than the metadata fetch can complete, the picker must not get stuck on
+// `[auto]` for the original topic just because its prior load result is
+// still tracked as the "current" topic on the model.
+func TestPartition_RapidTopicTogglePreservesOptionsAfterReturn(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2)
+	hist := newFakeHistory()
+	// histBuf[0] is newest; ctrl+p walks toward older entries.
+	hist.entries = []produce.Entry{
+		{Topic: "topic-a", Partition: 0, Compression: kafka.CompressionNone},
+		{Topic: "topic-b", Partition: 0, Compression: kafka.CompressionNone},
+	}
+	m := produce.New(produce.Options{Service: svc, Topic: "topic-a", History: hist})
+	drive(t, m, m.Init())
+
+	// ctrl+p onto the topic-a entry — same topic, no reload expected.
+	_ = m.Update(keyPress("ctrl+p"))
+
+	// ctrl+p onto the topic-b entry — options are wiped and a load for
+	// topic-b is emitted. Intentionally do NOT drive that cmd: we want to
+	// model the case where the user moves away before topic-b's metadata
+	// arrives.
+	_ = m.Update(keyPress("ctrl+p"))
+
+	// ctrl+n back to the topic-a entry. The picker must re-issue a fetch
+	// for topic-a (the prior wipe to [auto] cleared its options).
+	cmd := m.Update(keyPress("ctrl+n"))
+	require.NotNil(t, cmd, "ctrl+n back to topic-a must re-fetch its partitions")
+	drive(t, m, cmd)
+
+	got, ok := m.Form().Field("partition")
+	require.True(t, ok)
+	assert.Equal(t, []string{"auto", "0", "1", "2"}, got.Options)
+}
+
+func TestPartition_TypeToJumpSelectsExactMatch(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+	m.Form().FocusKey("partition")
+
+	// "1" then "2" → "12" (multi-digit accumulation against the running buffer).
+	_ = m.Update(keyPress("1"))
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, "1", got.Value)
+
+	_ = m.Update(keyPress("2"))
+	got, _ = m.Form().Field("partition")
+	assert.Equal(t, "12", got.Value)
+}
+
+func TestPartition_TypeToJumpRestartsBufferOnPrefixMiss(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3, 4)
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+	m.Form().FocusKey("partition")
+
+	// "4" → "4". Then "9": buffer "49" matches no option, but "9" alone
+	// also doesn't match (max is 4). Buffer is dropped silently and the
+	// previous selection survives.
+	_ = m.Update(keyPress("4"))
+	_ = m.Update(keyPress("9"))
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, "4", got.Value)
+
+	// "2" — fresh single-digit jump.
+	_ = m.Update(keyPress("2"))
+	got, _ = m.Form().Field("partition")
+	assert.Equal(t, "2", got.Value)
+}
+
+func TestPartition_TypeToJumpClearedByFocusChange(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+	m.Form().FocusKey("partition")
+
+	_ = m.Update(keyPress("1"))
+	_ = m.Update(keyPress("tab")) // focus → compression, buffer cleared
+	_ = m.Update(keyPress("shift+tab"))
+	_ = m.Update(keyPress("2")) // fresh buffer "2", not "12"
+
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, "2", got.Value)
+}
+
+func TestPartition_LoadFailureSurfacesToast(t *testing.T) {
+	svc := newFakeService()
+	svc.partErr = errors.New("metadata unavailable")
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	got, ok := m.Form().Field("partition")
+	require.True(t, ok)
+	assert.Equal(t, []string{"auto"}, got.Options)
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "metadata unavailable")
 }
 
 func TestHeaders_ParsedAsKeyEquals(t *testing.T) {
@@ -506,7 +604,6 @@ func TestFullscreen_TabCyclesThroughAllFields(t *testing.T) {
 
 func TestFullscreen_ViewShowsTabStripWithActiveHighlighted(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-	m.SetSize(120, 30)
 	_ = m.Update(keyPress("shift++"))
 
 	out := m.View()
@@ -524,7 +621,6 @@ func TestFullscreen_ViewShowsTabStripWithActiveHighlighted(t *testing.T) {
 
 func TestFullscreen_CompressionRendersAsExpandedList(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-	m.SetSize(120, 30)
 	_ = m.Update(keyPress("shift++"))
 	// move focus to compression
 	for m.Form().FocusedField().Key != "compression" {
@@ -539,7 +635,6 @@ func TestFullscreen_CompressionRendersAsExpandedList(t *testing.T) {
 
 func TestFullscreen_LeavingModeBCollapsesCompressionPopup(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-	m.SetSize(120, 30)
 	_ = m.Update(keyPress("shift++"))
 	// compression is forced into popup form; render confirms.
 	for m.Form().FocusedField().Key != "compression" {
@@ -551,16 +646,6 @@ func TestFullscreen_LeavingModeBCollapsesCompressionPopup(t *testing.T) {
 	_ = m.Update(keyPress("shift+-"))
 	out := m.View()
 	assert.Contains(t, out, "◂ none ▸")
-}
-
-func TestTwoColumn_Mode_RendersWhenWideEnough(t *testing.T) {
-	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-	m.SetSize(120, 30)
-	out := m.View()
-	for _, label := range []string{"Partition", "Compression", "Key", "Headers", "Value"} {
-		assert.Contains(t, out, label)
-	}
-	assert.Contains(t, out, "Produce → orders", "topic only appears in the header line")
 }
 
 // ----- mode tests -----
@@ -863,7 +948,6 @@ func TestInsert_PlusIsLiteralInTextarea(t *testing.T) {
 
 func TestEditSuffix_ShownNextToFocusedFieldInInsert(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
-	m.SetSize(120, 30)
 
 	// in NORMAL there is no [EDIT] tag anywhere
 	out := m.View()
@@ -895,7 +979,6 @@ func TestEditSuffix_PreservedAcrossFormRebuilds(t *testing.T) {
 	m := produce.New(produce.Options{
 		Service: newFakeService(), Topic: "orders", History: hist,
 	})
-	m.SetSize(120, 30)
 	m.Form().FocusKey("key")
 	_ = m.Update(keyPress("enter"))
 	require.Equal(t, produce.ModeInsert, m.Mode())
@@ -926,13 +1009,40 @@ func typeText(m *produce.Model, field, text string) {
 }
 
 type fakeService struct {
-	mu     sync.Mutex
-	sent   []kafka.ProduceSpec
-	result kafka.ProduceResult
-	err    error
+	mu         sync.Mutex
+	sent       []kafka.ProduceSpec
+	result     kafka.ProduceResult
+	err        error
+	partitions []int32
+	partErr    error
 }
 
-func newFakeService() *fakeService { return &fakeService{} }
+func newFakeService() *fakeService {
+	// keep a non-empty default so tests that drive Init() get a deterministic
+	// minimal partition list ([auto, 0]); tests that want a different count
+	// overwrite via setPartitions. Tests that never call Init() see only the
+	// initial form options ([auto]) regardless of this default.
+	return &fakeService{partitions: []int32{0}}
+}
+
+func (f *fakeService) setPartitions(ids ...int32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.partitions = append([]int32(nil), ids...)
+}
+
+func (f *fakeService) TopicPartitions(_ context.Context, _ string) ([]kafka.PartitionDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.partErr != nil {
+		return nil, f.partErr
+	}
+	out := make([]kafka.PartitionDetail, len(f.partitions))
+	for i, id := range f.partitions {
+		out[i] = kafka.PartitionDetail{Partition: id}
+	}
+	return out, nil
+}
 
 func (f *fakeService) Produce(_ context.Context, spec kafka.ProduceSpec) (kafka.ProduceResult, error) {
 	f.mu.Lock()
@@ -1005,6 +1115,8 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "tab":
 		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "up":

@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -141,6 +142,30 @@ func (f *Form) SetValue(key, value string) {
 			f.fields[i].textCursor = runeLen(value)
 			return
 		}
+	}
+}
+
+// SetOptions replaces the Options of a FieldDropdown / FieldSegmented field.
+// If the current Value is no longer in the new option set, it falls back to
+// the first option (or "" when the list is empty). No-op for other kinds.
+func (f *Form) SetOptions(key string, opts []string) {
+	for i := range f.fields {
+		if f.fields[i].Key != key {
+			continue
+		}
+		fld := &f.fields[i]
+		if fld.Kind != FieldDropdown && fld.Kind != FieldSegmented {
+			return
+		}
+		fld.Options = append([]string(nil), opts...)
+		if len(opts) == 0 {
+			fld.Value = ""
+			return
+		}
+		if !slices.Contains(opts, fld.Value) {
+			fld.Value = opts[0]
+		}
+		return
 	}
 }
 

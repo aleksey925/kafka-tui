@@ -1,7 +1,8 @@
 // Package produce implements the produce form (§7.5) — the screen for
 // sending a single record to a topic. The form lets the user pick a partition
-// (auto/manual), compression codec, key, headers, and value, and supports
-// resending a previously-received message with one click.
+// (auto or any of the topic's partitions, via the segmented picker),
+// compression codec, key, headers, and value, and supports resending a
+// previously-received message with one click.
 //
 // Send & close (ctrl+s) submits the record and signals the host to leave;
 // Send & keep (ctrl+shift+s) submits without leaving — the form stays open
@@ -15,12 +16,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -28,10 +29,14 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// Service abstracts the single Kafka call the produce form needs. Tests
-// inject a fake; production wires this to *kafka.Client.
+// Service abstracts the Kafka calls the produce form needs. Tests inject a
+// fake; production wires this to *kafka.Client.
 type Service interface {
 	Produce(ctx context.Context, spec kafka.ProduceSpec) (kafka.ProduceResult, error)
+	// TopicPartitions returns the partition metadata for `topic`. Only the
+	// partition IDs are consumed by the produce screen — they populate the
+	// segmented partition picker.
+	TopicPartitions(ctx context.Context, topic string) ([]kafka.PartitionDetail, error)
 }
 
 // History persists past produces and surfaces them for prefill / ctrl+p /
@@ -131,8 +136,20 @@ type Model struct {
 	fullscreen bool
 	mode       Mode
 
-	width, height int
-	action        Action
+	// partitionsTopic is the topic whose partition list is currently loaded
+	// into the segmented picker. When `topic` diverges (resend / history
+	// jump to another topic), the options reset to {auto} until a fresh
+	// fetch lands.
+	partitionsTopic string
+
+	// partition type-to-jump: digits typed while the partition field is
+	// focused accumulate in `partitionTypeBuf` and select the matching
+	// option live; the buffer auto-clears after partitionTypeIdle of
+	// inactivity. `partitionTypeGen` invalidates stale tick callbacks.
+	partitionTypeBuf string
+	partitionTypeGen int
+
+	action Action
 
 	now    func() time.Time
 	styles theme.Styles
@@ -147,6 +164,14 @@ const (
 	fieldKey         = "key"
 	fieldHeaders     = "headers"
 	fieldValue       = "value"
+
+	// partitionAuto is the segmented-picker option mapped to
+	// kafka.PartitionAuto. Numeric options use FormatInt of the partition id.
+	partitionAuto = "auto"
+
+	// partitionTypeIdle is how long an accumulated digit buffer survives
+	// without further input before being cleared.
+	partitionTypeIdle = 700 * time.Millisecond
 )
 
 // Mode tracks vim-style edit modes for the produce form. NORMAL is the
@@ -212,7 +237,13 @@ func New(opts Options) *Model {
 // and by ctrl+r to reset the entire form.
 func (m *Model) buildForm() *components.Form {
 	fields := []components.Field{
-		{Key: fieldPartition, Label: "Partition (auto/<n>)", Kind: components.FieldText, Value: "auto"},
+		{
+			Key:     fieldPartition,
+			Label:   "Partition",
+			Kind:    components.FieldSegmented,
+			Options: []string{partitionAuto},
+			Value:   partitionAuto,
+		},
 		{
 			Key:     fieldCompression,
 			Label:   "Compression",
@@ -235,8 +266,83 @@ func compressionOptions() []string {
 	return out
 }
 
-// Init satisfies the screen contract — nothing to load asynchronously.
-func (m *Model) Init() tea.Cmd { return nil }
+// Init kicks off async metadata for the partition picker. The form starts
+// with just `auto` and grows once the partitions arrive (or the fetch fails,
+// in which case the picker stays auto-only and a toast surfaces the error).
+func (m *Model) Init() tea.Cmd {
+	return m.reloadPartitionsIfTopicChanged()
+}
+
+// partitionsLoadedMsg carries the partition list returned by the async
+// metadata fetch.
+type partitionsLoadedMsg struct {
+	topic      string
+	partitions []int32
+	err        error
+}
+
+func loadPartitionsCmd(svc Service, topic string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		details, err := svc.TopicPartitions(ctx, topic)
+		if err != nil {
+			return partitionsLoadedMsg{topic: topic, err: err}
+		}
+		ids := make([]int32, len(details))
+		for i, d := range details {
+			ids[i] = d.Partition
+		}
+		return partitionsLoadedMsg{topic: topic, partitions: ids}
+	}
+}
+
+func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
+	// stale response (topic changed via resend before metadata arrived)
+	if msg.topic != m.topic {
+		return
+	}
+	if msg.err != nil {
+		m.toasts.Push(components.ToastWarning, "partitions: "+msg.err.Error())
+		return
+	}
+	m.form.SetOptions(fieldPartition, partitionOptions(msg.partitions))
+	m.partitionsTopic = msg.topic
+}
+
+// reloadPartitionsIfTopicChanged returns a cmd to refresh the partition
+// picker when `m.topic` differs from the currently-loaded topic. When the
+// previous load was for a different (non-empty) topic, the options are
+// reset to {auto} so the user doesn't pick from stale partitions; on the
+// initial fetch the existing options are kept so a prefilled value isn't
+// clobbered before the real list arrives. Returns nil when the picker is
+// already in sync.
+func (m *Model) reloadPartitionsIfTopicChanged() tea.Cmd {
+	if m.topic == m.partitionsTopic {
+		return nil
+	}
+	if m.partitionsTopic != "" {
+		m.form.SetOptions(fieldPartition, []string{partitionAuto})
+	}
+	m.resetPartitionTypeBuf()
+	// clear immediately so a subsequent topic switch back to a previously
+	// loaded topic still re-triggers a fetch instead of trusting the stale
+	// `partitionsTopic` (the options were just wiped above).
+	m.partitionsTopic = ""
+	if m.topic == "" {
+		return nil
+	}
+	return loadPartitionsCmd(m.svc, m.topic)
+}
+
+func partitionOptions(ids []int32) []string {
+	out := make([]string, 0, len(ids)+1)
+	out = append(out, partitionAuto)
+	for _, id := range ids {
+		out = append(out, strconv.FormatInt(int64(id), 10))
+	}
+	return out
+}
 
 // Topic returns the topic the form is currently bound to. Topic isn't an
 // editable form field — it's set on construction or updated by resend /
@@ -283,8 +389,10 @@ func (m *Model) Sending() bool { return m.sending }
 // literals instead of triggering the host-level handlers.
 func (m *Model) WantsRawInput() bool { return true }
 
-// SetSize updates width/height (used by the layout chrome).
-func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
+// SetSize satisfies the Screen interface. The produce form is rendered by
+// the host frame, which manages width/height itself, so the screen ignores
+// the values.
+func (m *Model) SetSize(_, _ int) {}
 
 // KeyHints returns the screen-specific hints shown at the bottom row.
 func (m *Model) KeyHints() []layout.KeyHint {
@@ -333,11 +441,14 @@ func (m *Model) setFullscreen(on bool) {
 // Update routes incoming messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.SetSize(msg.Width, msg.Height)
-		return nil
 	case ProduceResultMsg:
 		m.handleResult(msg)
+		return nil
+	case partitionsLoadedMsg:
+		m.handlePartitionsLoaded(msg)
+		return nil
+	case partitionTypeTickMsg:
+		m.handlePartitionTypeTick(msg)
 		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -383,10 +494,10 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 	case "ctrl+p":
 		m.historyStep(+1)
-		return nil, true
+		return m.reloadPartitionsIfTopicChanged(), true
 	case "ctrl+n":
 		m.historyStep(-1)
-		return nil, true
+		return m.reloadPartitionsIfTopicChanged(), true
 	}
 	return nil, false
 }
@@ -417,9 +528,11 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 		m.setFullscreen(!m.fullscreen)
 		return nil
 	case "tab", "down":
+		m.resetPartitionTypeBuf()
 		m.form.FocusNext()
 		return nil
 	case "shift+tab", "up":
+		m.resetPartitionTypeBuf()
 		m.form.FocusPrev()
 		return nil
 	case "enter":
@@ -428,12 +541,87 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 	// segmented fields are "interactive without INSERT" — left/right and
 	// hjkl cycle the value live, so let the form handle them in NORMAL.
 	if m.form.FocusedField().Kind == components.FieldSegmented {
+		if cmd, handled := m.handlePartitionTypeJump(key); handled {
+			return cmd
+		}
 		f, cmd := m.form.Update(key)
 		m.form = f
 		return cmd
 	}
 	// any other NORMAL-mode keystroke is ignored.
 	return nil
+}
+
+// handlePartitionTypeJump implements type-to-jump on the partition picker:
+// digits typed while the partition field is focused accumulate into a
+// short-lived buffer and live-select the matching option ("4" then "7" →
+// "47"). The new digit is reconciled against the option set in three steps:
+// (1) extend the running buffer if some option still starts with it,
+// otherwise (2) restart from the digit alone if any option starts with it,
+// otherwise (3) eat the keystroke without changing buffer or value (so the
+// picker doesn't blink on out-of-range numbers). Non-digit keys clear the
+// buffer so subsequent arrow cycling starts from the current value. Each
+// consumed digit reschedules the idle timer. Returns (cmd, true) when the
+// key was consumed.
+func (m *Model) handlePartitionTypeJump(key tea.KeyPressMsg) (tea.Cmd, bool) {
+	if m.form.FocusedField().Key != fieldPartition {
+		return nil, false
+	}
+	s := key.String()
+	if len(s) != 1 || s[0] < '0' || s[0] > '9' {
+		// any non-digit on the partition field invalidates the buffer; the
+		// key itself is not consumed (left/right/etc. still cycle).
+		m.resetPartitionTypeBuf()
+		return nil, false
+	}
+	opts := m.form.FocusedField().Options
+	candidate := m.partitionTypeBuf + s
+	switch {
+	case slices.ContainsFunc(opts, func(o string) bool { return strings.HasPrefix(o, candidate) }):
+		m.partitionTypeBuf = candidate
+	case slices.ContainsFunc(opts, func(o string) bool { return strings.HasPrefix(o, s) }):
+		// the new digit breaks the running buffer — restart from this digit.
+		candidate = s
+		m.partitionTypeBuf = candidate
+	default:
+		// digit matches no option as either continuation or fresh prefix;
+		// eat it without touching buffer/value, but still bump the idle
+		// timer so it tracks "time since last keystroke", not "time since
+		// last successful prefix match".
+		m.partitionTypeGen++
+		return partitionTypeTickCmd(m.partitionTypeGen), true
+	}
+	if slices.Contains(opts, candidate) {
+		m.form.SetValue(fieldPartition, candidate)
+	}
+	m.partitionTypeGen++
+	return partitionTypeTickCmd(m.partitionTypeGen), true
+}
+
+func (m *Model) resetPartitionTypeBuf() {
+	if m.partitionTypeBuf == "" {
+		return
+	}
+	m.partitionTypeBuf = ""
+	m.partitionTypeGen++
+}
+
+// partitionTypeTickMsg fires after partitionTypeIdle to clear the digit
+// buffer if no further input arrived. `gen` is captured at scheduling time
+// so stale ticks (superseded by newer keystrokes) are ignored.
+type partitionTypeTickMsg struct{ gen int }
+
+func partitionTypeTickCmd(gen int) tea.Cmd {
+	return tea.Tick(partitionTypeIdle, func(time.Time) tea.Msg {
+		return partitionTypeTickMsg{gen: gen}
+	})
+}
+
+func (m *Model) handlePartitionTypeTick(msg partitionTypeTickMsg) {
+	if msg.gen != m.partitionTypeGen {
+		return
+	}
+	m.partitionTypeBuf = ""
 }
 
 // popupNavKey reports whether key belongs to the segmented popup while it
@@ -862,12 +1050,11 @@ func (m *Model) openEditor() {
 	m.form.FocusKey(fieldValue)
 }
 
-// View renders the form body wrapped in the standard rounded box. There are
-// two layouts: mode A (default) is a single column listing all fields and
-// stretching to the full available area; mode B (fullscreen) shows a tab
-// strip across the top and the active field below.
+// View renders the form body. The host wraps the screen in the standard
+// frame (with `Title()` shown in the top border), so this method only emits
+// the inner content: status lines, the form (or fullscreen tab strip), and
+// the bottom hint.
 func (m *Model) View() string {
-	header := m.styles.HelpTitle.Render("Produce → " + m.topic)
 	var hintText string
 	switch {
 	case m.mode == ModeInsert:
@@ -879,7 +1066,7 @@ func (m *Model) View() string {
 	}
 	hint := m.styles.HintLabel.Render(hintText)
 
-	parts := []string{header}
+	var parts []string
 	if m.err != "" {
 		parts = append(parts, m.styles.StatusErr.Render(m.err))
 	}
@@ -894,18 +1081,7 @@ func (m *Model) View() string {
 		body = m.form.View()
 	}
 	parts = append(parts, body, "", hint)
-	rendered := strings.Join(parts, "\n")
-
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 2)
-	// Stretch the box to fill the available area so the form occupies the
-	// whole screen instead of shrinking to its content.
-	if m.width > 4 {
-		box = box.Width(m.width - 2)
-	}
-	if m.height > 4 {
-		box = box.Height(m.height - 2)
-	}
-	return box.Render(rendered)
+	return strings.Join(parts, "\n")
 }
 
 // fieldOrder is the canonical tab order for navigation and tab-strip rendering.
