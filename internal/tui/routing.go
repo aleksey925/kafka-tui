@@ -133,9 +133,6 @@ func (m *Model) routeGroupsAction(s *groups.Model) tea.Cmd {
 		m.lastTopic = a.Topic
 		m.navTopic = a.Topic
 		return m.pushScreenCmd(ScreenMessages)
-	case len(a.TopicsForGroup) > 0:
-		m.navTopicsFilter = a.TopicsForGroup
-		return m.pushScreenCmd(ScreenTopics)
 	}
 	return nil
 }

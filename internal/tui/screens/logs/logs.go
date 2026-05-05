@@ -124,7 +124,10 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 func (m *Model) Title() string {
 	body := fmt.Sprintf("Logs · %d lines", len(m.lines))
 	if m.search != "" {
-		body = fmt.Sprintf("Logs · %d matches / %d lines /%s", len(m.matches), len(m.lines), m.search)
+		// match the host-wide search-marker convention used by every
+		// other screen (topics / clusters / messages / groups): the
+		// trailing query is wrapped in `</…>` so users learn one shape.
+		body = fmt.Sprintf("Logs · %d matches / %d lines </%s>", len(m.matches), len(m.lines), m.search)
 	}
 	if m.follow {
 		body += " ● LIVE"

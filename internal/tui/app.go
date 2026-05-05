@@ -85,10 +85,9 @@ type Model struct {
 
 	// nav seeds — populated when a screen requests navigation, consumed when
 	// the next screen is instantiated.
-	navTopic        string
-	navTopicsFilter []string
-	navPrefill      *kafka.Message
-	navGroupFilter  string
+	navTopic       string
+	navPrefill     *kafka.Message
+	navGroupFilter string
 
 	// lastTopic restores the topics screen cursor when navigating back.
 	lastTopic string

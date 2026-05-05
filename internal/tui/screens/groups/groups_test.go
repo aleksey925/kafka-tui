@@ -144,7 +144,7 @@ func TestReadOnly_BlocksDestructiveHotkeys(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc, ReadOnly: true})
 	drive(t, m, m.Init())
 
-	for _, k := range []string{"R", "shift+r", "D"} {
+	for _, k := range []string{"R", "D"} {
 		_ = m.Update(keyPress(k))
 		assert.False(t, m.ConfirmOpen(), "%s must not open confirm in RO", k)
 		assert.NotEqual(t, groups.ModeReset, m.CurrentMode(), "%s must not enter reset in RO", k)
@@ -209,7 +209,7 @@ func TestKeyHints_ContainExpectedLabels(t *testing.T) {
 	got := strings.Join(labels, ",")
 	assert.Contains(t, got, "detail")
 	assert.Contains(t, got, "reset")
-	assert.Contains(t, got, "express")
+	assert.Contains(t, got, "refresh")
 	assert.Contains(t, got, "delete")
 	assert.Contains(t, got, "filter")
 }
@@ -223,7 +223,6 @@ func TestKeyHints_OmitDestructiveInReadOnly(t *testing.T) {
 	}
 	got := strings.Join(labels, ",")
 	assert.NotContains(t, got, "reset")
-	assert.NotContains(t, got, "express")
 	assert.NotContains(t, got, "delete")
 }
 
@@ -471,35 +470,79 @@ func TestDetail_LoadsAndShowsRows(t *testing.T) {
 	assert.Contains(t, out, "Partition")
 }
 
-func TestDetail_TabTogglesSortMode(t *testing.T) {
+// TestDetail_TabSwitchesFocus pins the two-pane navigation: tab toggles
+// keystroke focus between the topics summary and the partitions table.
+func TestDetail_TabSwitchesFocus(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
 		{Topic: "a", Partition: 0, Lag: 5, MemberID: "m"},
-		{Topic: "b", Partition: 0, Lag: 100, MemberID: "m"},
 	})
-	require.Equal(t, groups.SortGrouped, d.SortMode())
+	require.Equal(t, groups.FocusTopics, d.Focus())
 	d, _ = d.Update(keyPress("tab"))
-	assert.Equal(t, groups.SortFlat, d.SortMode())
+	assert.Equal(t, groups.FocusPartitions, d.Focus())
 	d, _ = d.Update(keyPress("tab"))
-	assert.Equal(t, groups.SortGrouped, d.SortMode())
+	assert.Equal(t, groups.FocusTopics, d.Focus())
 }
 
-func TestDetail_T_OneTopicJumpsToMessages(t *testing.T) {
+// TestDetail_EnterDrillsIntoPartitions covers `enter` from the topics
+// pane: it moves focus to partitions without leaving the screen.
+func TestDetail_EnterDrillsIntoPartitions(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
 		{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "m"},
 	})
-	d, _ = d.Update(keyPress("t"))
-	a := d.ConsumeAction()
-	assert.Equal(t, "alpha", a.Topic)
+	require.Equal(t, groups.FocusTopics, d.Focus())
+	d, _ = d.Update(keyPress("enter"))
+	assert.Equal(t, groups.FocusPartitions, d.Focus())
 }
 
-func TestDetail_T_MultipleTopicsRaisesTopicsList(t *testing.T) {
+// TestDetail_EscFromPartitionsReturnsToTopics: esc unwinds focus before
+// it raises Action.Back. Without this, drilling in and pressing esc once
+// would surprise the user by exiting the detail screen entirely.
+func TestDetail_EscFromPartitionsReturnsToTopics(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
-		{Topic: "alpha", Partition: 0, MemberID: "m"},
-		{Topic: "beta", Partition: 0, MemberID: "m"},
+		{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "m"},
 	})
+	d, _ = d.Update(keyPress("enter"))
+	require.Equal(t, groups.FocusPartitions, d.Focus())
+
+	d, _ = d.Update(keyPress("esc"))
+	a := d.ConsumeAction()
+	assert.False(t, a.Back, "esc on partitions must not trigger Back")
+	assert.Equal(t, groups.FocusTopics, d.Focus())
+
+	d, _ = d.Update(keyPress("esc"))
+	a = d.ConsumeAction()
+	assert.True(t, a.Back, "esc on topics raises Back")
+}
+
+// TestDetail_PartitionsRebuildOnTopicSelection: navigating the topics
+// table swaps the partitions pane to the newly-selected topic without
+// any extra keypress (master-detail style live preview).
+func TestDetail_PartitionsRebuildOnTopicSelection(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "ma"},
+		{Topic: "beta", Partition: 0, Lag: 99, MemberID: "mb"},
+	})
+	require.Equal(t, "alpha", d.FocusedTopic())
+	assert.Contains(t, d.View(), "Partitions · alpha")
+
+	// j moves the topics cursor onto beta — partitions pane follows.
+	d, _ = d.Update(keyPress("j"))
+	assert.Equal(t, "beta", d.FocusedTopic())
+	assert.Contains(t, d.View(), "Partitions · beta")
+}
+
+// TestDetail_T_JumpsToFocusedTopic: `t` no longer carries the legacy
+// multi-topic semantics — it just routes to messages of the topic at
+// the topics-pane cursor.
+func TestDetail_T_JumpsToFocusedTopic(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "m"},
+		{Topic: "beta", Partition: 0, Lag: 1, MemberID: "m"},
+	})
+	d, _ = d.Update(keyPress("j")) // beta now focused
 	d, _ = d.Update(keyPress("t"))
 	a := d.ConsumeAction()
-	assert.Equal(t, []string{"alpha", "beta"}, a.TopicsForGroup)
+	assert.Equal(t, "beta", a.Topic)
 }
 
 func TestDetail_EscReturnsToList(t *testing.T) {
@@ -549,19 +592,31 @@ func TestDetail_HeaderShowsTotalLag(t *testing.T) {
 	assert.Contains(t, out, "Total Lag: 1,200")
 }
 
-func TestDetail_HeaderShowsSortLabel(t *testing.T) {
+// TestDetail_TopicsTableShowsAggregates: the outer pane carries
+// per-topic aggregates (partition count, total lag, unique member
+// count) so users get a hot-spot view without drilling into each topic.
+func TestDetail_TopicsTableShowsAggregates(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
-		{Topic: "t", Partition: 0, Lag: 1, MemberID: "m"},
+		{Topic: "alpha", Partition: 0, Lag: 100, MemberID: "ma"},
+		{Topic: "alpha", Partition: 1, Lag: 50, MemberID: "mb"},
+		{Topic: "beta", Partition: 0, Lag: 5, MemberID: "mc"},
 	})
-	assert.Contains(t, d.View(), "Sort: grouped")
-	d, _ = d.Update(keyPress("tab"))
-	assert.Contains(t, d.View(), "Sort: flat")
+
+	out := d.View()
+	// outer table heading + each topic row; total lag for alpha is 150.
+	assert.Contains(t, out, "Topics [2]")
+	assert.Contains(t, out, "alpha")
+	assert.Contains(t, out, "beta")
+	assert.Contains(t, out, "150")
 }
 
 func TestDetail_LargeNumbersHaveThousandsSeparators(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
 		{Topic: "t", Partition: 0, Committed: 1234567, End: 2000000, Lag: 765433, MemberID: "m"},
 	})
+
+	// the partitions pane is auto-populated for the focused topic; no
+	// expansion step is needed in the new two-pane design.
 	out := d.View()
 	assert.Contains(t, out, "1,234,567")
 	assert.Contains(t, out, "2,000,000")
@@ -604,7 +659,6 @@ func TestReset_OpensFromListWithR(t *testing.T) {
 	assert.Equal(t, groups.ModeReset, m.CurrentMode())
 	r := m.Reset()
 	require.NotNil(t, r)
-	assert.False(t, r.Express())
 	assert.Equal(t, groups.StepStrategy, r.Step())
 }
 
@@ -629,19 +683,259 @@ func TestWantsRawInput_OnlyDuringResetParams(t *testing.T) {
 	assert.True(t, m.WantsRawInput(), "params step edits text")
 }
 
-func TestReset_ShiftRSetsExpress(t *testing.T) {
+// TestReset_DoneFromDetailRefreshesDetail pins the post-commit
+// refresh: after a successful reset opened from inside detail, the
+// detail must re-fetch so the user sees the new committed offsets
+// without an extra manual `r`.
+func TestReset_DoneFromDetailRefreshesDetail(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}
+	svc.descriptions = map[string]kafka.GroupDescription{
+		"g1": {Group: "g1", State: "Empty"},
+	}
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {{Topic: "alpha", Partition: 0, Lag: 5, MemberID: "m"}},
+	}
+	svc.previewByGroup = map[string]kafka.ResetPreview{
+		"g1": {
+			Group:    "g1",
+			Strategy: kafka.ResetEarliest,
+			Partitions: []kafka.PartitionResetPreview{
+				{Topic: "alpha", Partition: 0, Committed: 5, Low: 0, High: 10, Target: 0, Diff: -5},
+			},
+		},
+	}
+	svc.commitByGroup = map[string]kafka.ResetPreview{
+		"g1": svc.previewByGroup["g1"],
+	}
+
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	// drill into detail.
+	drive(t, m, m.Update(keyPress("enter")))
+	require.Equal(t, groups.ModeDetail, m.CurrentMode())
+	descCallsBeforeReset := svc.DescribeCalls()
+
+	// open reset, choose earliest, confirm.
+	drive(t, m, m.Update(keyPress("R")))
+	require.Equal(t, groups.ModeReset, m.CurrentMode())
+	drive(t, m, m.Update(keyPress("enter"))) // strategy → preview
+	drive(t, m, m.Update(keyPress("y")))     // commit
+
+	require.Equal(t, groups.ModeDetail, m.CurrentMode(), "reset must restore detail on commit")
+	assert.Greater(t, svc.DescribeCalls(), descCallsBeforeReset,
+		"the detail must re-fetch after a successful reset so the user sees the new offsets")
+}
+
+// TestReset_EscFromDetailReturnsToDetail pins the regression where
+// canceling reset always popped back to the groups list — even if the
+// flow had been opened from inside the detail view. The model now
+// remembers its origin and restores it on cancel.
+func TestReset_EscFromDetailReturnsToDetail(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}
+	svc.descriptions = map[string]kafka.GroupDescription{
+		"g1": {Group: "g1", State: "Empty"},
+	}
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "m"}},
+	}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	// open detail, then reset from inside detail.
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	require.Equal(t, groups.ModeDetail, m.CurrentMode())
+
+	_ = m.Update(keyPress("R"))
+	require.Equal(t, groups.ModeReset, m.CurrentMode())
+
+	// esc from the strategy step cancels the flow.
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, groups.ModeDetail, m.CurrentMode(),
+		"reset opened from detail must restore detail on cancel, not fall back to the list")
+}
+
+// TestReset_EscFromListReturnsToList covers the inverse: a reset opened
+// from the list still lands back on the list when canceled.
+func TestReset_EscFromListReturnsToList(t *testing.T) {
 	svc := newFakeService()
 	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("shift+r"))
-	r := m.Reset()
-	require.NotNil(t, r)
-	assert.True(t, r.Express())
+	_ = m.Update(keyPress("R"))
+	require.Equal(t, groups.ModeReset, m.CurrentMode())
+
+	_ = m.Update(keyPress("esc"))
+	assert.Equal(t, groups.ModeList, m.CurrentMode())
 }
 
-func TestReset_FilteredListPassesScopeTopic(t *testing.T) {
+// TestReset_FromDetailTopicsFocusUsesScopeTopic: with the topics pane
+// active, R narrows the reset to that topic's partitions. The members
+// list is sourced from cluster metadata (TopicsPartitions) so partitions
+// the group never committed to are still in scope — without that, a
+// "reset whole topic" would silently skip partitions the group hasn't
+// touched yet.
+func TestReset_FromDetailTopicsFocusUsesScopeTopic(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
+	svc.descriptions = map[string]kafka.GroupDescription{
+		"g1": {Group: "g1", State: "Stable"},
+	}
+	// the group has commits only for partitions 0 and 1, but the topic
+	// actually has 4 partitions (0..3).
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {
+			{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "ma"},
+			{Topic: "alpha", Partition: 1, Lag: 2, MemberID: "mb"},
+		},
+	}
+	svc.topicPartitions = map[string][]int32{
+		"alpha": {0, 1, 2, 3},
+	}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	d := m.Detail()
+	require.NotNil(t, d)
+	require.Equal(t, groups.FocusTopics, d.Focus())
+
+	scope, ok := d.ResetScope().(groups.ScopeTopic)
+	require.True(t, ok, "topics-pane reset must produce ScopeTopic")
+	assert.Equal(t, "alpha", scope.Topic)
+	assert.Equal(t, []kafka.TopicPartition{
+		{Topic: "alpha", Partition: 0},
+		{Topic: "alpha", Partition: 1},
+		{Topic: "alpha", Partition: 2},
+		{Topic: "alpha", Partition: 3},
+	}, scope.Members, "scope must cover every partition of the topic, not just those with prior commits")
+}
+
+// TestReset_PreviewScrollsWithJK pins the scrolling-preview UX: the
+// preview list is rendered through a [components.Table] so j/k advances
+// the cursor when the partition list is longer than the visible area.
+// Without this the manual rendering used to silently truncate.
+func TestReset_PreviewScrollsWithJK(t *testing.T) {
+	svc := newFakeService()
+	parts := make([]kafka.PartitionResetPreview, 0, 30)
+	for i := range int32(30) {
+		parts = append(parts, kafka.PartitionResetPreview{
+			Topic: "alpha", Partition: i,
+			Committed: int64(i), Low: 0, High: int64(i + 100),
+			Target: 0, Diff: -int64(i),
+		})
+	}
+	svc.previewByGroup = map[string]kafka.ResetPreview{
+		"g1": {Group: "g1", Strategy: kafka.ResetEarliest, Partitions: parts},
+	}
+
+	r := groups.NewResetModel(groups.ResetOptions{
+		Service: svc,
+		Group:   "g1",
+		Scope:   groups.ScopeWholeGroup{Group: "g1"},
+	})
+	// constrain the preview viewport so only a slice of rows is visible
+	// at a time — that's where scrolling matters.
+	r.SetSize(120, 18)
+
+	r, cmd := r.Update(keyPress("enter")) // strategy → preview
+	driveReset(t, r, cmd)
+	require.Equal(t, groups.StepPreview, r.Step())
+
+	first := r.View()
+	for range 25 {
+		r, _ = r.Update(keyPress("j"))
+	}
+	after := r.View()
+	assert.NotEqual(t, first, after,
+		"j must advance the preview viewport when the list overflows the visible area")
+}
+
+// TestReset_HeaderShowsScopeCountAtStep1 pins the regression where the
+// strategy step rendered "Resetting 0 partitions in topic" because the
+// header relied on the (still-empty) preview. The scope already knows
+// its targets — the header must reflect that count immediately so users
+// don't think the scope is empty before they pick a strategy.
+func TestReset_HeaderShowsScopeCountAtStep1(t *testing.T) {
+	scope := groups.ScopeTopic{
+		Group: "g",
+		Topic: "alpha",
+		Members: []kafka.TopicPartition{
+			{Topic: "alpha", Partition: 0},
+			{Topic: "alpha", Partition: 1},
+			{Topic: "alpha", Partition: 2},
+			{Topic: "alpha", Partition: 3},
+		},
+	}
+	r := groups.NewResetModel(groups.ResetOptions{
+		Service: newFakeService(),
+		Group:   "g",
+		Scope:   scope,
+	})
+
+	out := r.View()
+	assert.Contains(t, out, "Resetting 4 partitions in alpha",
+		"header at step 1 must already reflect the scope-derived partition count")
+}
+
+// TestReset_TopicScopeFallsBackToCommittedPartitions: if the metadata
+// fetch fails (or is unavailable), the scope still resolves — limited
+// to the partitions the group already has commits for. Degraded but
+// usable rather than empty.
+func TestReset_TopicScopeFallsBackToCommittedPartitions(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
+	svc.descriptions = map[string]kafka.GroupDescription{
+		"g1": {Group: "g1", State: "Stable"},
+	}
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {
+			{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "ma"},
+			{Topic: "alpha", Partition: 1, Lag: 2, MemberID: "mb"},
+		},
+	}
+	// no entry in svc.topicPartitions → simulates a metadata gap.
+
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	d := m.Detail()
+	require.NotNil(t, d)
+
+	scope, ok := d.ResetScope().(groups.ScopeTopic)
+	require.True(t, ok)
+	assert.Equal(t, []kafka.TopicPartition{
+		{Topic: "alpha", Partition: 0},
+		{Topic: "alpha", Partition: 1},
+	}, scope.Members, "without metadata, fall back to the rows-derived partition list")
+}
+
+// TestReset_FromDetailPartitionsFocusUsesScopePartition: drilling into
+// the partitions pane narrows the reset to a single (topic, partition)
+// pair.
+func TestReset_FromDetailPartitionsFocusUsesScopePartition(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "alpha", Partition: 0, Lag: 1, MemberID: "ma"},
+		{Topic: "alpha", Partition: 1, Lag: 2, MemberID: "mb"},
+	})
+	d, _ = d.Update(keyPress("enter")) // drill in
+	require.Equal(t, groups.FocusPartitions, d.Focus())
+
+	scope, ok := d.ResetScope().(groups.ScopePartition)
+	require.True(t, ok, "partitions-pane reset must produce ScopePartition")
+	assert.Equal(t, "alpha", scope.Topic)
+	assert.Equal(t, int32(0), scope.Partition)
+}
+
+// TestReset_FromListUsesGroupScope: pressing R on the groups list always
+// targets the whole group — scoped reset (per-topic / per-partition) is
+// reachable from inside the detail view via the topics / partitions pane.
+func TestReset_FromListUsesGroupScope(t *testing.T) {
 	svc := newFakeService()
 	svc.filteredGroups = map[string][]kafka.GroupListInfo{
 		"orders": {{Group: "g1", State: "Empty"}},
@@ -652,9 +946,8 @@ func TestReset_FilteredListPassesScopeTopic(t *testing.T) {
 	_ = m.Update(keyPress("R"))
 	r := m.Reset()
 	require.NotNil(t, r)
-	scope, ok := r.Scope().(groups.ScopeWholeGroup)
-	require.True(t, ok)
-	assert.Equal(t, "orders", scope.Topic)
+	_, ok := r.Scope().(groups.ScopeWholeGroup)
+	assert.True(t, ok, "list-level reset must target the whole group regardless of FilterTopic")
 }
 
 func TestReset_StrategyArrowKeysAndEnter(t *testing.T) {
@@ -680,7 +973,7 @@ func TestReset_EarliestSkipsParamsAndShowsPreview(t *testing.T) {
 			Summary: kafka.ResetSummary{Reconsume: 5},
 		},
 	}
-	r := newResetModelWithSvc(t, svc, false)
+	r := newResetModelWithSvc(t, svc)
 	r, cmd := r.Update(keyPress("enter"))
 	driveReset(t, r, cmd)
 	assert.Equal(t, groups.StepPreview, r.Step())
@@ -728,7 +1021,7 @@ func TestReset_PreviewYesCommits(t *testing.T) {
 		"g1": svc.previewByGroup["g1"],
 	}
 
-	r := newResetModelWithSvc(t, svc, false)
+	r := newResetModelWithSvc(t, svc)
 	r, cmd := r.Update(keyPress("enter"))
 	driveReset(t, r, cmd)
 
@@ -745,7 +1038,7 @@ func TestReset_PreviewNoCancels(t *testing.T) {
 	svc.previewByGroup = map[string]kafka.ResetPreview{
 		"g1": {Group: "g1", Strategy: kafka.ResetEarliest},
 	}
-	r := newResetModelWithSvc(t, svc, false)
+	r := newResetModelWithSvc(t, svc)
 	r, cmd := r.Update(keyPress("enter"))
 	driveReset(t, r, cmd)
 
@@ -755,49 +1048,35 @@ func TestReset_PreviewNoCancels(t *testing.T) {
 	assert.Empty(t, svc.Committed())
 }
 
-func TestReset_ExpressSkipsPreviewAndCommitsImmediately(t *testing.T) {
-	svc := newFakeService()
-	svc.commitByGroup = map[string]kafka.ResetPreview{
-		"g1": {
-			Group:    "g1",
-			Strategy: kafka.ResetEarliest,
-			Partitions: []kafka.PartitionResetPreview{
-				{Topic: "t", Partition: 0, Target: 0, Diff: -1},
-			},
-		},
-	}
-	r := newResetModelWithSvc(t, svc, true)
-	require.True(t, r.Express())
-
-	r, cmd := r.Update(keyPress("enter"))
-	driveReset(t, r, cmd)
-
-	a := r.ConsumeAction()
-	assert.True(t, a.Done)
-	assert.Equal(t, []string{"g1"}, svc.Committed())
-	assert.Empty(t, svc.Previewed())
-}
-
 func TestReset_AdaptiveHeader_SingleTopic(t *testing.T) {
-	scope := groups.ScopeWholeGroup{Group: "g", Topic: "orders"}
+	scope := groups.ScopeTopic{Group: "g", Topic: "orders"}
 	got := scope.HeaderLabel(3, 1)
 	assert.Equal(t, "Resetting 3 partitions in orders", got)
 }
 
-func TestReset_AdaptiveHeader_MultipleTopics(t *testing.T) {
-	scope := groups.ScopeWholeGroup{Group: "g"}
-	assert.Equal(t, "Resetting 5 partitions across 2 topics", scope.HeaderLabel(5, 2))
+func TestReset_AdaptiveHeader_PartitionScope(t *testing.T) {
+	scope := groups.ScopePartition{Group: "g", Topic: "orders", Partition: 7}
+	assert.Equal(t, "Resetting orders partition 7", scope.HeaderLabel(1, 1))
 }
 
-func TestReset_AdaptiveHeader_AllTotal(t *testing.T) {
+func TestReset_AdaptiveHeader_MultipleTopics(t *testing.T) {
 	scope := groups.ScopeWholeGroup{Group: "g"}
-	assert.Equal(t, "Resetting all partitions (4 total)", scope.HeaderLabel(4, 0))
+	assert.Equal(t, "Resetting 5 partitions across 2 topics in this group", scope.HeaderLabel(5, 2))
+}
+
+// TestReset_AdaptiveHeader_PrePreview pins the intent-only label rendered
+// before the preview RPC has produced counts. "every partition of every
+// topic" is unambiguous; "all partitions (N total)" left users wondering
+// whether the scope was the whole group or a single topic.
+func TestReset_AdaptiveHeader_PrePreview(t *testing.T) {
+	scope := groups.ScopeWholeGroup{Group: "g"}
+	assert.Equal(t, "Resetting every partition of every topic in this group", scope.HeaderLabel(0, 0))
 }
 
 func TestReset_NonEmptyGroupShowsError(t *testing.T) {
 	svc := newFakeService()
 	svc.previewErr = kafka.ErrNonEmptyGroup
-	r := newResetModelWithSvc(t, svc, false)
+	r := newResetModelWithSvc(t, svc)
 	r, cmd := r.Update(keyPress("enter"))
 	driveReset(t, r, cmd)
 	assert.Contains(t, r.Err(), "not empty")
@@ -822,7 +1101,7 @@ func TestReset_PreviewIncludesNote(t *testing.T) {
 			},
 		},
 	}
-	r := newResetModelWithSvc(t, svc, false)
+	r := newResetModelWithSvc(t, svc)
 	// pick "specific"
 	for range 4 {
 		r, _ = r.Update(keyPress("j"))
@@ -862,16 +1141,15 @@ func driveReset(t *testing.T, r *groups.ResetModel, cmd tea.Cmd) {
 
 func newResetModel(t *testing.T) *groups.ResetModel {
 	t.Helper()
-	return newResetModelWithSvc(t, newFakeService(), false)
+	return newResetModelWithSvc(t, newFakeService())
 }
 
-func newResetModelWithSvc(t *testing.T, svc *fakeService, express bool) *groups.ResetModel {
+func newResetModelWithSvc(t *testing.T, svc *fakeService) *groups.ResetModel {
 	t.Helper()
 	return groups.NewResetModel(groups.ResetOptions{
 		Service: svc,
 		Group:   "g1",
 		Scope:   groups.ScopeWholeGroup{Group: "g1"},
-		Express: express,
 	})
 }
 
@@ -926,6 +1204,9 @@ type fakeService struct {
 	offsets    map[string][]kafka.PartitionLag
 	offsetsErr error
 
+	topicPartitions    map[string][]int32
+	topicPartitionsErr error
+
 	previewByGroup map[string]kafka.ResetPreview
 	previewErr     error
 	previewedNames []string
@@ -940,11 +1221,12 @@ type fakeService struct {
 
 func newFakeService() *fakeService {
 	return &fakeService{
-		filteredGroups: map[string][]kafka.GroupListInfo{},
-		descriptions:   map[string]kafka.GroupDescription{},
-		offsets:        map[string][]kafka.PartitionLag{},
-		previewByGroup: map[string]kafka.ResetPreview{},
-		commitByGroup:  map[string]kafka.ResetPreview{},
+		filteredGroups:  map[string][]kafka.GroupListInfo{},
+		descriptions:    map[string]kafka.GroupDescription{},
+		offsets:         map[string][]kafka.PartitionLag{},
+		topicPartitions: map[string][]int32{},
+		previewByGroup:  map[string]kafka.ResetPreview{},
+		commitByGroup:   map[string]kafka.ResetPreview{},
 	}
 }
 
@@ -1017,6 +1299,18 @@ func (f *fakeService) GroupOffsets(_ context.Context, group string) ([]kafka.Par
 	err := f.offsetsErr
 	f.mu.Unlock()
 	return out, err
+}
+
+func (f *fakeService) TopicsPartitions(_ context.Context, topics ...string) (map[string][]int32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]int32, len(topics))
+	for _, t := range topics {
+		if ps, ok := f.topicPartitions[t]; ok {
+			out[t] = append([]int32(nil), ps...)
+		}
+	}
+	return out, f.topicPartitionsErr
 }
 
 func (f *fakeService) PreviewReset(_ context.Context, group string, _ kafka.ResetSpec) (kafka.ResetPreview, error) {

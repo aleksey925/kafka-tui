@@ -74,7 +74,7 @@ func TestSearch_LiveFilterAndCommit(t *testing.T) {
 
 	// before search — full title and all rows visible.
 	out := m.Render()
-	assert.Contains(t, out, "Clusters[3]")
+	assert.Contains(t, out, "Clusters [3]")
 	for _, name := range []string{"alpha", "beta", "gamma"} {
 		assert.Contains(t, out, name)
 	}
@@ -83,7 +83,7 @@ func TestSearch_LiveFilterAndCommit(t *testing.T) {
 	feed(m, "/", 'b', 'e')
 	out = m.Render()
 	assert.Equal(t, tui.ModeSearch, m.Mode(), "prompt is open")
-	assert.Contains(t, out, "Clusters[1/3] </be>", "title shows match count + query")
+	assert.Contains(t, out, "Clusters [1/3] </be>", "title shows match count + query")
 	assert.Contains(t, out, "beta")
 	assert.NotContains(t, out, "alpha")
 	assert.NotContains(t, out, "gamma")
@@ -92,7 +92,7 @@ func TestSearch_LiveFilterAndCommit(t *testing.T) {
 	_, _ = m.Update(keyPress("enter"))
 	out = m.Render()
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Contains(t, out, "Clusters[1/3] </be>")
+	assert.Contains(t, out, "Clusters [1/3] </be>")
 	assert.Contains(t, out, "beta")
 	assert.NotContains(t, out, "gamma")
 }
@@ -112,7 +112,7 @@ func TestSearch_ReopenShowsHistoryGhostAndEscClearsFilter(t *testing.T) {
 	// apply a filter
 	feed(m, "/", 'b', 'e')
 	_, _ = m.Update(keyPress("enter"))
-	require.Contains(t, m.Render(), "Clusters[1/3] </be>")
+	require.Contains(t, m.Render(), "Clusters [1/3] </be>")
 
 	// reopen the prompt — buffer is empty, ghost holds the last query.
 	feed(m, "/")
@@ -124,7 +124,7 @@ func TestSearch_ReopenShowsHistoryGhostAndEscClearsFilter(t *testing.T) {
 	_, _ = m.Update(keyPress("esc"))
 	out := m.Render()
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Contains(t, out, "Clusters[3]")
+	assert.Contains(t, out, "Clusters [3]")
 	assert.NotContains(t, out, "</be>")
 	for _, name := range []string{"alpha", "beta", "gamma"} {
 		assert.Contains(t, out, name)
@@ -154,7 +154,7 @@ func TestSearch_TabPromotesGhostAndAppliesLive(t *testing.T) {
 	assert.Equal(t, "be", m.SearchBuffer())
 	assert.Empty(t, m.SearchSuggestion())
 	out := m.Render()
-	assert.Contains(t, out, "Clusters[1/3] </be>", "tab applies the suggestion live")
+	assert.Contains(t, out, "Clusters [1/3] </be>", "tab applies the suggestion live")
 }
 
 // TestSearch_UpDownCycleHistory confirms Up/Down walk through the
@@ -219,7 +219,7 @@ func TestSearch_RightAndCtrlFPromoteLikeTab(t *testing.T) {
 
 			assert.Equal(t, "be", m.SearchBuffer())
 			assert.Empty(t, m.SearchSuggestion())
-			assert.Contains(t, m.Render(), "Clusters[1/3] </be>")
+			assert.Contains(t, m.Render(), "Clusters [1/3] </be>")
 		})
 	}
 }
@@ -236,7 +236,7 @@ func TestSearch_CtrlEActsLikeEnter(t *testing.T) {
 
 	// prompt closed, filter applied, history populated.
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Contains(t, m.Render(), "Clusters[1/2] </b>")
+	assert.Contains(t, m.Render(), "Clusters [1/2] </b>")
 	feed(m, "/")
 	assert.Equal(t, "b", m.SearchSuggestion(), "ctrl+e must push to history")
 }
@@ -264,13 +264,13 @@ func TestSearch_CtrlUAndCtrlWClearBuffer(t *testing.T) {
 			})
 
 			feed(m, "/", 'b', 'e')
-			require.Contains(t, m.Render(), "Clusters[1/2] </be>")
+			require.Contains(t, m.Render(), "Clusters [1/2] </be>")
 
 			_, _ = m.Update(keyPress(wipe))
 
 			assert.Empty(t, m.SearchBuffer())
 			// filter applied live → table back to full count.
-			assert.Contains(t, m.Render(), "Clusters[2]")
+			assert.Contains(t, m.Render(), "Clusters [2]")
 		})
 	}
 }
@@ -362,14 +362,14 @@ func TestEsc_FilterClearedBeforePop(t *testing.T) {
 	// apply a filter
 	feed(m, "/", 'b')
 	_, _ = m.Update(keyPress("enter"))
-	require.Contains(t, m.Render(), "Clusters[1/2] </b>")
+	require.Contains(t, m.Render(), "Clusters [1/2] </b>")
 	require.False(t, m.Quit())
 
 	// first esc clears filter
 	_, _ = m.Update(keyPress("esc"))
 	out := m.Render()
 	assert.NotContains(t, out, "</b>")
-	assert.Contains(t, out, "Clusters[2]")
+	assert.Contains(t, out, "Clusters [2]")
 	assert.False(t, m.Quit(), "esc must not quit while filter was active")
 
 	// at root depth a second esc is a no-op (ctrl+c remains the exit).

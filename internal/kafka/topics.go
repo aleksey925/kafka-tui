@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -127,6 +128,34 @@ func decodeMetadata(resp *kmsg.MetadataResponse) kadm.Metadata {
 		m.Cluster = *resp.ClusterID
 	}
 	return m
+}
+
+// TopicsPartitions resolves the full set of partitions for each requested
+// topic via a single ListStartOffsets call (cluster metadata reused from
+// franz-go's offset path). Used by the consumer-group detail screen to
+// scope topic-level resets to every partition of the topic — not just the
+// ones the group already has commits for.
+func (c *Client) TopicsPartitions(ctx context.Context, topics ...string) (map[string][]int32, error) {
+	if len(topics) == 0 {
+		return map[string][]int32{}, nil
+	}
+	listed, err := c.adm.ListStartOffsets(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: list start offsets: %w", err)
+	}
+	out := make(map[string][]int32, len(topics))
+	for topic, ps := range listed {
+		partitions := make([]int32, 0, len(ps))
+		for p, lo := range ps {
+			if lo.Err != nil {
+				continue
+			}
+			partitions = append(partitions, p)
+		}
+		slices.Sort(partitions)
+		out[topic] = partitions
+	}
+	return out, nil
 }
 
 func (c *Client) TopicPartitions(ctx context.Context, topic string) ([]PartitionDetail, error) {

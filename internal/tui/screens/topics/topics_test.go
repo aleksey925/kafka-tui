@@ -64,7 +64,7 @@ func TestInit_LoadsTopicsAndShowsCounter(t *testing.T) {
 	assert.Len(t, m.AllTopics(), 2)
 	out := m.View()
 	// the count moved to the frame title, the body only renders the table.
-	assert.Contains(t, m.Title(), "Topics[2]")
+	assert.Contains(t, m.Title(), "Topics [2]")
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "beta")
 }
@@ -114,7 +114,7 @@ func TestTitle_ShowsHiddenCount(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 	// hidden-internal counter lives in the frame title now.
-	assert.Contains(t, m.Title(), "Topics[1, +3 internal hidden]")
+	assert.Contains(t, m.Title(), "Topics [1, +3 internal hidden]")
 }
 
 func TestEnter_RaisesMessagesAction(t *testing.T) {
@@ -387,7 +387,7 @@ func TestSearch_FiltersTable(t *testing.T) {
 	assert.Contains(t, out, "order-history")
 	assert.NotContains(t, out, "events")
 	// title surfaces the active query in k9s-style angle brackets.
-	assert.Contains(t, m.Title(), "Topics[2/3] </order>")
+	assert.Contains(t, m.Title(), "Topics [2/3] </order>")
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {
@@ -505,83 +505,6 @@ func TestFocusTopic_UnknownTopic_CursorStaysAtZero(t *testing.T) {
 
 	// assert
 	assert.Equal(t, 0, m.Cursor())
-}
-
-func TestFilterTopics_ShowsOnlyMatchingTopics(t *testing.T) {
-	// arrange
-	svc := newFakeService([]kafka.TopicSummary{
-		{Name: "orders"},
-		{Name: "payments"},
-		{Name: "users"},
-		{Name: "logs"},
-	}, nil)
-	m := topics.New(topics.Options{
-		Service:      svc,
-		FilterTopics: []string{"orders", "payments"},
-	})
-
-	// act
-	drive(t, m, m.Init())
-
-	// assert
-	visible := m.Topics()
-	assert.Equal(t, []kafka.TopicSummary{
-		{Name: "orders"},
-		{Name: "payments"},
-	}, visible)
-	assert.Len(t, m.AllTopics(), 4)
-}
-
-func TestFilterTopics_EmptyFilter_ShowsAll(t *testing.T) {
-	// arrange
-	svc := newFakeService([]kafka.TopicSummary{
-		{Name: "alpha"},
-		{Name: "beta"},
-	}, nil)
-	m := topics.New(topics.Options{Service: svc})
-
-	// act
-	drive(t, m, m.Init())
-
-	// assert
-	visible := m.Topics()
-	assert.Equal(t, []kafka.TopicSummary{
-		{Name: "alpha"},
-		{Name: "beta"},
-	}, visible)
-}
-
-func TestFilterTopics_CombinesWithInternalToggle(t *testing.T) {
-	// arrange
-	svc := newFakeService([]kafka.TopicSummary{
-		{Name: "orders"},
-		{Name: "__consumer_offsets", IsInternal: true},
-		{Name: "payments"},
-		{Name: "users"},
-	}, nil)
-	m := topics.New(topics.Options{
-		Service:      svc,
-		FilterTopics: []string{"orders", "__consumer_offsets", "payments"},
-	})
-
-	// act
-	drive(t, m, m.Init())
-
-	// assert — internal hidden by default even if in filter
-	visible := m.Topics()
-	assert.Equal(t, []kafka.TopicSummary{
-		{Name: "orders"},
-		{Name: "payments"},
-	}, visible)
-
-	// toggle internal on
-	_ = m.Update(keyPress("i"))
-	visible = m.Topics()
-	assert.Equal(t, []kafka.TopicSummary{
-		{Name: "orders"},
-		{Name: "__consumer_offsets", IsInternal: true},
-		{Name: "payments"},
-	}, visible)
 }
 
 // ----- helpers -----

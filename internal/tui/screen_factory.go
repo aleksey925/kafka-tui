@@ -60,7 +60,6 @@ func (m *Model) instantiate(id ScreenID) {
 
 func (m *Model) clearNavSeeds() {
 	m.navTopic = ""
-	m.navTopicsFilter = nil
 	m.navPrefill = nil
 	m.navGroupFilter = ""
 }
@@ -86,7 +85,6 @@ func (m *Model) newTopics() *topics.Model {
 		Service:         m.client,
 		ReadOnly:        m.clusterRO,
 		Columns:         cfg.Topics.Columns,
-		FilterTopics:    m.navTopicsFilter,
 		FocusTopic:      m.lastTopic,
 		RefreshInterval: parseRefresh(cfg.Refresh.TopicsList),
 		Now:             m.now,

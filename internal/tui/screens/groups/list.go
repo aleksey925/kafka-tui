@@ -27,6 +27,11 @@ type Service interface {
 	FilterGroupsByTopic(ctx context.Context, topic string) ([]kafka.GroupListInfo, error)
 	DescribeConsumerGroup(ctx context.Context, group string) (kafka.GroupDescription, error)
 	GroupOffsets(ctx context.Context, group string) ([]kafka.PartitionLag, error)
+	// TopicsPartitions returns the full partition list for each requested
+	// topic, fetched from cluster metadata. Used to expand topic-level
+	// reset scope to every partition of the topic — not just the ones the
+	// group already has commits for.
+	TopicsPartitions(ctx context.Context, topics ...string) (map[string][]int32, error)
 	PreviewReset(ctx context.Context, group string, spec kafka.ResetSpec) (kafka.ResetPreview, error)
 	ResetOffsets(ctx context.Context, group string, spec kafka.ResetSpec) (kafka.ResetPreview, error)
 	DeleteConsumerGroup(ctx context.Context, group string) error
@@ -34,9 +39,8 @@ type Service interface {
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	Back           bool
-	Topic          string
-	TopicsForGroup []string
+	Back  bool
+	Topic string
 }
 
 type Mode int
@@ -75,6 +79,10 @@ type Model struct {
 	mode   Mode
 	detail *DetailModel
 	reset  *ResetModel
+	// resetOrigin remembers which mode was active before reset opened, so
+	// cancel / done returns the user there instead of always falling back
+	// to the list — opening reset from inside detail must restore detail.
+	resetOrigin Mode
 
 	listRefresher   components.Refresher
 	detailRefresher components.Refresher
@@ -309,8 +317,7 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Group", Handler: m.actListBack},
 	}
 	mut := []keymap.Binding{
-		{Keys: []string{"R"}, Label: "reset offsets (full flow)", Category: "Mutating", Hint: true, Handler: func() tea.Cmd { return m.openReset(false) }},
-		{Keys: []string{"shift+r"}, Label: "reset offsets (express)", Category: "Mutating", Hint: true, Handler: func() tea.Cmd { return m.openReset(true) }},
+		{Keys: []string{"R"}, Label: "reset group offsets", Category: "Mutating", Hint: true, Handler: m.openReset},
 		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: m.openDeleteConfirm},
 	}
 	if m.readOnly {
@@ -442,9 +449,7 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 		m.detail = nil
 		m.mode = ModeList
 	case a.OpenReset:
-		return m.openResetForGroup(d.Group(), false, ScopeDetail{Group: d.Group()})
-	case a.OpenResetExpress:
-		return m.openResetForGroup(d.Group(), true, ScopeDetail{Group: d.Group()})
+		return m.openResetForGroup(d.Group(), d.ResetScope())
 	case a.Delete:
 		m.pending = pendingOp{group: d.Group()}
 		m.confirm = components.NewConfirm(
@@ -456,8 +461,6 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 		m.mode = ModeList
 	case a.Topic != "":
 		m.action.Topic = a.Topic
-	case len(a.TopicsForGroup) > 0:
-		m.action.TopicsForGroup = a.TopicsForGroup
 	}
 	return cmd
 }
@@ -474,11 +477,11 @@ func (m *Model) handleResetAction(a ResetAction, prev tea.Cmd) tea.Cmd {
 	switch {
 	case a.Cancel:
 		m.reset = nil
-		m.mode = ModeList
+		m.mode = m.resetOrigin
 		return prev
 	case a.Done:
 		m.reset = nil
-		m.mode = ModeList
+		m.mode = m.resetOrigin
 		if a.Result != nil {
 			m.toasts.Push(components.ToastSuccess, fmt.Sprintf(
 				"Reset %s — %d partitions",
@@ -486,12 +489,23 @@ func (m *Model) handleResetAction(a ResetAction, prev tea.Cmd) tea.Cmd {
 				len(a.Result.Partitions),
 			))
 		}
-		return tea.Batch(prev, m.refreshCmd())
+		return tea.Batch(prev, m.postResetRefresh())
 	}
 	return prev
 }
 
-func (m *Model) openReset(express bool) tea.Cmd {
+// postResetRefresh re-fetches the data backing the screen the user
+// returns to. Without this the detail view (or list) keeps showing the
+// pre-reset offsets until the next manual `r` or auto-tick — which made
+// it hard to confirm the commit visually.
+func (m *Model) postResetRefresh() tea.Cmd {
+	if m.mode == ModeDetail && m.detail != nil {
+		return m.detail.RefreshCmd()
+	}
+	return m.refreshCmd()
+}
+
+func (m *Model) openReset() tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
 		return nil
@@ -500,14 +514,10 @@ func (m *Model) openReset(express bool) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	scope := ScopeWholeGroup{Group: row.ID}
-	if m.filterTopic != "" {
-		scope = ScopeWholeGroup{Group: row.ID, Topic: m.filterTopic}
-	}
-	return m.openResetForGroup(row.ID, express, scope)
+	return m.openResetForGroup(row.ID, ScopeWholeGroup{Group: row.ID})
 }
 
-func (m *Model) openResetForGroup(group string, express bool, scope ResetScope) tea.Cmd {
+func (m *Model) openResetForGroup(group string, scope ResetScope) tea.Cmd {
 	if m.readOnly {
 		m.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
 		return nil
@@ -516,11 +526,11 @@ func (m *Model) openResetForGroup(group string, express bool, scope ResetScope) 
 		Service: m.svc,
 		Group:   group,
 		Scope:   scope,
-		Express: express,
 		Now:     m.now,
 		Styles:  m.styles,
 	})
 	r.SetSize(m.width, m.height)
+	m.resetOrigin = m.mode
 	m.reset = r
 	m.mode = ModeReset
 	return r.Init()

@@ -18,27 +18,16 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// SortMode controls the ordering of the partition table in the detail view.
-type SortMode int
-
-const (
-	// SortGrouped sorts rows topic-first, partition-second, with a "┄┄┄"
-	// separator between topics.
-	SortGrouped SortMode = iota
-	// SortFlat sorts by lag descending, ignoring topic boundaries.
-	SortFlat
-)
-
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
-	Back             bool
-	OpenReset        bool
-	OpenResetExpress bool
-	Delete           bool
-	// Topic / TopicsForGroup request navigation from `t`: single subscribed
-	// topic vs filtered topics list.
-	Topic          string
-	TopicsForGroup []string
+	Back   bool
+	Delete bool
+	// OpenReset asks the host to open the reset flow. The host calls
+	// [DetailModel.ResetScope] to learn whether the user wants the whole
+	// group, a single topic, or one specific partition.
+	OpenReset bool
+	// Topic requests navigation to messages of the focused topic (`t`).
+	Topic string
 }
 
 type DetailOptions struct {
@@ -49,7 +38,22 @@ type DetailOptions struct {
 	Styles   theme.Styles
 }
 
-// DetailModel renders members + per-partition lag for a single group.
+// FocusPane identifies which sub-table currently has keyboard focus.
+type FocusPane int
+
+const (
+	// FocusTopics is the default — j/k navigates topics; partitions follow.
+	FocusTopics FocusPane = iota
+	// FocusPartitions has the cursor inside the lower table.
+	FocusPartitions
+)
+
+// DetailModel renders a single group as two stacked tables: an outer
+// topics summary on top, with the partitions of the focused topic below.
+// Schemas are split so each table only carries columns that make sense at
+// its level (no aggregate cells leaking onto partition rows or vice
+// versa). `tab` toggles focus, `enter` drills from topics into the
+// partitions pane, `esc` walks back up.
 type DetailModel struct {
 	svc      Service
 	group    string
@@ -57,10 +61,19 @@ type DetailModel struct {
 
 	desc kafka.GroupDescription
 	rows []kafka.PartitionLag
+	// topicPartitions carries the authoritative per-topic partition list
+	// fetched from cluster metadata. Falls back to rows-derived
+	// partitions if the metadata fetch failed.
+	topicPartitions map[string][]int32
 
-	sortMode SortMode
-	table    *components.Table
-	toasts   *components.Toasts
+	topicsTable *components.Table
+	partsTable  *components.Table
+	toasts      *components.Toasts
+
+	focus FocusPane
+	// lastTopic caches the topic whose partitions are loaded into
+	// partsTable so the cursor-driven sync skips no-op rebuilds.
+	lastTopic string
 
 	loading bool
 	loadErr string
@@ -83,26 +96,34 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	tbl := components.NewTable(detailColumns(), components.WithStyles(styles))
 	return &DetailModel{
-		svc:      opts.Service,
-		group:    opts.Group,
-		readOnly: opts.ReadOnly,
-		table:    tbl,
-		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:      now,
-		styles:   styles,
+		svc:         opts.Service,
+		group:       opts.Group,
+		readOnly:    opts.ReadOnly,
+		topicsTable: components.NewTable(topicColumns(), components.WithStyles(styles)),
+		partsTable:  components.NewTable(partColumns(), components.WithStyles(styles)),
+		toasts:      components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:         now,
+		styles:      styles,
 	}
 }
 
-func detailColumns() []components.Column {
+func topicColumns() []components.Column {
 	return []components.Column{
-		{Title: "Topic", Width: 24, Sortable: true},
+		{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
+		{Title: "Partitions", Width: 10, Sortable: true},
+		{Title: "Total Lag", Width: 12, Sortable: true},
+		{Title: "Members", Width: 10, Sortable: true},
+	}
+}
+
+func partColumns() []components.Column {
+	return []components.Column{
 		{Title: "Partition", Width: 9, Sortable: true},
 		{Title: "Committed", Width: 14, Sortable: true},
 		{Title: "End", Width: 14, Sortable: true},
 		{Title: "Lag", Width: 14, Sortable: true},
-		{Title: "Member", Width: 24, Sortable: true},
+		{Title: "Member", Flex: true, MinWidth: 20, Sortable: true},
 	}
 }
 
@@ -116,48 +137,83 @@ func (d *DetailModel) RefreshCmd() tea.Cmd {
 	return loadDetailCmd(d.svc, d.group)
 }
 
-func (d *DetailModel) Group() string { return d.group }
-
-func (d *DetailModel) SortMode() SortMode { return d.sortMode }
-
+func (d *DetailModel) Group() string                       { return d.group }
 func (d *DetailModel) Description() kafka.GroupDescription { return d.desc }
-
 func (d *DetailModel) Rows() []kafka.PartitionLag {
 	out := make([]kafka.PartitionLag, len(d.rows))
 	copy(out, d.rows)
 	return out
 }
-
 func (d *DetailModel) Toasts() *components.Toasts { return d.toasts }
-
 func (d *DetailModel) LatestFlash() (components.Toast, bool) {
 	if d.toasts == nil {
 		return components.Toast{}, false
 	}
 	return d.toasts.Latest()
 }
-
 func (d *DetailModel) Action() DetailAction { return d.action }
-
 func (d *DetailModel) ConsumeAction() DetailAction {
 	a := d.action
 	d.action = DetailAction{}
 	return a
 }
 
-func (d *DetailModel) SetSearch(query string) { d.table.SetSearch(query) }
+// Focus reports the currently active sub-table.
+func (d *DetailModel) Focus() FocusPane { return d.focus }
 
-func (d *DetailModel) ActiveFilter() string { return d.table.Search() }
-
-func (d *DetailModel) SetSize(_, h int) {
-	if h > 0 {
-		d.table.SetHeight(maxInt(1, h-headerLineCount-3))
+// FocusedTopic returns the topic owning the currently selected row in
+// the topics sub-table, or "" if it's empty. Safe to call on a partially-
+// initialized model (the keymap-validation tests construct zero-value
+// DetailModels).
+func (d *DetailModel) FocusedTopic() string {
+	if d.topicsTable == nil {
+		return ""
 	}
+	if row, ok := d.topicsTable.SelectedRow(); ok {
+		return row.ID
+	}
+	return ""
 }
 
-// headerLineCount is the number of header lines reserved by View() above the
-// table — kept in sync with [DetailModel.headerBlock].
-const headerLineCount = 2
+// SetSearch forwards a host-driven filter query to both sub-tables —
+// `tab` switches focus, not the filter.
+func (d *DetailModel) SetSearch(query string) {
+	d.topicsTable.SetSearch(query)
+	d.partsTable.SetSearch(query)
+	d.syncPartitions()
+}
+
+func (d *DetailModel) ActiveFilter() string { return d.topicsTable.Search() }
+
+// SetSize sizes both sub-tables. Width is forwarded so their Flex columns
+// (ID / Member) expand to fill the body — same convention as the list
+// and reset preview tables. Height is split: topics get a third of the
+// area (floored at 3 rows), partitions take the rest because they're
+// usually the busier pane.
+func (d *DetailModel) SetSize(w, h int) {
+	if w > 0 {
+		d.topicsTable.SetTotalWidth(w)
+		d.partsTable.SetTotalWidth(w)
+	}
+	if h <= 0 {
+		return
+	}
+	budget := maxInt(1, h-headerLineCount-detailChromeRows)
+	topicsH := maxInt(3, budget/3)
+	partsH := maxInt(3, budget-topicsH)
+	d.topicsTable.SetHeight(topicsH)
+	d.partsTable.SetHeight(partsH)
+}
+
+const (
+	// headerLineCount is the number of header lines reserved by View()
+	// above the tables — kept in sync with [DetailModel.headerBlock].
+	headerLineCount = 2
+	// detailChromeRows is the layout overhead between the chip header and
+	// the bottom of the partitions table: one title row above topics, one
+	// blank divider, one title row above partitions.
+	detailChromeRows = 3
+)
 
 func (d *DetailModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(d.bindings())
@@ -165,14 +221,14 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 
 func (d *DetailModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
-		{Keys: []string{"tab"}, Label: "toggle grouped / flat view", Category: "Group", Hint: true, Handler: d.actToggleSort},
-		{Keys: []string{"t"}, Label: "jump to topics for this group", Category: "Group", Hint: true, Handler: d.actTopicJump},
-		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Handler: d.actRefresh},
+		{Keys: []string{"tab"}, Label: "switch table", Category: "Group", Hint: true, Handler: d.actToggleFocus},
+		{Keys: []string{"enter"}, Label: "open partitions", Category: "Group", Hint: true, Handler: d.actDrillIn},
+		{Keys: []string{"t"}, Label: "jump to topic messages", Category: "Group", Hint: true, Handler: d.actTopicJump},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Hint: true, Handler: d.actRefresh},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Group", Handler: d.actBack},
 	}
 	mut := []keymap.Binding{
-		{Keys: []string{"R"}, Label: "reset offsets (full flow)", Category: "Mutating", Hint: true, Handler: d.actOpenReset(false)},
-		{Keys: []string{"shift+r"}, Label: "reset offsets (express)", Category: "Mutating", Hint: true, Handler: d.actOpenReset(true)},
+		{Keys: []string{"R"}, Label: d.resetLabel(), Category: "Mutating", Hint: true, Handler: d.actOpenReset},
 		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: d.actDelete},
 	}
 	if d.readOnly {
@@ -189,23 +245,130 @@ func (d *DetailModel) bindings() []keymap.Binding {
 	return bs
 }
 
-func (d *DetailModel) actToggleSort() tea.Cmd { d.toggleSort(); return nil }
-func (d *DetailModel) actTopicJump() tea.Cmd  { d.handleTopicJump(); return nil }
-func (d *DetailModel) actBack() tea.Cmd       { d.action.Back = true; return nil }
+func (d *DetailModel) actToggleFocus() tea.Cmd {
+	if d.focus == FocusTopics {
+		d.focus = FocusPartitions
+	} else {
+		d.focus = FocusTopics
+	}
+	return nil
+}
 
-func (d *DetailModel) actOpenReset(express bool) func() tea.Cmd {
-	return func() tea.Cmd {
-		if d.readOnly {
-			d.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
-			return nil
-		}
-		if express {
-			d.action.OpenResetExpress = true
-		} else {
-			d.action.OpenReset = true
-		}
+// actDrillIn moves focus from topics → partitions (no-op when already
+// there). esc walks back up the chain.
+func (d *DetailModel) actDrillIn() tea.Cmd {
+	d.focus = FocusPartitions
+	return nil
+}
+
+// actBack: from the partitions pane, esc returns focus to the topics
+// pane (so the user never accidentally exits the detail view by drilling
+// in and pressing esc once); from the topics pane it raises Back.
+func (d *DetailModel) actBack() tea.Cmd {
+	if d.focus == FocusPartitions {
+		d.focus = FocusTopics
 		return nil
 	}
+	d.action.Back = true
+	return nil
+}
+
+func (d *DetailModel) actTopicJump() tea.Cmd {
+	topic := d.FocusedTopic()
+	if topic == "" {
+		d.toasts.Push(components.ToastInfo, "no topic selected")
+		return nil
+	}
+	d.action.Topic = topic
+	return nil
+}
+
+func (d *DetailModel) actOpenReset() tea.Cmd {
+	if d.readOnly {
+		d.toasts.Push(components.ToastWarning, "cluster is read-only — reset blocked")
+		return nil
+	}
+	d.action.OpenReset = true
+	return nil
+}
+
+// ResetScope returns the scope the user implicitly chose by where their
+// cursor is parked: focused on a partition row → a single partition;
+// focused on a topic → that topic's partitions; otherwise → the whole
+// group. The host calls this when wiring [DetailAction.OpenReset] into
+// the reset flow.
+func (d *DetailModel) ResetScope() ResetScope {
+	if d.focus == FocusPartitions {
+		if topic, partition, ok := d.focusedPartition(); ok {
+			return ScopePartition{Group: d.group, Topic: topic, Partition: partition}
+		}
+	}
+	if topic := d.FocusedTopic(); topic != "" {
+		return ScopeTopic{
+			Group:   d.group,
+			Topic:   topic,
+			Members: d.partitionsOfTopic(topic),
+		}
+	}
+	return ScopeWholeGroup{Group: d.group}
+}
+
+func (d *DetailModel) focusedPartition() (string, int32, bool) {
+	if d.partsTable == nil {
+		return "", 0, false
+	}
+	row, ok := d.partsTable.SelectedRow()
+	if !ok {
+		return "", 0, false
+	}
+	topic, partStr, cut := strings.Cut(row.ID, "/")
+	if !cut {
+		return "", 0, false
+	}
+	p, err := strconv.ParseInt(partStr, 10, 32)
+	if err != nil {
+		return "", 0, false
+	}
+	return topic, int32(p), true
+}
+
+// partitionsOfTopic returns every partition belonging to topic, preferring
+// the cluster-metadata snapshot so the reset spans partitions that have
+// no prior commits. Falls back to the offsets-derived list (only
+// partitions the group has touched) if the metadata fetch wasn't
+// available — degraded coverage is still better than failing the flow.
+func (d *DetailModel) partitionsOfTopic(topic string) []kafka.TopicPartition {
+	if ps, ok := d.topicPartitions[topic]; ok && len(ps) > 0 {
+		out := make([]kafka.TopicPartition, len(ps))
+		for i, p := range ps {
+			out[i] = kafka.TopicPartition{Topic: topic, Partition: p}
+		}
+		return out
+	}
+	out := make([]kafka.TopicPartition, 0)
+	for _, r := range d.rows {
+		if r.Topic == topic {
+			out = append(out, kafka.TopicPartition{Topic: topic, Partition: r.Partition})
+		}
+	}
+	return out
+}
+
+// resetLabel surfaces the implicit scope right inside the binding label
+// so the chrome's hint always tells the user what `R` will actually
+// reset (group / topic / partition) at the current cursor position.
+// Mirrors [ResetScope]'s branching but skips the partition-list build —
+// bindings() is rebuilt every render and we only need the kind here.
+func (d *DetailModel) resetLabel() string {
+	if d.focus == FocusPartitions {
+		if _, _, ok := d.focusedPartition(); ok {
+			return "reset partition offset"
+		}
+	}
+	if d.FocusedTopic() != "" {
+		return "reset topic offsets"
+	}
+	return "reset group offsets"
 }
 
 func (d *DetailModel) actDelete() tea.Cmd {
@@ -240,61 +403,47 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	if d.toasts != nil {
 		_, _ = d.toasts.Update(key)
 	}
-	if d.table.SearchActive() {
-		tbl, _ := d.table.Update(key)
-		d.table = tbl
+	if d.activeTable().SearchActive() {
+		d.forwardToActive(key)
+		d.syncPartitions()
 		return d, nil
 	}
 	if cmd, ok := keymap.Dispatch(d.bindings(), key); ok {
+		d.syncPartitions()
 		return d, cmd
 	}
-	tbl, _ := d.table.Update(key)
-	d.table = tbl
+	d.forwardToActive(key)
+	d.syncPartitions()
 	return d, nil
 }
 
-// handleTopicJump implements `t`: one subscribed topic → messages of that
-// topic; multiple → topics list filtered by the group's topics.
-func (d *DetailModel) handleTopicJump() {
-	topics := d.subscribedTopics()
-	switch len(topics) {
-	case 0:
-		d.toasts.Push(components.ToastInfo, "no topics for this group")
-	case 1:
-		d.action.Topic = topics[0]
-	default:
-		d.action.TopicsForGroup = topics
+func (d *DetailModel) activeTable() *components.Table {
+	if d.focus == FocusPartitions {
+		return d.partsTable
 	}
+	return d.topicsTable
 }
 
-func (d *DetailModel) subscribedTopics() []string {
-	seen := map[string]struct{}{}
-	for _, r := range d.rows {
-		seen[r.Topic] = struct{}{}
+func (d *DetailModel) forwardToActive(key tea.KeyPressMsg) {
+	if d.focus == FocusPartitions {
+		tbl, _ := d.partsTable.Update(key)
+		d.partsTable = tbl
+		return
 	}
-	for _, m := range d.desc.Members {
-		for _, t := range m.Topics {
-			seen[t] = struct{}{}
-		}
-		for _, a := range m.Assignments {
-			seen[a.Topic] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for t := range seen {
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
+	tbl, _ := d.topicsTable.Update(key)
+	d.topicsTable = tbl
 }
 
-func (d *DetailModel) toggleSort() {
-	if d.sortMode == SortGrouped {
-		d.sortMode = SortFlat
-	} else {
-		d.sortMode = SortGrouped
+// syncPartitions rebuilds the partitions sub-table whenever the focused
+// topic in the topics pane changes. Without this, the lower pane would
+// show stale partitions while the user navigates the topic list.
+func (d *DetailModel) syncPartitions() {
+	topic := d.FocusedTopic()
+	if topic == d.lastTopic {
+		return
 	}
-	d.refreshTable()
+	d.lastTopic = topic
+	d.partsTable.SetRows(buildPartitionRows(d.rows, topic))
 }
 
 // HandleLoaded merges fresh data; also called by the list-screen router.
@@ -310,7 +459,15 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 	d.lastRefresh = d.now()
 	d.desc = msg.Description
 	d.rows = msg.Rows
-	d.refreshTable()
+	d.topicPartitions = msg.TopicPartitions
+	d.topicsTable.SetRows(buildTopicRows(d.rows, d.topicPartitions))
+	// rebuild the partitions pane against the freshly-loaded data
+	// directly. syncPartitions's caching is for cursor-driven nav; the
+	// load path always wants a rebuild because offsets/lag may have
+	// changed even when the focused topic stayed the same.
+	focused := d.FocusedTopic()
+	d.lastTopic = focused
+	d.partsTable.SetRows(buildPartitionRows(d.rows, focused))
 	if d.manualRefresh {
 		d.toasts.Push(components.ToastSuccess, fmt.Sprintf(
 			"refreshed · %d partitions", len(d.rows),
@@ -321,51 +478,75 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 
 func (d *DetailModel) LastRefresh() time.Time { return d.lastRefresh }
 
-func (d *DetailModel) refreshTable() {
-	rows := append([]kafka.PartitionLag(nil), d.rows...)
-	switch d.sortMode {
-	case SortGrouped:
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].Topic != rows[j].Topic {
-				return rows[i].Topic < rows[j].Topic
-			}
-			return rows[i].Partition < rows[j].Partition
-		})
-	case SortFlat:
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].Lag != rows[j].Lag {
-				return rows[i].Lag > rows[j].Lag
-			}
-			if rows[i].Topic != rows[j].Topic {
-				return rows[i].Topic < rows[j].Topic
-			}
-			return rows[i].Partition < rows[j].Partition
-		})
-	}
-
-	tableRows := make([]components.Row, 0, len(rows))
-	prevTopic := ""
+func buildTopicRows(rows []kafka.PartitionLag, partitions map[string][]int32) []components.Row {
+	byTopic := map[string][]kafka.PartitionLag{}
+	topics := make([]string, 0)
 	for _, r := range rows {
-		if d.sortMode == SortGrouped && prevTopic != "" && prevTopic != r.Topic {
-			tableRows = append(tableRows, components.Row{
-				ID:     "sep-" + r.Topic,
-				Values: []string{"┄┄┄", "", "", "", "", ""},
-			})
+		if _, seen := byTopic[r.Topic]; !seen {
+			topics = append(topics, r.Topic)
 		}
-		tableRows = append(tableRows, components.Row{
-			ID: rowID(r),
+		byTopic[r.Topic] = append(byTopic[r.Topic], r)
+	}
+	sort.Strings(topics)
+	out := make([]components.Row, 0, len(topics))
+	for _, topic := range topics {
+		ps := byTopic[topic]
+		var totalLag int64
+		members := map[string]struct{}{}
+		for _, p := range ps {
+			if p.Lag > 0 {
+				totalLag += p.Lag
+			}
+			if p.MemberID != "" {
+				members[p.MemberID] = struct{}{}
+			}
+		}
+		// partition count comes from cluster metadata when available so
+		// the cell reflects the topic's true breadth — partitions without
+		// commits would otherwise be invisible. The rows-derived count is
+		// the fallback for the rare metadata-fetch failure.
+		partCount := len(ps)
+		if full, ok := partitions[topic]; ok && len(full) > partCount {
+			partCount = len(full)
+		}
+		out = append(out, components.Row{
+			ID: topic,
 			Values: []string{
-				r.Topic,
-				strconv.FormatInt(int64(r.Partition), 10),
-				offsetCell(r.Committed),
-				offsetCell(r.End),
-				lagCell(r.Lag),
-				r.MemberID,
+				topic,
+				strconv.Itoa(partCount),
+				lagCell(totalLag),
+				strconv.Itoa(len(members)),
 			},
 		})
-		prevTopic = r.Topic
 	}
-	d.table.SetRows(tableRows)
+	return out
+}
+
+func buildPartitionRows(rows []kafka.PartitionLag, topic string) []components.Row {
+	if topic == "" {
+		return nil
+	}
+	parts := make([]kafka.PartitionLag, 0)
+	for _, r := range rows {
+		if r.Topic == topic {
+			parts = append(parts, r)
+		}
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].Partition < parts[j].Partition })
+	out := make([]components.Row, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, components.Row{
+			ID: rowID(p),
+			Values: []string{
+				strconv.FormatInt(int64(p.Partition), 10),
+				offsetCell(p.Committed),
+				offsetCell(p.End),
+				lagCell(p.Lag),
+				p.MemberID,
+			},
+		})
+	}
+	return out
 }
 
 func rowID(r kafka.PartitionLag) string {
@@ -374,18 +555,39 @@ func rowID(r kafka.PartitionLag) string {
 
 func (d *DetailModel) View() string {
 	parts := d.headerBlock()
-	parts = append(parts, d.table.View())
+	parts = append(parts,
+		d.titleFor("Topics", FocusTopics, len(d.topicsTable.Rows())),
+		d.topicsTable.View(),
+		"",
+		d.titleFor(d.partitionsTitle(), FocusPartitions, len(d.partsTable.Rows())),
+		d.partsTable.View(),
+	)
 	if d.loadErr != "" {
 		parts = append(parts, d.styles.StatusErr.Render("error: "+d.loadErr))
 	}
 	return strings.Join(parts, "\n")
 }
 
-// headerBlock returns exactly headerLineCount lines so layout can size the
-// table reliably. The frame already shows "Group · <name>" in its top
-// border — the body skips a duplicate title and packs every metadata field
-// into a single chip line (per-partition member ownership lives in the
-// table's Member column, so a separate names list would be redundant).
+func (d *DetailModel) partitionsTitle() string {
+	if d.lastTopic == "" {
+		return "Partitions"
+	}
+	return "Partitions · " + d.lastTopic
+}
+
+// titleFor styles the per-pane heading. The active pane gets a filled
+// triangle prefix and the accent color; the inactive pane stays muted —
+// a subtle but unambiguous way to show where keystrokes go.
+func (d *DetailModel) titleFor(label string, pane FocusPane, count int) string {
+	body := fmt.Sprintf("%s [%d]", label, count)
+	if d.focus == pane {
+		return d.styles.HelpTitle.Render("▸ " + body)
+	}
+	return d.styles.StatusInfo.Render("  " + body)
+}
+
+// headerBlock renders the metadata chip line above the panes. Returns
+// exactly headerLineCount lines (the second is a blank divider).
 func (d *DetailModel) headerBlock() []string {
 	state := d.desc.State
 	if state == "" {
@@ -402,7 +604,6 @@ func (d *DetailModel) headerBlock() []string {
 		d.styles.StatusInfo.Render("Protocol: " + valueOr(d.desc.Protocol, emDash)),
 		d.styles.StatusInfo.Render("Members: " + strconv.Itoa(len(d.desc.Members))),
 		d.styles.StatusInfo.Render("Total Lag: " + formatThousands(d.totalLag())),
-		d.styles.StatusInfo.Render("Sort: " + d.sortLabel()),
 	}
 	sep := d.styles.StatusInfo.Render("  ·  ")
 	return []string{strings.Join(chips, sep), ""}
@@ -421,18 +622,9 @@ func (d *DetailModel) totalLag() int64 {
 	return total
 }
 
-func (d *DetailModel) sortLabel() string {
-	if d.sortMode == SortFlat {
-		return "flat (lag desc)"
-	}
-	return "grouped"
-}
-
 // coordSummary renders the coordinator as "id (host:port)", or just "id"
 // when the host hasn't been resolved. Returns emDash before the first
-// successful describe (lastRefresh is the canonical "loaded" indicator —
-// using it avoids a brittle all-zero-fields heuristic that misfires on
-// broker id 0).
+// successful describe.
 func (d *DetailModel) coordSummary() string {
 	if d.lastRefresh.IsZero() {
 		return emDash
@@ -466,11 +658,15 @@ func lagCell(v int64) string {
 
 // ----- Messages -----
 
-// DetailLoadedMsg surfaces the (description, partition lags) snapshot.
+// DetailLoadedMsg surfaces the (description, partition lags, topic
+// partitions) snapshot. TopicPartitions carries the full per-topic
+// partition list so topic-scope resets target every partition, not just
+// the ones with prior commits — see [DetailModel.ResetScope].
 type DetailLoadedMsg struct {
-	Description kafka.GroupDescription
-	Rows        []kafka.PartitionLag
-	Err         error
+	Description     kafka.GroupDescription
+	Rows            []kafka.PartitionLag
+	TopicPartitions map[string][]int32
+	Err             error
 }
 
 func loadDetailCmd(svc Service, group string) tea.Cmd {
@@ -485,6 +681,22 @@ func loadDetailCmd(svc Service, group string) tea.Cmd {
 		if err != nil {
 			return DetailLoadedMsg{Description: desc, Err: err}
 		}
-		return DetailLoadedMsg{Description: desc, Rows: rows}
+		// the partitions metadata fetch is best-effort; failures degrade
+		// to the d.rows-derived view (partial coverage of topic scope).
+		parts, _ := svc.TopicsPartitions(ctx, uniqueTopicsFromRows(rows)...)
+		return DetailLoadedMsg{Description: desc, Rows: rows, TopicPartitions: parts}
 	}
+}
+
+func uniqueTopicsFromRows(rows []kafka.PartitionLag) []string {
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if _, ok := seen[r.Topic]; ok {
+			continue
+		}
+		seen[r.Topic] = struct{}{}
+		out = append(out, r.Topic)
+	}
+	return out
 }

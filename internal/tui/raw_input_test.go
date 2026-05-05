@@ -148,11 +148,11 @@ func (s *titledScreen) View() string       { return "row 1\nrow 2" }
 
 func TestRender_WrapsBodyInFrameWithTitleAndBreadcrumb(t *testing.T) {
 	m := New(Options{Initial: ScreenTopics, Width: 60, Height: 20})
-	m.active = &titledScreen{title: "Topics[42]", breadcrumb: "orders.events"}
+	m.active = &titledScreen{title: "Topics [42]", breadcrumb: "orders.events"}
 
 	out := m.Render()
 
-	assert.Contains(t, out, "Topics[42]")
+	assert.Contains(t, out, "Topics [42]")
 	assert.Contains(t, out, "orders.events")
 	// rounded border corners must appear once the frame is composed.
 	assert.Contains(t, out, "╭")

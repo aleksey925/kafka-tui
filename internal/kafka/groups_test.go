@@ -339,6 +339,47 @@ func TestClient_PreviewReset__earliestLatest__kfake(t *testing.T) {
 	assert.EqualValues(t, 2, pv.Summary.Skipped)
 }
 
+// TestClient_PreviewReset__topicScopeAllPartitions__kfake pins the
+// end-to-end scope contract: when the caller supplies an explicit
+// per-topic Targets list (as a topic-scope reset does), the preview
+// must enumerate every requested partition — not silently fall back to
+// "every partition with a commit". Previously the UI captured Targets
+// from the group's commits only, which left freshly-rebalanced
+// partitions out of the reset.
+func TestClient_PreviewReset__topicScopeAllPartitions__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "wide",
+		Partitions:        4,
+		ReplicationFactor: 1,
+	}))
+	// produce a couple records into partition 0 only — the group only
+	// commits there, but the reset scope explicitly targets all four.
+	produceN(t, ctx, c, "wide", 2)
+	commitOffset(t, ctx, c, "g-wide", "wide", 0, 1)
+
+	spec := ResetSpec{
+		Strategy: ResetEarliest,
+		Targets: []TopicPartition{
+			{Topic: "wide", Partition: 0},
+			{Topic: "wide", Partition: 1},
+			{Topic: "wide", Partition: 2},
+			{Topic: "wide", Partition: 3},
+		},
+	}
+	pv, err := c.PreviewReset(ctx, "g-wide", spec)
+	require.NoError(t, err)
+	require.Len(t, pv.Partitions, 4, "preview must include every partition in scope, not just those with commits")
+	for i, p := range pv.Partitions {
+		assert.EqualValues(t, i, p.Partition)
+	}
+}
+
 func TestClient_PreviewReset__shiftClamping__kfake(t *testing.T) {
 	t.Parallel()
 

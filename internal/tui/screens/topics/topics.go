@@ -59,7 +59,6 @@ type Options struct {
 	Service         Service
 	ReadOnly        bool
 	Columns         []string
-	FilterTopics    []string
 	FocusTopic      string
 	RefreshInterval time.Duration
 	Now             func() time.Time
@@ -73,7 +72,6 @@ type Model struct {
 	readOnly bool
 
 	columns      []string
-	filterNames  map[string]struct{}
 	focusTopic   string
 	allTopics    []kafka.TopicSummary
 	hiddenIntern int
@@ -132,19 +130,10 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
-	var filterSet map[string]struct{}
-	if len(opts.FilterTopics) > 0 {
-		filterSet = make(map[string]struct{}, len(opts.FilterTopics))
-		for _, name := range opts.FilterTopics {
-			filterSet[name] = struct{}{}
-		}
-	}
-
 	return &Model{
 		svc:           opts.Service,
 		readOnly:      opts.ReadOnly,
 		columns:       cols,
-		filterNames:   filterSet,
 		focusTopic:    opts.FocusTopic,
 		watermarks:    map[string]kafka.TopicWatermarks{},
 		sizes:         map[string]int64{},
@@ -211,11 +200,11 @@ func (m *Model) Cursor() int { return m.table.Cursor() }
 
 func (m *Model) Title() string {
 	visible := len(m.visibleTopics())
-	body := fmt.Sprintf("Topics[%d]", visible)
+	body := fmt.Sprintf("Topics [%d]", visible)
 	if q := m.table.Search(); q != "" {
-		body = fmt.Sprintf("Topics[%d/%d] </%s>", m.table.FilteredCount(), visible, q)
+		body = fmt.Sprintf("Topics [%d/%d] </%s>", m.table.FilteredCount(), visible, q)
 	} else if m.hiddenIntern > 0 {
-		body = fmt.Sprintf("Topics[%d, +%d internal hidden]", visible, m.hiddenIntern)
+		body = fmt.Sprintf("Topics [%d, +%d internal hidden]", visible, m.hiddenIntern)
 	}
 	if m.loading {
 		body += " (loading…)"
@@ -293,7 +282,7 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"g"}, Label: "consumer groups for topic", Category: "Topic", Hint: true, Handler: m.actGroups},
 		{Keys: []string{"i"}, Label: "toggle internal topics", Category: "Topic", Handler: m.actToggleInternal},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
-		{Keys: []string{"esc", "q"}, Label: "back / quit", Category: "Topic", Handler: m.actQuit},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Topic", Handler: m.actQuit},
 	}
 	mut := []keymap.Binding{
 		{Keys: []string{"n"}, Label: "new topic", Category: "Mutating", Hint: true, Handler: m.actNewTopic},
@@ -700,11 +689,6 @@ func (m *Model) visibleTopics() []kafka.TopicSummary {
 		if t.IsInternal && !m.showInternal {
 			hidden++
 			continue
-		}
-		if len(m.filterNames) > 0 {
-			if _, ok := m.filterNames[t.Name]; !ok {
-				continue
-			}
 		}
 		out = append(out, t)
 	}

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -114,8 +113,11 @@ func (c *CreateForm) Spec() (kafka.CreateTopicSpec, error) {
 	}, nil
 }
 
-// View: width=0 falls back to natural width.
-func (c *CreateForm) View(width int) string {
+// View renders the form flush with the screen frame — no nested rounded
+// border. The host already paints the outer frame and a "Create topic"
+// title, so the inner box would just be a duplicate that clips when the
+// form is taller than the viewport. Matches the produce-screen pattern.
+func (c *CreateForm) View(_ int) string {
 	header := c.styles.HelpTitle.Render("New topic")
 	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "create"))
 	parts := []string{header}
@@ -123,15 +125,7 @@ func (c *CreateForm) View(width int) string {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))
 	}
 	parts = append(parts, c.form.View(), "", hint)
-	body := strings.Join(parts, "\n")
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(body)
-	if width <= 0 {
-		return box
-	}
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, box)
+	return strings.Join(parts, "\n")
 }
 
 func formHintLine(mode FormMode, verb string) string {
@@ -292,7 +286,7 @@ func (c *CloneForm) Options() kafka.CloneOptions {
 	return opts
 }
 
-func (c *CloneForm) View(width int) string {
+func (c *CloneForm) View(_ int) string {
 	header := c.styles.HelpTitle.Render("Clone topic: " + c.source)
 	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "clone"))
 	parts := []string{header}
@@ -300,15 +294,7 @@ func (c *CloneForm) View(width int) string {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))
 	}
 	parts = append(parts, c.form.View(), "", hint)
-	body := strings.Join(parts, "\n")
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(body)
-	if width <= 0 {
-		return box
-	}
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, box)
+	return strings.Join(parts, "\n")
 }
 
 func parsePositiveInt32(raw, label string) (int32, error) {

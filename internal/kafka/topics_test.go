@@ -132,6 +132,35 @@ func TestClient_TopicPartitions__kfake(t *testing.T) {
 	}
 }
 
+// TestClient_TopicsPartitions__kfake pins the metadata-driven partition
+// list used to scope topic-level offset resets. The result must include
+// every partition the topic was created with, regardless of whether any
+// data has been produced or any consumer has committed.
+func TestClient_TopicsPartitions__kfake(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "alpha",
+		Partitions:        4,
+		ReplicationFactor: 1,
+	}))
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "beta",
+		Partitions:        2,
+		ReplicationFactor: 1,
+	}))
+
+	got, err := c.TopicsPartitions(ctx, "alpha", "beta")
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]int32{
+		"alpha": {0, 1, 2, 3},
+		"beta":  {0, 1},
+	}, got)
+}
+
 func TestClient_TopicWatermarks__kfake(t *testing.T) {
 	t.Parallel()
 

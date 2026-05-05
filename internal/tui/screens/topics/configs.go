@@ -11,6 +11,8 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/help"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -148,12 +150,36 @@ func (m *ConfigsModel) SetSize(w, h int) {
 }
 
 func (m *ConfigsModel) KeyHints() []layout.KeyHint {
-	return []layout.KeyHint{
-		{Key: "tab", Label: "switch table"},
-		{Key: "/", Label: "search"},
-		{Key: "s/S", Label: "sort"},
-		{Key: "esc/q", Label: "back"},
+	return layout.HintsFromBindings(m.bindings())
+}
+
+func (m *ConfigsModel) HelpSections() []help.Section {
+	return help.SectionsFromBindings(m.bindings())
+}
+
+func (m *ConfigsModel) bindings() []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "switch table", Category: "Topic", Hint: true, Handler: m.actToggleFocus},
+		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
+		{Keys: []string{"esc", "q"}, Label: "back", Category: "Topic", Handler: m.actBack},
+		{Keys: []string{"/"}, Label: "filter rows", Category: "Topic", Hint: true},
 	}
+}
+
+func (m *ConfigsModel) actBack() tea.Cmd {
+	m.action.Back = true
+	return nil
+}
+
+func (m *ConfigsModel) actToggleFocus() tea.Cmd {
+	m.focusParts = !m.focusParts
+	return nil
+}
+
+func (m *ConfigsModel) actRefresh() tea.Cmd {
+	m.loading = true
+	m.manualRefresh = true
+	return loadConfigsCmd(m.svc, m.topic)
 }
 
 func (m *ConfigsModel) Update(msg tea.Msg) tea.Cmd {
@@ -174,18 +200,8 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-
-	switch key.String() {
-	case "esc", "q":
-		m.action.Back = true
-		return nil
-	case "tab":
-		m.focusParts = !m.focusParts
-		return nil
-	case "r":
-		m.loading = true
-		m.manualRefresh = true
-		return loadConfigsCmd(m.svc, m.topic)
+	if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
+		return cmd
 	}
 	tbl, _ := m.activeTable().Update(key)
 	if m.focusParts {

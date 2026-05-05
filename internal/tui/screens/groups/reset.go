@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -27,41 +26,59 @@ type ResetScope interface {
 	HeaderLabel(partitionCount, topicCount int) string
 }
 
-// ScopeWholeGroup means every partition the group has committed offsets for.
-// When Topic is non-empty, scope is restricted to that topic.
-type ScopeWholeGroup struct {
-	Group string
-	Topic string
-}
+// ScopeWholeGroup targets every partition the group has committed offsets
+// for — used when reset is invoked from the groups list.
+type ScopeWholeGroup struct{ Group string }
 
 func (s ScopeWholeGroup) Targets() []kafka.TopicPartition { return nil }
 
 func (s ScopeWholeGroup) HeaderLabel(partitionCount, topicCount int) string {
-	if s.Topic != "" {
-		return fmt.Sprintf("Resetting %d partitions in %s", partitionCount, s.Topic)
+	// pre-preview the scope size is unknown — make the intent explicit so
+	// users don't read "Resetting all partitions" as something narrower.
+	if partitionCount == 0 {
+		return "Resetting every partition of every topic in this group"
 	}
 	if topicCount == 1 {
-		return fmt.Sprintf("Resetting %d partitions across 1 topic", partitionCount)
+		return fmt.Sprintf("Resetting %d partitions across 1 topic in this group", partitionCount)
 	}
-	if topicCount > 1 {
-		return fmt.Sprintf("Resetting %d partitions across %d topics", partitionCount, topicCount)
-	}
-	return fmt.Sprintf("Resetting all partitions (%d total)", partitionCount)
+	return fmt.Sprintf("Resetting %d partitions across %d topics in this group", partitionCount, topicCount)
 }
 
-// ScopeDetail is the default for "R from detail view".
-type ScopeDetail struct{ Group string }
+// ScopeTopic restricts the reset to the partitions of one topic. The
+// concrete partition list is captured at scope-construction time so the
+// kafka client gets exact targets instead of falling back to "all
+// partitions in the group".
+type ScopeTopic struct {
+	Group   string
+	Topic   string
+	Members []kafka.TopicPartition
+}
 
-func (s ScopeDetail) Targets() []kafka.TopicPartition { return nil }
+func (s ScopeTopic) Targets() []kafka.TopicPartition {
+	out := make([]kafka.TopicPartition, len(s.Members))
+	copy(out, s.Members)
+	return out
+}
 
-func (s ScopeDetail) HeaderLabel(partitionCount, topicCount int) string {
-	if topicCount == 1 {
-		return fmt.Sprintf("Resetting %d partitions across 1 topic", partitionCount)
-	}
-	if topicCount > 1 {
-		return fmt.Sprintf("Resetting %d partitions across %d topics", partitionCount, topicCount)
-	}
-	return fmt.Sprintf("Resetting all partitions (%d total)", partitionCount)
+func (s ScopeTopic) HeaderLabel(partitionCount, _ int) string {
+	return fmt.Sprintf("Resetting %d partitions in %s", partitionCount, s.Topic)
+}
+
+// ScopePartition narrows the reset to a single (topic, partition) pair —
+// the most precise scope, useful when the user has drilled into a
+// partition row in the detail view.
+type ScopePartition struct {
+	Group     string
+	Topic     string
+	Partition int32
+}
+
+func (s ScopePartition) Targets() []kafka.TopicPartition {
+	return []kafka.TopicPartition{{Topic: s.Topic, Partition: s.Partition}}
+}
+
+func (s ScopePartition) HeaderLabel(_, _ int) string {
+	return fmt.Sprintf("Resetting %s partition %d", s.Topic, s.Partition)
 }
 
 // ResetStep is the current step of the 4-step flow.
@@ -85,25 +102,23 @@ type ResetOptions struct {
 	Service Service
 	Group   string
 	Scope   ResetScope
-	// Express skips the preview step.
-	Express bool
 	Now     func() time.Time
 	Styles  theme.Styles
 }
 
-// ResetModel hosts the 4-step reset flow. Callers gate the flow behind their
-// own ReadOnly check.
+// ResetModel hosts the 3-step reset flow (strategy → params → preview).
+// Callers gate the flow behind their own ReadOnly check.
 type ResetModel struct {
-	svc     Service
-	group   string
-	scope   ResetScope
-	express bool
+	svc   Service
+	group string
+	scope ResetScope
 
-	step     ResetStep
-	strategy kafka.ResetStrategy
-	form     *components.Form
-	preview  kafka.ResetPreview
-	result   *kafka.ResetPreview
+	step         ResetStep
+	strategy     kafka.ResetStrategy
+	form         *components.Form
+	preview      kafka.ResetPreview
+	previewTable *components.Table
+	result       *kafka.ResetPreview
 
 	committing bool
 	previewing bool
@@ -130,15 +145,23 @@ func NewResetModel(opts ResetOptions) *ResetModel {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
+	previewCols := []components.Column{
+		{Title: "Topic", Flex: true, MinWidth: 16, Sortable: true},
+		{Title: "Partition", Width: 9, Sortable: true},
+		{Title: "Committed", Width: 14, Sortable: true},
+		{Title: "Target", Width: 14, Sortable: true},
+		{Title: "Diff", Width: 14, Sortable: true},
+		{Title: "Note", Width: 24, Sortable: false},
+	}
 	return &ResetModel{
-		svc:      opts.Service,
-		group:    opts.Group,
-		scope:    opts.Scope,
-		express:  opts.Express,
-		step:     StepStrategy,
-		strategy: kafka.ResetEarliest,
-		now:      now,
-		styles:   styles,
+		svc:          opts.Service,
+		group:        opts.Group,
+		scope:        opts.Scope,
+		step:         StepStrategy,
+		strategy:     kafka.ResetEarliest,
+		previewTable: components.NewTable(previewCols, components.WithStyles(styles)),
+		now:          now,
+		styles:       styles,
 	}
 }
 
@@ -152,8 +175,6 @@ func (r *ResetModel) Step() ResetStep { return r.step }
 
 func (r *ResetModel) Strategy() kafka.ResetStrategy { return r.strategy }
 
-func (r *ResetModel) Express() bool { return r.express }
-
 func (r *ResetModel) Preview() kafka.ResetPreview { return r.preview }
 
 func (r *ResetModel) Action() ResetAction { return r.action }
@@ -166,7 +187,26 @@ func (r *ResetModel) ConsumeAction() ResetAction {
 
 func (r *ResetModel) Err() string { return r.err }
 
-func (r *ResetModel) SetSize(w, h int) { r.width, r.height = w, h }
+// SetSize hands the available body area to the preview table. Reset is
+// rendered flush with the screen frame (no inner box), so the chrome
+// budget is just the static rows around the table.
+func (r *ResetModel) SetSize(w, h int) {
+	r.width, r.height = w, h
+	if w > 0 {
+		r.previewTable.SetTotalWidth(w)
+	}
+	if h > 0 {
+		tblH := maxInt(3, h-resetChromeRows)
+		r.previewTable.SetHeight(tblH)
+	}
+}
+
+// resetChromeRows is the row budget reserved around the preview table
+// at StepPreview: 1 scope/step header + 1 "Preview" title + 1 line for
+// the table's own column header + blank + summary (2) + blank + hint
+// (2) = 7. Without this padding the box bottom would clip when the
+// partition list was long.
+const resetChromeRows = 7
 
 func (r *ResetModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(r.bindings())
@@ -272,6 +312,13 @@ func (r *ResetModel) handleKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
 	if r.step == StepParams && r.form != nil {
 		f, _ := r.form.Update(key)
 		r.form = f
+		return r, nil
+	}
+	// preview step forwards unmatched keys (j/k/g/G/page-up/down) to the
+	// scrollable table — without this, large previews silently truncate.
+	if r.step == StepPreview && !r.previewing && !r.committing {
+		tbl, _ := r.previewTable.Update(key)
+		r.previewTable = tbl
 	}
 	return r, nil
 }
@@ -315,11 +362,6 @@ func (r *ResetModel) dispatchAfterParams() (*ResetModel, tea.Cmd) {
 		return r, nil
 	}
 	r.err = ""
-	if r.express {
-		r.committing = true
-		r.step = StepPreview // preview rendered post-commit
-		return r, commitCmd(r.svc, r.group, spec)
-	}
 	r.previewing = true
 	r.step = StepPreview
 	return r, previewCmd(r.svc, r.group, spec)
@@ -337,6 +379,7 @@ func (r *ResetModel) handlePreview(msg ResetPreviewMsg) {
 	}
 	r.err = ""
 	r.preview = msg.Preview
+	r.previewTable.SetRows(r.buildPreviewRows())
 }
 
 func (r *ResetModel) handleCommitted(msg ResetCommittedMsg) {
@@ -352,6 +395,7 @@ func (r *ResetModel) handleCommitted(msg ResetCommittedMsg) {
 	res := msg.Result
 	r.result = &res
 	r.preview = res
+	r.previewTable.SetRows(r.buildPreviewRows())
 	r.action.Done = true
 	r.action.Result = &res
 	r.step = StepDone
@@ -409,6 +453,10 @@ func (r *ResetModel) fieldValue(key string) string {
 	return f.Value
 }
 
+// View renders the flow flush with the screen frame (no inner box). The
+// host's frame already carries the "Reset offsets · <group>" title, so a
+// nested rounded border would just duplicate the chrome and clip when
+// the preview list grows tall — see produce.View for the pattern.
 func (r *ResetModel) View() string {
 	body := []string{r.headerBlock()}
 	if r.err != "" {
@@ -419,45 +467,20 @@ func (r *ResetModel) View() string {
 		body = append(body, r.renderStrategyStep())
 	case StepParams:
 		body = append(body, r.renderParamsStep())
-	case StepPreview:
-		body = append(body, r.renderPreviewStep())
-	case StepDone:
+	case StepPreview, StepDone:
 		body = append(body, r.renderPreviewStep())
 	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(strings.Join(body, "\n"))
-	if r.width <= 0 {
-		return box
-	}
-	return lipgloss.PlaceHorizontal(r.width, lipgloss.Center, box)
+	return strings.Join(body, "\n")
 }
 
 func (r *ResetModel) headerBlock() string {
 	count, topicCount := r.previewCounts()
 	header := r.scope.HeaderLabel(count, topicCount)
-	expressTag := ""
-	if r.express {
-		expressTag = "  " + r.styles.HintKey.Render("[express]")
-	}
-	stepTag := r.styles.HintLabel.Render(stepLabel(r.step, r.express))
-	return r.styles.HelpTitle.Render("Reset offsets · "+r.group) + "\n" +
-		r.styles.StatusInfo.Render(header) + expressTag + "  " + stepTag
+	stepTag := r.styles.HintLabel.Render(stepLabel(r.step))
+	return r.styles.StatusInfo.Render(header) + "  " + stepTag
 }
 
-func stepLabel(step ResetStep, express bool) string {
-	if express {
-		switch step {
-		case StepStrategy:
-			return "step 1/2 strategy"
-		case StepParams:
-			return "step 2/2 params"
-		case StepPreview, StepDone:
-			return "committing"
-		}
-		return ""
-	}
+func stepLabel(step ResetStep) string {
 	switch step {
 	case StepStrategy:
 		return "step 1/3 strategy"
@@ -471,7 +494,21 @@ func stepLabel(step ResetStep, express bool) string {
 	return ""
 }
 
+// previewCounts reports (partitionCount, topicCount). It prefers the
+// computed preview because that's the authoritative post-clamp set, but
+// falls back to the scope's own Targets() so the header at step 1
+// already shows "Resetting N partitions" instead of "Resetting 0
+// partitions" before the preview RPC has run.
 func (r *ResetModel) previewCounts() (int, int) {
+	if len(r.preview.Partitions) == 0 {
+		if targets := r.scope.Targets(); len(targets) > 0 {
+			topics := map[string]struct{}{}
+			for _, t := range targets {
+				topics[t.Topic] = struct{}{}
+			}
+			return len(targets), len(topics)
+		}
+	}
 	parts := len(r.preview.Partitions)
 	topics := map[string]struct{}{}
 	for _, p := range r.preview.Partitions {
@@ -525,39 +562,33 @@ func (r *ResetModel) renderPreviewStep() string {
 	if len(r.preview.Partitions) == 0 {
 		parts = append(parts, r.styles.StatusInfo.Render("(no partitions)"))
 	} else {
-		parts = append(parts, r.renderPreviewTable())
+		parts = append(parts, r.previewTable.View())
 	}
 	parts = append(parts, "", r.renderSummary())
 	if r.step == StepDone {
 		parts = append(parts, "", r.styles.StatusInfo.Render("commit applied"))
 	} else {
-		parts = append(parts, "", r.styles.HintLabel.Render("y commit  n/esc cancel"))
+		parts = append(parts, "", r.styles.HintLabel.Render("y commit  n/esc cancel  j/k scroll"))
 	}
 	return strings.Join(parts, "\n")
 }
 
-func (r *ResetModel) renderPreviewTable() string {
-	header := []string{
-		padRight("Topic", 24),
-		padRight("P", 4),
-		padRight("Committed", 14),
-		padRight("Target", 14),
-		padRight("Diff", 14),
-		padRight("Note", 24),
-	}
-	lines := []string{r.styles.HelpTitle.Render(strings.Join(header, "  "))}
+func (r *ResetModel) buildPreviewRows() []components.Row {
+	rows := make([]components.Row, 0, len(r.preview.Partitions))
 	for _, p := range r.preview.Partitions {
-		row := []string{
-			padRight(p.Topic, 24),
-			padRight(strconv.FormatInt(int64(p.Partition), 10), 4),
-			padRight(offsetCell(p.Committed), 14),
-			padRight(formatThousands(p.Target), 14),
-			padRight(formatDiff(p.Diff), 14),
-			padRight(p.Note, 24),
-		}
-		lines = append(lines, "  "+strings.Join(row, "  "))
+		rows = append(rows, components.Row{
+			ID: fmt.Sprintf("%s/%d", p.Topic, p.Partition),
+			Values: []string{
+				p.Topic,
+				strconv.FormatInt(int64(p.Partition), 10),
+				offsetCell(p.Committed),
+				formatThousands(p.Target),
+				formatDiff(p.Diff),
+				p.Note,
+			},
+		})
 	}
-	return strings.Join(lines, "\n")
+	return rows
 }
 
 func (r *ResetModel) renderSummary() string {
@@ -591,13 +622,6 @@ func formatDiff(d int64) string {
 		return "+" + formatThousands(d)
 	}
 	return formatThousands(d)
-}
-
-func padRight(s string, w int) string {
-	if len(s) >= w {
-		return s
-	}
-	return s + strings.Repeat(" ", w-len(s))
 }
 
 // ----- Messages -----

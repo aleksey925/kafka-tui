@@ -121,7 +121,7 @@ func (m *Model) HelpSections() []help.Section {
 
 func (m *Model) bindings() []keymap.Binding {
 	return []keymap.Binding{
-		{Keys: []string{"tab"}, Label: "switch focused table", Category: "Config sources", Hint: true, Handler: m.actSwitchTable},
+		{Keys: []string{"tab"}, Label: "switch table", Category: "Config sources", Hint: true, Handler: m.actSwitchTable},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Config sources", Handler: m.actBack},
 		{Keys: []string{"/"}, Label: "filter rows", Category: "Config sources", Hint: true},
 		{Keys: []string{"s", "S"}, Label: "cycle sort", Category: "Config sources", Hint: true},

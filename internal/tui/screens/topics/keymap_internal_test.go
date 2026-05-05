@@ -58,4 +58,13 @@ func TestListBindings_HelpAndHintsCoverHandlers(t *testing.T) {
 	}
 }
 
+// TestConfigsBindings_WellFormed pins the same invariants for the topic
+// configs screen. Previously this screen hardcoded its KeyHints and
+// bypassed the keymap layer entirely, which left the `?` overlay empty
+// and hid the `r` refresh shortcut from the bottom hints bar.
+func TestConfigsBindings_WellFormed(t *testing.T) {
+	m := NewConfigsModel(ConfigsOptions{Service: &fakeBindingsSvc{}, Topic: "alpha"})
+	assert.NoError(t, keymap.Validate(m.bindings()))
+}
+
 type fakeBindingsSvc struct{ Service }
