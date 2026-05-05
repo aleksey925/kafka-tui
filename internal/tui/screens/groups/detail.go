@@ -70,6 +70,9 @@ type DetailModel struct {
 	width, height int
 	loading       bool
 	loadErr       string
+	// manualRefresh is set when the user pressed `r` and is consumed by
+	// HandleLoaded to push a one-shot success toast (auto ticks stay silent).
+	manualRefresh bool
 	// lastRefresh marks the wall-clock time of the most recent successful
 	// detail load. Drives the chrome's "X ago" indicator while the user
 	// is in detail mode.
@@ -120,7 +123,8 @@ func (d *DetailModel) Init() tea.Cmd {
 	return loadDetailCmd(d.svc, d.group)
 }
 
-// RefreshCmd dispatches another reload (used by the auto-refresh tick).
+// RefreshCmd dispatches another refresh (used by the auto-refresh tick and
+// the manual `r` press).
 func (d *DetailModel) RefreshCmd() tea.Cmd {
 	d.loading = true
 	return loadDetailCmd(d.svc, d.group)
@@ -253,6 +257,14 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 		d.handleTopicJump()
 		return d, nil
 	case "r":
+		// skip duplicate loads — pressing `r` while a previous fetch (manual
+		// or from the auto-refresh tick) is in flight would queue redundant
+		// RPCs and risk attaching the manualRefresh toast to the auto-tick
+		// response.
+		if d.loading {
+			return d, nil
+		}
+		d.manualRefresh = true
 		cmd := d.RefreshCmd()
 		return d, cmd
 	}
@@ -315,6 +327,7 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 	if msg.Err != nil {
 		d.loadErr = msg.Err.Error()
 		d.toasts.Push(components.ToastError, "load detail: "+msg.Err.Error())
+		d.manualRefresh = false
 		return
 	}
 	d.loadErr = ""
@@ -322,6 +335,12 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 	d.desc = msg.Description
 	d.rows = msg.Rows
 	d.refreshTable()
+	if d.manualRefresh {
+		d.toasts.Push(components.ToastSuccess, fmt.Sprintf(
+			"refreshed · %d partitions", len(d.rows),
+		))
+		d.manualRefresh = false
+	}
 }
 
 // LastRefresh returns the wall-clock time of the most recent successful

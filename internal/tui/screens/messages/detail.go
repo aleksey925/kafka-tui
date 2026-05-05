@@ -214,7 +214,7 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 		{Key: "e", Label: "$EDITOR"},
 	}
 	if !d.readOnly {
-		hints = append(hints, layout.KeyHint{Key: "r", Label: "resend"})
+		hints = append(hints, layout.KeyHint{Key: "R", Label: "resend"})
 	}
 	hints = append(hints, layout.KeyHint{Key: "esc", Label: "back"})
 	return hints
@@ -259,7 +259,7 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 		d.saveFullJSON()
 	case "e":
 		d.openEditor()
-	case "r":
+	case "R":
 		d.resend()
 	case "w":
 		d.toggleWrap()

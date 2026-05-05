@@ -86,9 +86,9 @@ func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 	if onClusters {
 		cs.SetClusters(list, cli)
 		if clustersChanged {
-			cs.Toasts().Push(components.ToastSuccess, fmt.Sprintf("clusters reloaded · %d", len(list)))
+			cs.Toasts().Push(components.ToastSuccess, fmt.Sprintf("clusters refreshed · %d", len(list)))
 		} else {
-			cs.Toasts().Push(components.ToastInfo, "config reloaded")
+			cs.Toasts().Push(components.ToastInfo, "config refreshed")
 		}
 	}
 	// active cluster's fields changed under us — the live *kafka.Client is
@@ -143,12 +143,12 @@ func (m *Model) reloadClusters(s *clusters.Model) {
 	}
 	loaded, list, cli, err := m.boot.ConfigReloader()
 	if err != nil {
-		s.Toasts().Push(components.ToastError, "reload: "+err.Error())
+		s.Toasts().Push(components.ToastError, "refresh: "+err.Error())
 		return
 	}
 	m.boot.Loaded = loaded
 	m.boot.Clusters = list
 	m.boot.CLIName = cli
 	s.SetClusters(list, cli)
-	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("reloaded %d clusters", len(list)))
+	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d clusters", len(list)))
 }

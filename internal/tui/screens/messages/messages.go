@@ -212,6 +212,10 @@ type Model struct {
 	// "live tail is alive" cue even when records arrive slowly.
 	spinnerFrame int
 
+	// manualRefresh is set when the user pressed `r` (non-live mode) and
+	// is consumed by handleLoaded to push a one-shot success toast.
+	manualRefresh bool
+
 	// popups
 	seekPopup       *seekPopup
 	partitionsPopup *partitionsPopup
@@ -554,14 +558,14 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "s", Label: "seek"},
 		{Key: "P", Label: "partitions"},
 		{Key: "f", Label: "smart filter"},
-		{Key: "R", Label: "reset"},
+		{Key: "r", Label: "refresh"},
 		{Key: "[/]", Label: "prev/next page"},
 		{Key: "/", Label: "search"},
 	}
 	if !m.readOnly {
 		hints = append(hints,
 			layout.KeyHint{Key: "p", Label: "produce"},
-			layout.KeyHint{Key: "r", Label: "resend"},
+			layout.KeyHint{Key: "R", Label: "resend"},
 		)
 	}
 	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
@@ -640,8 +644,6 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "P":
 		return m.openPartitions()
-	case "R":
-		return m.resetView()
 	case "f":
 		m.openSmartFilter()
 		return nil
@@ -652,6 +654,8 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	case "p":
 		return m.handleProduceKey()
 	case "r":
+		return m.refresh()
+	case "R":
 		m.handleResendKey()
 		return nil
 	}
@@ -761,6 +765,7 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load messages: "+msg.Err.Error())
+		m.manualRefresh = false
 		return
 	}
 	m.messages = msg.Messages
@@ -769,6 +774,12 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 		m.toBoundary = msg.ToBoundary
 	}
 	m.refreshTable()
+	if m.manualRefresh {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf(
+			"refreshed · %d messages", len(m.messages),
+		))
+		m.manualRefresh = false
+	}
 }
 
 func (m *Model) handleAppended(msg MessagesAppendedMsg) {
@@ -858,6 +869,13 @@ func (m *Model) stopFollow() {
 	// bump generation: any chunk already in flight from the now-closed
 	// follow session will be discarded by handleFollowChunk on arrival.
 	m.fetchGen++
+	// clearing the manual-refresh flag here keeps the toast tied strictly
+	// to a press of `r` — every other path that switches the load context
+	// (seek change, view restore, …) goes through stopFollow first, so a
+	// flag set by an earlier `r` whose response never arrived can't leak
+	// onto a later, unrelated dispatchSeek and produce a misleading
+	// "refreshed" toast. refresh() re-sets the flag *after* stopFollow.
+	m.manualRefresh = false
 }
 
 // Close releases any background resources owned by the screen. The host
@@ -1143,17 +1161,25 @@ func (m *Model) applySeek(state SeekState) {
 	m.persistView()
 }
 
-// resetView returns the screen to its default view: seek=latest, no
-// partition filter, no live tail, no captured boundary. Persists the
-// reset and re-dispatches the initial fetch.
-func (m *Model) resetView() tea.Cmd {
+// refresh re-issues the current seek without changing any state. Stops any
+// live-tail session first so its kgo consumer / goroutine are released
+// before a fresh dispatch — refreshing while live would otherwise leak the
+// previous session (its chunks would still be filtered out by fetchGen, but
+// the goroutine and broker connection would linger until Close). In live
+// mode the user effectively asked for a stream restart — surface that
+// immediately, since live-tail completion is asynchronous and never lands
+// in handleLoaded. In non-live modes the success toast is deferred to
+// handleLoaded so it can include the message count.
+func (m *Model) refresh() tea.Cmd {
+	// snapshot live state before stopFollow flips m.live to false; we need
+	// the pre-stop value to pick the right toast wording.
+	wasLive := m.live
 	m.stopFollow()
-	m.seek = SeekState{Mode: SeekLatest}
-	m.filter = nil
-	m.fromBoundary = nil
-	m.toBoundary = nil
-	m.persistView()
-	m.toasts.Push(components.ToastInfo, "view reset")
+	if wasLive || m.seek.Mode == SeekLive {
+		m.toasts.Push(components.ToastInfo, "restarting live tail…")
+	} else {
+		m.manualRefresh = true
+	}
 	return m.dispatchSeek()
 }
 

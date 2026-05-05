@@ -2,6 +2,7 @@ package topics
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,9 @@ type ConfigsModel struct {
 	loadErr       string
 	width, height int
 	focusParts    bool
+	// manualRefresh is set when the user pressed `r` and is consumed by
+	// handleLoaded to push a one-shot success toast.
+	manualRefresh bool
 
 	action ConfigsAction
 	now    func() time.Time
@@ -210,6 +214,7 @@ func (m *ConfigsModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "r":
 		m.loading = true
+		m.manualRefresh = true
 		return loadConfigsCmd(m.svc, m.topic)
 	}
 	tbl, _ := m.activeTable().Update(key)
@@ -233,6 +238,7 @@ func (m *ConfigsModel) handleLoaded(msg ConfigsLoadedMsg) {
 	if msg.Err != nil {
 		m.loadErr = msg.Err.Error()
 		m.toasts.Push(components.ToastError, "load configs: "+msg.Err.Error())
+		m.manualRefresh = false
 		return
 	}
 	m.loadErr = ""
@@ -240,6 +246,12 @@ func (m *ConfigsModel) handleLoaded(msg ConfigsLoadedMsg) {
 	m.parts = msg.Partitions
 	m.cfgTable.SetRows(configRows(m.configs))
 	m.partTbl.SetRows(partitionRows(m.parts))
+	if m.manualRefresh {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf(
+			"refreshed · %d configs", len(m.configs),
+		))
+		m.manualRefresh = false
+	}
 }
 
 func configRows(cfgs []kafka.TopicConfig) []components.Row {

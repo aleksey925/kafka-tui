@@ -429,7 +429,7 @@ func TestConfigSnapshot_UpdatesBootAndToastsOnClusters(t *testing.T) {
 	out := m.Render()
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "delta", "new cluster from snapshot must appear")
-	assert.Contains(t, out, "clusters reloaded · 2", "success toast must surface in the flash bar")
+	assert.Contains(t, out, "clusters refreshed · 2", "success toast must surface in the flash bar")
 }
 
 // ----- helpers -----
@@ -810,7 +810,7 @@ func TestReloadClusters_PushesFreshList(t *testing.T) {
 
 	out := m.Render()
 	assert.Contains(t, out, "beta", "freshly-loaded cluster must surface")
-	assert.Contains(t, out, "reloaded 2 clusters", "success toast must surface")
+	assert.Contains(t, out, "refreshed · 2 clusters", "success toast must surface")
 }
 
 // TestReloadClusters_NilReloaderWarnsUser pins the "no reloader wired"

@@ -377,32 +377,23 @@ func TestPartitions_RenderShowsScrollHintsForLargeTopic(t *testing.T) {
 	assert.Contains(t, view, "more")
 }
 
-func TestReset_RClearsFilterAndSeek(t *testing.T) {
+func TestRefresh_RReDispatchesCurrentSeek(t *testing.T) {
 	svc := newFakeService()
-	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
-	svc.watermarks = map[int32]kafka.PartitionWatermarks{
-		0: {Low: 0, High: 5},
-		1: {Low: 0, High: 5},
-	}
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v1")}}
 	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
 	drive(t, m, m.Init())
+	require.Len(t, m.Messages(), 1)
 
-	// set a non-default state via the partition popup.
-	cmd := m.Update(keyPressRune('P'))
-	drive(t, m, cmd)
-	_ = m.Update(keyPress("tab"))
-	for _, r := range "1" {
-		_ = m.Update(keyPressRune(r))
+	// the broker now has fresh data; `r` must refetch with the current
+	// seek state instead of touching filters or seek mode.
+	svc.lastN = []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v1")},
+		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("v2")},
 	}
-	cmd = m.Update(keyPress("enter"))
-	drive(t, m, cmd)
-	require.Equal(t, []int32{1}, m.PartitionFilter())
-
-	// R resets.
-	cmd = m.Update(keyPressRune('R'))
+	cmd := m.Update(keyPressRune('r'))
 	drive(t, m, cmd)
 
-	assert.Empty(t, m.PartitionFilter())
+	require.Len(t, m.Messages(), 2)
 	assert.Equal(t, messages.SeekLatest, m.SeekState().Mode)
 }
 
@@ -461,10 +452,10 @@ func TestSeek_LiveClearsHistoricalMessages(t *testing.T) {
 	assert.True(t, m.Following())
 }
 
-func TestStaleMessagesAppendedDroppedAfterReset(t *testing.T) {
-	// `[` issues a paging cmd; before its result lands the user resets the
+func TestStaleMessagesAppendedDroppedAfterRefresh(t *testing.T) {
+	// `[` issues a paging cmd; before its result lands the user refreshes the
 	// view. The stale MessagesAppendedMsg must be dropped, otherwise the
-	// pre-reset payload would prepend onto the fresh latest screen.
+	// pre-refresh payload would prepend onto the freshly loaded screen.
 	svc := newFakeService()
 	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 5, Value: []byte("a")}}
 	svc.earlier = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 4, Value: []byte("stale")}}
@@ -474,16 +465,16 @@ func TestStaleMessagesAppendedDroppedAfterReset(t *testing.T) {
 	pagingCmd := m.Update(keyPress("["))
 	require.NotNil(t, pagingCmd)
 
-	// reset bumps fetchGen twice (stopFollow + dispatchSeek), making the
-	// in-flight paging gen stale.
-	resetCmd := m.Update(keyPressRune('R'))
-	drive(t, m, resetCmd)
+	// refresh bumps fetchGen via dispatchSeek, making the in-flight paging
+	// gen stale.
+	refreshCmd := m.Update(keyPressRune('r'))
+	drive(t, m, refreshCmd)
 
 	// now drive the stale paging cmd.
 	drive(t, m, pagingCmd)
 
 	for _, msg := range m.Messages() {
-		assert.NotEqual(t, []byte("stale"), msg.Value, "stale paging payload must not appear post-reset")
+		assert.NotEqual(t, []byte("stale"), msg.Value, "stale paging payload must not appear post-refresh")
 	}
 }
 
@@ -904,7 +895,7 @@ func TestResend_FromListRaisesActionWithMessage(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Offset: 5, Value: []byte("payload")},
 	})
-	_ = m.Update(keyPressRune('r'))
+	_ = m.Update(keyPressRune('R'))
 	a := m.ConsumeAction()
 	assert.Equal(t, "orders", a.Produce)
 	require.NotNil(t, a.PrefillFromMessage)
@@ -919,7 +910,7 @@ func TestReadOnly_BlocksProduceAndResend(t *testing.T) {
 
 	_ = m.Update(keyPressRune('p'))
 	assert.Empty(t, m.ConsumeAction().Produce)
-	_ = m.Update(keyPressRune('r'))
+	_ = m.Update(keyPressRune('R'))
 	assert.Empty(t, m.ConsumeAction().Produce)
 }
 
@@ -1125,6 +1116,7 @@ func TestKeyHints_ContainsExpectedLabels(t *testing.T) {
 	assert.Contains(t, got, "search")
 	assert.Contains(t, got, "produce")
 	assert.Contains(t, got, "resend")
+	assert.Contains(t, got, "refresh")
 }
 
 func TestKeyHints_ReadOnlyOmitsProduce(t *testing.T) {
@@ -1484,7 +1476,7 @@ func TestDetail_ResendRaisesProduceWithMessage(t *testing.T) {
 		Messages: []kafka.Message{{Topic: "orders", Value: []byte("hello")}},
 		Index:    0,
 	})
-	_, _ = model.Update(keyPressRune('r'))
+	_, _ = model.Update(keyPressRune('R'))
 	a := model.ConsumeAction()
 	assert.Equal(t, "orders", a.Produce)
 	require.NotNil(t, a.PrefillFromMessage)

@@ -110,10 +110,10 @@ type Model struct {
 
 	width, height int
 	loading       bool
-	// manualReload is set when the user pressed `r` and is consumed by
+	// manualRefresh is set when the user pressed `r` and is consumed by
 	// handleGroupsLoaded to push a one-shot success toast (auto-refresh
 	// ticks stay silent).
-	manualReload bool
+	manualRefresh bool
 
 	action Action
 	now    func() time.Time
@@ -348,7 +348,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		)
 	}
 	hints = append(hints,
-		layout.KeyHint{Key: "r", Label: "reload"},
+		layout.KeyHint{Key: "r", Label: "refresh"},
 		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
 	)
 	return hints
@@ -433,7 +433,7 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 		if m.loading {
 			return nil
 		}
-		m.manualReload = true
+		m.manualRefresh = true
 		cmd := m.refreshCmd()
 		return cmd
 	case "R":
@@ -605,13 +605,13 @@ func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
-		m.manualReload = false
+		m.manualRefresh = false
 		return
 	}
 	m.listRefresher.MarkSuccess()
-	if m.manualReload {
-		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d groups", len(msg.Groups)))
-		m.manualReload = false
+	if m.manualRefresh {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d groups", len(msg.Groups)))
+		m.manualRefresh = false
 	}
 	m.groups = msg.Groups
 	m.refreshTable()

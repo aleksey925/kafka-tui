@@ -424,7 +424,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "enter", Label: "connect"},
 		{Key: "t", Label: "test"},
 		{Key: "T", Label: "test all"},
-		{Key: "r", Label: "reload"},
+		{Key: "r", Label: "refresh"},
 		{Key: "e", Label: "edit"},
 		{Key: "/", Label: "search"},
 	}

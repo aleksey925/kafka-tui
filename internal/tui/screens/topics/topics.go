@@ -139,9 +139,9 @@ type Model struct {
 	width, height int
 	loading       bool
 	refresher     components.Refresher
-	// manualReload is set when the user pressed `r` and is consumed by
+	// manualRefresh is set when the user pressed `r` and is consumed by
 	// handleLoaded to push a one-shot success toast (auto ticks stay silent).
-	manualReload bool
+	manualRefresh bool
 
 	action Action
 
@@ -337,7 +337,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		)
 	}
 	hints = append(hints,
-		layout.KeyHint{Key: "r", Label: "reload"},
+		layout.KeyHint{Key: "r", Label: "refresh"},
 		layout.KeyHint{Key: "ctrl+r", Label: "auto-refresh"},
 	)
 	return hints
@@ -421,7 +421,7 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 		if m.loading {
 			return nil
 		}
-		m.manualReload = true
+		m.manualRefresh = true
 		cmd := m.refreshCmd()
 		return cmd
 	case "n", "p", "y", "D":
@@ -649,13 +649,13 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load topics: "+msg.Err.Error())
-		m.manualReload = false
+		m.manualRefresh = false
 		return
 	}
 	m.refresher.MarkSuccess()
-	if m.manualReload {
-		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("reloaded · %d topics", len(msg.Topics)))
-		m.manualReload = false
+	if m.manualRefresh {
+		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d topics", len(msg.Topics)))
+		m.manualRefresh = false
 	}
 	m.allTopics = msg.Topics
 	for _, w := range msg.Watermarks {
