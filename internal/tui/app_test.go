@@ -441,7 +441,10 @@ func TestModel_RenderHeaderIncludesClusterAndStatus(t *testing.T) {
 	assert.Contains(t, out, "read-only")
 	assert.Contains(t, out, "cli")
 	assert.Contains(t, out, "auto 5s")
-	assert.Contains(t, out, "3s ago")
+	// the elapsed marker drops " ago" — the "·" separator already conveys
+	// "since last refresh" and the shorter form keeps the chrome compact.
+	assert.Contains(t, out, "· 3s")
+	assert.NotContains(t, out, "3s ago")
 	assert.Contains(t, out, "topics — coming soon")
 }
 

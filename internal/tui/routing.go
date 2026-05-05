@@ -128,8 +128,7 @@ func (m *Model) routeGroupsAction(s *groups.Model) tea.Cmd {
 	a := s.ConsumeAction()
 	switch {
 	case a.Back:
-		m.popScreen()
-		return m.activeInit()
+		return m.popOrReplaceToHome()
 	case a.Topic != "":
 		m.lastTopic = a.Topic
 		m.navTopic = a.Topic
@@ -144,8 +143,7 @@ func (m *Model) routeGroupsAction(s *groups.Model) tea.Cmd {
 func (m *Model) routeLogsAction(s *logs.Model) tea.Cmd {
 	a := s.ConsumeAction()
 	if a.Back {
-		m.popScreen()
-		return m.activeInit()
+		return m.popOrReplaceToHome()
 	}
 	return nil
 }
@@ -153,8 +151,7 @@ func (m *Model) routeLogsAction(s *logs.Model) tea.Cmd {
 func (m *Model) routeConfigSrcAction(s *configsrc.Model) tea.Cmd {
 	a := s.ConsumeAction()
 	if a.Back {
-		m.popScreen()
-		return m.activeInit()
+		return m.popOrReplaceToHome()
 	}
 	return nil
 }
@@ -174,6 +171,21 @@ func (m *Model) popOrReplaceToClusters() tea.Cmd {
 	if m.router.Depth() > 1 {
 		m.popScreen()
 		return m.activeInit()
+	}
+	return m.replaceScreen(ScreenClusters, "")
+}
+
+// popOrReplaceToHome pops to the underlying screen, or replaces with the
+// natural "home" — topics when a cluster is connected, clusters otherwise.
+// Used by screens reachable via `:` commands (groups, logs, config sources)
+// so esc at depth=1 lands somewhere usable instead of "(no screen active)".
+func (m *Model) popOrReplaceToHome() tea.Cmd {
+	if m.router.Depth() > 1 {
+		m.popScreen()
+		return m.activeInit()
+	}
+	if m.client != nil {
+		return m.replaceScreen(ScreenTopics, "")
 	}
 	return m.replaceScreen(ScreenClusters, "")
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -61,9 +62,8 @@ type DetailModel struct {
 	table    *components.Table
 	toasts   *components.Toasts
 
-	width, height int
-	loading       bool
-	loadErr       string
+	loading bool
+	loadErr string
 	// manualRefresh is consumed by HandleLoaded to push a one-shot success
 	// toast (auto ticks stay silent).
 	manualRefresh bool
@@ -98,7 +98,7 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 func detailColumns() []components.Column {
 	return []components.Column{
 		{Title: "Topic", Width: 24, Sortable: true},
-		{Title: "P", Width: 4, Sortable: true},
+		{Title: "Partition", Width: 9, Sortable: true},
 		{Title: "Committed", Width: 14, Sortable: true},
 		{Title: "End", Width: 14, Sortable: true},
 		{Title: "Lag", Width: 14, Sortable: true},
@@ -149,16 +149,15 @@ func (d *DetailModel) SetSearch(query string) { d.table.SetSearch(query) }
 
 func (d *DetailModel) ActiveFilter() string { return d.table.Search() }
 
-func (d *DetailModel) SetSize(w, h int) {
-	d.width, d.height = w, h
+func (d *DetailModel) SetSize(_, h int) {
 	if h > 0 {
 		d.table.SetHeight(maxInt(1, h-headerLineCount-3))
 	}
 }
 
-// headerLineCount is the number of header lines reserved by View() for the
-// title block. Used to size the table.
-const headerLineCount = 4
+// headerLineCount is the number of header lines reserved by View() above the
+// table — kept in sync with [DetailModel.headerBlock].
+const headerLineCount = 2
 
 func (d *DetailModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(d.bindings())
@@ -383,25 +382,43 @@ func (d *DetailModel) View() string {
 }
 
 // headerBlock returns exactly headerLineCount lines so layout can size the
-// table reliably.
+// table reliably. The frame already shows "Group · <name>" in its top
+// border — the body skips a duplicate title and packs every metadata field
+// into a single chip line (per-partition member ownership lives in the
+// table's Member column, so a separate names list would be redundant).
 func (d *DetailModel) headerBlock() []string {
-	title := d.styles.HelpTitle.Render("Group · " + d.group)
 	state := d.desc.State
 	if state == "" {
-		state = "?"
+		state = emDash
 	}
-	statusLine := d.styles.StatusInfo.Render(fmt.Sprintf(
-		"state: %s   protocol: %s",
-		state, valueOr(d.desc.Protocol, "—"),
-	))
-	membersLine := d.styles.StatusInfo.Render(d.formatMembersLine())
-	coordLine := d.styles.StatusInfo.Render(fmt.Sprintf(
-		"coordinator: %d %s   sort: %s",
-		d.desc.CoordinatorID,
-		d.coordHostPort(),
-		d.sortLabel(),
-	))
-	return []string{title, statusLine, membersLine, coordLine}
+	statePart := d.styles.StatusInfo.Render("State: ") + lipgloss.NewStyle().
+		Foreground(groupStateColor(d.styles, d.desc.State)).
+		Bold(true).
+		Render(state)
+
+	chips := []string{
+		statePart,
+		d.styles.StatusInfo.Render("Coordinator: " + d.coordSummary()),
+		d.styles.StatusInfo.Render("Protocol: " + valueOr(d.desc.Protocol, emDash)),
+		d.styles.StatusInfo.Render("Members: " + strconv.Itoa(len(d.desc.Members))),
+		d.styles.StatusInfo.Render("Total Lag: " + formatThousands(d.totalLag())),
+		d.styles.StatusInfo.Render("Sort: " + d.sortLabel()),
+	}
+	sep := d.styles.StatusInfo.Render("  ·  ")
+	return []string{strings.Join(chips, sep), ""}
+}
+
+// totalLag aggregates positive lags across loaded partitions. Negative
+// values are -1 sentinels (no committed offset, or end offset failed to
+// load — see kafka.PartitionLag) and are excluded.
+func (d *DetailModel) totalLag() int64 {
+	var total int64
+	for _, r := range d.rows {
+		if r.Lag > 0 {
+			total += r.Lag
+		}
+	}
+	return total
 }
 
 func (d *DetailModel) sortLabel() string {
@@ -411,11 +428,19 @@ func (d *DetailModel) sortLabel() string {
 	return "grouped"
 }
 
-func (d *DetailModel) coordHostPort() string {
-	if d.desc.CoordinatorHost == "" {
-		return ""
+// coordSummary renders the coordinator as "id (host:port)", or just "id"
+// when the host hasn't been resolved. Returns emDash before the first
+// successful describe (lastRefresh is the canonical "loaded" indicator —
+// using it avoids a brittle all-zero-fields heuristic that misfires on
+// broker id 0).
+func (d *DetailModel) coordSummary() string {
+	if d.lastRefresh.IsZero() {
+		return emDash
 	}
-	return fmt.Sprintf("(%s:%d)", d.desc.CoordinatorHost, d.desc.CoordinatorPort)
+	if d.desc.CoordinatorHost == "" {
+		return strconv.FormatInt(int64(d.desc.CoordinatorID), 10)
+	}
+	return fmt.Sprintf("%d (%s:%d)", d.desc.CoordinatorID, d.desc.CoordinatorHost, d.desc.CoordinatorPort)
 }
 
 func valueOr(s, fallback string) string {
@@ -425,75 +450,16 @@ func valueOr(s, fallback string) string {
 	return s
 }
 
-func (d *DetailModel) formatMembersLine() string {
-	if len(d.desc.Members) == 0 {
-		return "members: (none)"
-	}
-	width := d.width
-	if width <= 0 {
-		width = 80
-	}
-	prefix := fmt.Sprintf("members (%d): ", len(d.desc.Members))
-	avail := max(width-len(prefix), 10)
-	names := make([]string, 0, len(d.desc.Members))
-	for _, m := range d.desc.Members {
-		names = append(names, memberLabel(m))
-	}
-	return prefix + truncateMembers(names, avail)
-}
-
-func truncateMembers(names []string, width int) string {
-	if len(names) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for i, n := range names {
-		piece := n
-		if i > 0 {
-			piece = ", " + n
-		}
-		more := len(names) - i - 1
-		moreSuffix := ""
-		if more > 0 {
-			moreSuffix = ", +" + strconv.Itoa(more) + " more"
-		}
-		if b.Len()+len(piece)+len(moreSuffix) > width {
-			if b.Len() == 0 {
-				b.WriteString(n)
-				if i < len(names)-1 {
-					b.WriteString(", +")
-					b.WriteString(strconv.Itoa(len(names) - i - 1))
-					b.WriteString(" more")
-				}
-				return b.String()
-			}
-			b.WriteString(", +")
-			b.WriteString(strconv.Itoa(len(names) - i))
-			b.WriteString(" more")
-			return b.String()
-		}
-		b.WriteString(piece)
-	}
-	return b.String()
-}
-
-func memberLabel(m kafka.GroupMember) string {
-	if m.InstanceID != "" {
-		return m.InstanceID
-	}
-	return m.MemberID
-}
-
 func offsetCell(v int64) string {
 	if v < 0 {
-		return "—"
+		return emDash
 	}
 	return formatThousands(v)
 }
 
 func lagCell(v int64) string {
 	if v < 0 {
-		return "—"
+		return emDash
 	}
 	return formatThousands(v)
 }

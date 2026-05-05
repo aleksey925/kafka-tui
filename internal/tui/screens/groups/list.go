@@ -95,6 +95,9 @@ type pendingOp struct {
 	group string
 }
 
+// emDash is the placeholder shown for an unloaded or unavailable cell.
+const emDash = "—"
+
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -122,11 +125,12 @@ func New(opts Options) *Model {
 
 func listColumns() []components.Column {
 	return []components.Column{
-		{Title: "Group", Flex: true, MinWidth: 24, Sortable: true},
 		{Title: "State", Width: 12, Sortable: true},
+		{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
+		{Title: "Coordinator", Width: 14, Sortable: true},
+		{Title: "Protocol", Width: 12, Sortable: true},
 		{Title: "Members", Width: 8, Sortable: true},
 		{Title: "Total Lag", Width: 12, Sortable: true},
-		{Title: "Coordinator", Width: 14, Sortable: true},
 	}
 }
 
@@ -217,6 +221,15 @@ func (m *Model) Groups() []kafka.GroupListInfo {
 	out := make([]kafka.GroupListInfo, len(m.groups))
 	copy(out, m.groups)
 	return out
+}
+
+// CachedLag returns the cached (totalLag, memberCount) snapshot for group
+// and whether either entry is present. Exposed so tests can assert that
+// pruneLagCache actually drops entries for groups that left the listing.
+func (m *Model) CachedLag(group string) (totalLag int64, memberCount int, ok bool) {
+	lag, lagOK := m.totalLag[group]
+	members, memOK := m.memberN[group]
+	return lag, members, lagOK || memOK
 }
 
 func (m *Model) FilterTopic() string { return m.filterTopic }
@@ -333,8 +346,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetSize(msg.Width, msg.Height)
 		return nil
 	case GroupsLoadedMsg:
-		m.handleGroupsLoaded(msg)
-		return nil
+		return m.handleGroupsLoaded(msg)
 	case GroupLagsLoadedMsg:
 		m.handleLagsLoaded(msg)
 		return nil
@@ -552,12 +564,12 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
+func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) tea.Cmd {
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
 		m.manualRefresh = false
-		return
+		return nil
 	}
 	m.listRefresher.MarkSuccess()
 	if m.manualRefresh {
@@ -565,7 +577,32 @@ func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) {
 		m.manualRefresh = false
 	}
 	m.groups = msg.Groups
+	m.pruneLagCache()
 	m.refreshTable()
+	return m.FetchLagsForVisible()
+}
+
+// pruneLagCache drops cached lag/member counts for groups that are no
+// longer in the listing — without this the table would keep flashing stale
+// values for groups deleted between refreshes.
+func (m *Model) pruneLagCache() {
+	if len(m.totalLag) == 0 && len(m.memberN) == 0 {
+		return
+	}
+	live := make(map[string]struct{}, len(m.groups))
+	for _, g := range m.groups {
+		live[g.Group] = struct{}{}
+	}
+	for k := range m.totalLag {
+		if _, ok := live[k]; !ok {
+			delete(m.totalLag, k)
+		}
+	}
+	for k := range m.memberN {
+		if _, ok := live[k]; !ok {
+			delete(m.memberN, k)
+		}
+	}
 }
 
 func (m *Model) handleLagsLoaded(msg GroupLagsLoadedMsg) {
@@ -643,25 +680,30 @@ func (m *Model) refreshCmd() tea.Cmd {
 func (m *Model) refreshTable() {
 	rows := make([]components.Row, 0, len(m.groups))
 	for _, g := range m.groups {
-		members := "—"
+		members := emDash
 		if n, ok := m.memberN[g.Group]; ok {
 			members = strconv.Itoa(n)
 		}
-		lag := "—"
+		lag := emDash
 		if l, ok := m.totalLag[g.Group]; ok {
 			lag = formatThousands(l)
 		}
 		state := lipgloss.NewStyle().
 			Foreground(groupStateColor(m.styles, g.State)).
 			Render(g.State)
+		protocol := g.Protocol
+		if protocol == "" {
+			protocol = emDash
+		}
 		rows = append(rows, components.Row{
 			ID: g.Group,
 			Values: []string{
-				g.Group,
 				state,
+				g.Group,
+				strconv.FormatInt(int64(g.Coordinator), 10),
+				protocol,
 				members,
 				lag,
-				strconv.FormatInt(int64(g.Coordinator), 10),
 			},
 		})
 	}

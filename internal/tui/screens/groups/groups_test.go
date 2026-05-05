@@ -45,11 +45,12 @@ func TestNew_DefaultColumns(t *testing.T) {
 	svc := newFakeService()
 	m := groups.New(groups.Options{Service: svc})
 	out := m.View()
-	assert.Contains(t, out, "Group")
 	assert.Contains(t, out, "State")
+	assert.Contains(t, out, "ID")
+	assert.Contains(t, out, "Coordinator")
+	assert.Contains(t, out, "Protocol")
 	assert.Contains(t, out, "Members")
 	assert.Contains(t, out, "Total Lag")
-	assert.Contains(t, out, "Coordinator")
 }
 
 func TestInit_LoadsGroupsAndShowsCounter(t *testing.T) {
@@ -363,6 +364,70 @@ func TestFetchLagsForVisible_PopulatesLagAndMemberCount(t *testing.T) {
 	assert.Contains(t, out, "60") // total lag rendered with thousands separators
 }
 
+// TestList_AutoFetchesLagAfterLoad pins the regression: the Members and
+// Total Lag list columns were rendered as "—" because nothing called
+// loadLagCmd in production. Init must chain a lag fetch after the groups
+// load so users see real values without an extra interaction. Asserts on
+// the cache directly so the test isn't sensitive to render formatting.
+func TestList_AutoFetchesLagAfterLoad(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{
+		{Group: "g1", State: "Stable", Coordinator: 1},
+		{Group: "g2", State: "Stable", Coordinator: 2},
+	}
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {
+			{Topic: "t", Partition: 0, Lag: 50, MemberID: "m-a"},
+			{Topic: "t", Partition: 1, Lag: 10, MemberID: "m-b"},
+		},
+		"g2": {
+			{Topic: "t", Partition: 0, Lag: 4242, MemberID: "m-c"},
+		},
+	}
+	m := groups.New(groups.Options{Service: svc})
+
+	drive(t, m, m.Init())
+
+	g1Lag, g1Members, g1OK := m.CachedLag("g1")
+	require.True(t, g1OK, "g1 lag must be cached without an extra FetchLagsForVisible call")
+	assert.Equal(t, int64(60), g1Lag)
+	assert.Equal(t, 2, g1Members)
+	g2Lag, g2Members, g2OK := m.CachedLag("g2")
+	require.True(t, g2OK, "g2 lag must be cached without an extra FetchLagsForVisible call")
+	assert.Equal(t, int64(4242), g2Lag)
+	assert.Equal(t, 1, g2Members)
+}
+
+// TestList_PrunesStaleLagAfterRefresh covers the cache-hygiene side of the
+// refresh path: when a previously listed group disappears, its cached
+// Members/Total Lag entries must be dropped so they can't resurface if the
+// same name reappears later. We assert directly on the cache via
+// [groups.Model.CachedLag] — checking m.View() alone wouldn't catch a
+// regression because refreshTable iterates m.groups, not the cache.
+func TestList_PrunesStaleLagAfterRefresh(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}, {Group: "g2"}}
+	svc.offsets = map[string][]kafka.PartitionLag{
+		"g1": {{Topic: "t", Partition: 0, Lag: 5, MemberID: "m"}},
+		"g2": {{Topic: "t", Partition: 0, Lag: 9, MemberID: "m"}},
+	}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+	_, _, hadG2 := m.CachedLag("g2")
+	require.True(t, hadG2, "lag cache must be populated after the initial fetch")
+
+	// drop g2 from the listing and refresh.
+	svc.mu.Lock()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
+	svc.mu.Unlock()
+	drive(t, m, m.Update(keyPress("r")))
+
+	_, _, stillHasG2 := m.CachedLag("g2")
+	assert.False(t, stillHasG2, "pruneLagCache must drop the entry for groups that left the listing")
+	_, _, stillHasG1 := m.CachedLag("g1")
+	assert.True(t, stillHasG1, "live groups must keep their cached entries")
+}
+
 // ----- detail view tests -----
 
 func TestDetail_LoadsAndShowsRows(t *testing.T) {
@@ -397,9 +462,13 @@ func TestDetail_LoadsAndShowsRows(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "alpha", rows[0].Topic)
 	out := d.View()
-	assert.Contains(t, out, "Group · g1")
+	assert.Contains(t, out, "State:")
+	assert.Contains(t, out, "Stable")
+	assert.Contains(t, out, "Total Lag:")
+	assert.Contains(t, out, "Protocol: range")
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "broker:9092")
+	assert.Contains(t, out, "Partition")
 }
 
 func TestDetail_TabTogglesSortMode(t *testing.T) {
@@ -469,6 +538,26 @@ func TestHasOverlay_DetailIsOverlay(t *testing.T) {
 	assert.False(t, m.HasOverlay(), "after esc closes detail, overlay must clear")
 }
 
+func TestDetail_HeaderShowsTotalLag(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "t", Partition: 0, Lag: 200, MemberID: "m"},
+		{Topic: "t", Partition: 1, Lag: 1000, MemberID: "m"},
+		// negative is the "no committed offset" sentinel and must not pollute the sum.
+		{Topic: "t", Partition: 2, Lag: -1, MemberID: "m"},
+	})
+	out := d.View()
+	assert.Contains(t, out, "Total Lag: 1,200")
+}
+
+func TestDetail_HeaderShowsSortLabel(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "t", Partition: 0, Lag: 1, MemberID: "m"},
+	})
+	assert.Contains(t, d.View(), "Sort: grouped")
+	d, _ = d.Update(keyPress("tab"))
+	assert.Contains(t, d.View(), "Sort: flat")
+}
+
 func TestDetail_LargeNumbersHaveThousandsSeparators(t *testing.T) {
 	d := newDetailWithRows(t, []kafka.PartitionLag{
 		{Topic: "t", Partition: 0, Committed: 1234567, End: 2000000, Lag: 765433, MemberID: "m"},
@@ -479,15 +568,15 @@ func TestDetail_LargeNumbersHaveThousandsSeparators(t *testing.T) {
 	assert.Contains(t, out, "765,433")
 }
 
-func TestDetail_TruncatesMembersWithMore(t *testing.T) {
+func TestDetail_HeaderShowsMembersCount(t *testing.T) {
 	desc := kafka.GroupDescription{
 		Group: "g",
 		State: "Stable",
 		Members: []kafka.GroupMember{
-			{MemberID: "member-aaaaaaaaaaaaaaaaaaa-1"},
-			{MemberID: "member-aaaaaaaaaaaaaaaaaaa-2"},
-			{MemberID: "member-aaaaaaaaaaaaaaaaaaa-3"},
-			{MemberID: "member-aaaaaaaaaaaaaaaaaaa-4"},
+			{MemberID: "m1"},
+			{MemberID: "m2"},
+			{MemberID: "m3"},
+			{MemberID: "m4"},
 		},
 	}
 	svc := newFakeService()
@@ -499,9 +588,8 @@ func TestDetail_TruncatesMembersWithMore(t *testing.T) {
 	drive(t, m, cmd)
 	d := m.Detail()
 	require.NotNil(t, d)
-	d.SetSize(80, 24)
-	out := d.View()
-	assert.Contains(t, out, "more")
+	d.SetSize(160, 24)
+	assert.Contains(t, d.View(), "Members: 4")
 }
 
 // ----- reset flow tests -----

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
@@ -142,9 +143,16 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 	}
 	lines := make([]string, 0, HeaderRows)
 	keyStyle := lipgloss.NewStyle().Foreground(s.Palette.Muted)
+	// max content width inside the left pane reserves clusterPaneGutter cols
+	// so even worst-case values don't sit flush against the menu pane.
+	contentWidth := max(width-clusterPaneGutter, 1)
 	for _, r := range rows {
 		key := keyStyle.Render(padRight(r.key+":", 9))
-		lines = append(lines, padLine(" "+key+" "+r.val, width))
+		line := " " + key + " " + r.val
+		if lipgloss.Width(line) > contentWidth {
+			line = ansi.Truncate(line, contentWidth, "…")
+		}
+		lines = append(lines, padLine(line, width))
 	}
 	for len(lines) < HeaderRows {
 		lines = append(lines, padLine("", width))
@@ -152,13 +160,17 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 	return strings.Join(lines[:HeaderRows], "\n")
 }
 
+// clusterPaneGutter is the minimum number of trailing blank columns the left
+// header pane reserves before the menu pane, so long values (Refresh, long
+// cluster names) never butt up against the next column.
+const clusterPaneGutter = 2
+
 func refreshLabel(s theme.Styles, status StatusInfo) string {
 	switch status.Mode {
 	case RefreshAuto:
 		body := "auto " + formatDuration(status.Interval)
-		if !status.LastRefresh.IsZero() && !status.Now.IsZero() {
-			elapsed := max(0, status.Now.Sub(status.LastRefresh))
-			body += " · " + formatDuration(elapsed.Round(time.Second)) + " ago"
+		if elapsed, ok := elapsedSince(status); ok {
+			body += " · " + formatElapsed(elapsed)
 		}
 		return body
 	case RefreshManual:
@@ -167,9 +179,8 @@ func refreshLabel(s theme.Styles, status StatusInfo) string {
 		return s.StatusWarn.Render("paused")
 	case RefreshOnEdit:
 		body := "on edit"
-		if !status.LastRefresh.IsZero() && !status.Now.IsZero() {
-			elapsed := max(0, status.Now.Sub(status.LastRefresh))
-			body += " · " + formatDuration(elapsed.Round(time.Second)) + " ago"
+		if elapsed, ok := elapsedSince(status); ok {
+			body += " · " + formatElapsed(elapsed)
 		}
 		return body
 	case RefreshOff:
@@ -178,6 +189,32 @@ func refreshLabel(s theme.Styles, status StatusInfo) string {
 		return "—"
 	default:
 		return "—"
+	}
+}
+
+// elapsedSince reports the time since the last refresh, returning false when
+// either side of the timestamp pair is zero (i.e. the screen has never
+// refreshed or the wall-clock isn't wired up yet).
+func elapsedSince(status StatusInfo) (time.Duration, bool) {
+	if status.LastRefresh.IsZero() || status.Now.IsZero() {
+		return 0, false
+	}
+	return max(0, status.Now.Sub(status.LastRefresh)), true
+}
+
+// formatElapsed renders the time since last refresh in a compact form
+// (typically 2-3 chars; 4 once values cross 100s/100m/100h). Sub-minute is
+// precise; longer ranges floor to whole minutes / hours so the chrome stays
+// dense — the trailing "ago" word is intentionally dropped, as the "·"
+// separator already conveys "since last refresh".
+func formatElapsed(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
 	}
 }
 

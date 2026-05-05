@@ -1,8 +1,11 @@
 package layout_test
 
 import (
+	"strings"
 	"testing"
+	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
@@ -103,6 +106,81 @@ func TestCommandLine_InactiveIsEmpty(t *testing.T) {
 	// inactive prompt occupies zero rows — the body fills the freed space
 	// and only shrinks when the bar opens.
 	assert.Empty(t, out)
+}
+
+// TestHeader_RefreshLabelDropsAgoSuffix pins the chrome-compaction work:
+// the elapsed-since-refresh marker no longer appends " ago" (the "·"
+// separator already conveys "since last refresh"). Without this the long
+// auto-refresh label would push flush against the menu pane on common
+// 100-col terminals.
+func TestHeader_RefreshLabelDropsAgoSuffix(t *testing.T) {
+	now := time.Date(2025, 1, 1, 12, 0, 5, 0, time.UTC)
+	last := now.Add(-3 * time.Second)
+	out := layout.Header(theme.DefaultStyles(),
+		layout.HeaderInfo{Cluster: "alpha"},
+		layout.StatusInfo{
+			Mode:        layout.RefreshAuto,
+			Interval:    30 * time.Second,
+			LastRefresh: last,
+			Now:         now,
+		},
+		nil,
+		layout.Build{Version: "v0"},
+		120,
+	)
+	assert.Contains(t, out, "auto 30s")
+	assert.Contains(t, out, "· 3s")
+	assert.NotContains(t, out, "ago")
+}
+
+// TestHeader_RefreshElapsedCoarsensAboveOneMinute pins the precision-vs-width
+// trade-off: minute+ ranges floor to whole minutes (and hour+ to whole
+// hours) so the value stays at 2-3 chars. Without this "1m25s ago" forms
+// blew past the left pane.
+func TestHeader_RefreshElapsedCoarsensAboveOneMinute(t *testing.T) {
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		elapsed time.Duration
+		want    string
+	}{
+		{45 * time.Second, "· 45s"},
+		{90 * time.Second, "· 1m"},
+		{75 * time.Minute, "· 1h"},
+	}
+	for _, tc := range cases {
+		out := layout.Header(theme.DefaultStyles(),
+			layout.HeaderInfo{Cluster: "alpha"},
+			layout.StatusInfo{
+				Mode:        layout.RefreshAuto,
+				Interval:    30 * time.Second,
+				LastRefresh: now.Add(-tc.elapsed),
+				Now:         now,
+			},
+			nil,
+			layout.Build{},
+			120,
+		)
+		assert.Contains(t, out, tc.want, "elapsed=%s", tc.elapsed)
+	}
+}
+
+// TestHeader_LeftPaneReservesGutter pins the visual-separation guarantee:
+// even when a row's value butts against the right edge, the left pane
+// truncates so the menu pane never sits flush against it on the same row.
+func TestHeader_LeftPaneReservesGutter(t *testing.T) {
+	// a 60-char terminal puts leftW = max(20, 60/3) = 20. A long cluster
+	// name overflows the inner area; truncation must kick in.
+	out := layout.Header(theme.DefaultStyles(),
+		layout.HeaderInfo{Cluster: "production-east-region-multi-az-cluster-1"},
+		layout.StatusInfo{Mode: layout.RefreshOff},
+		nil,
+		layout.Build{},
+		60,
+	)
+	for line := range strings.SplitSeq(out, "\n") {
+		assert.LessOrEqual(t, lipgloss.Width(line), 60,
+			"each rendered line must stay within terminal width: %q", line)
+	}
 }
 
 func TestHeader_NarrowTerminalUsesCompactFallback(t *testing.T) {

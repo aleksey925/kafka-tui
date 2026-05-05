@@ -1038,12 +1038,15 @@ func TestRoute_LogsAndConfigSrcBackPops(t *testing.T) {
 	_, cmd := m.Update(keyPress("enter"))
 	drainCmd(t, m, cmd)
 	require.Contains(t, m.Render(), "Logs")
+	require.Equal(t, 1, m.Router().Depth())
 
-	// q on logs → Action.Back. The host's popScreen on a depth-1 stack is
-	// effectively a no-op, but the Action consumption itself runs through
-	// routeLogsAction's Back branch.
+	// q on logs at depth=1 with no connected cluster → routeLogsAction.Back
+	// → popOrReplaceToHome → replace with clusters. Without that fallback
+	// the screen would pop into nothing and render "(no screen active)".
 	_, cmd = m.Update(keyPress("q"))
 	drainCmd(t, m, cmd)
+	assert.Contains(t, m.Render(), "Clusters")
+	assert.NotContains(t, m.Render(), "no screen active")
 
 	// reopen on `:config sources` and exercise the same Back path.
 	feed(m, ":", 'c', 'o', 'n', 'f', 'i', 'g', ' ', 's', 'o', 'u', 'r', 'c', 'e', 's')
@@ -1053,6 +1056,35 @@ func TestRoute_LogsAndConfigSrcBackPops(t *testing.T) {
 
 	_, cmd = m.Update(keyPress("q"))
 	drainCmd(t, m, cmd)
+	assert.Contains(t, m.Render(), "Clusters")
+	assert.NotContains(t, m.Render(), "no screen active")
+}
+
+// TestRoute_GroupsBackAtDepth1ReplacesWithTopics pins the regression where
+// `:groups` from a connected session left the router with a depth-1 stack
+// containing only the groups screen. Pressing esc/q on that stack popped
+// to nothing and rendered "(no screen active)" — popOrReplaceToHome must
+// instead drop the user back onto topics so the flow stays usable.
+func TestRoute_GroupsBackAtDepth1ReplacesWithTopics(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool { return strings.Contains(m.Render(), "orders") })
+	require.Equal(t, 1, m.Router().Depth())
+
+	feed(m, ":", 'g', 'r', 'o', 'u', 'p', 's')
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Consumer Groups")
+	require.Equal(t, 1, m.Router().Depth())
+
+	_, cmd = m.Update(keyPress("esc"))
+	drainCmd(t, m, cmd)
+	out := m.Render()
+	assert.Contains(t, out, "Topics")
+	assert.NotContains(t, out, "no screen active")
 }
 
 // TestRoute_TopicsQuitAtRootReplacesWithClusters pins

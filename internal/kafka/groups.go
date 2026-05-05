@@ -12,12 +12,15 @@ import (
 	"github.com/twmb/franz-go/pkg/kerr"
 )
 
-// GroupListInfo is the lightweight per-group snapshot from ListGroups,
-// without the extra DescribeGroups round trip.
+// GroupListInfo is the per-group snapshot returned by ListConsumerGroups.
+// Group/State/ProtocolType/Coordinator come from the cheap ListGroups call;
+// Protocol is filled via a batched DescribeGroups in the same round so the
+// list screen can show the assignment strategy without an extra fetch.
 type GroupListInfo struct {
 	Group        string
 	State        string
 	ProtocolType string
+	Protocol     string
 	Coordinator  int32
 }
 
@@ -136,12 +139,16 @@ type ResetPreview struct {
 }
 
 // ListConsumerGroups returns a snapshot of all consumer-protocol groups.
+// A batched DescribeGroups follows ListGroups to populate Protocol — the
+// describe error is non-fatal so the list still surfaces when describe is
+// unavailable (Protocol just stays empty).
 func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error) {
 	listed, err := c.adm.ListGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: list groups: %w", err)
 	}
 	out := make([]GroupListInfo, 0, len(listed))
+	names := make([]string, 0, len(listed))
 	for _, g := range listed {
 		if g.ProtocolType != "" && g.ProtocolType != "consumer" {
 			continue
@@ -152,8 +159,19 @@ func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error
 			ProtocolType: g.ProtocolType,
 			Coordinator:  g.Coordinator,
 		})
+		names = append(names, g.Group)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Group < out[j].Group })
+	if len(names) == 0 {
+		return out, nil
+	}
+	if described, dErr := c.adm.DescribeGroups(ctx, names...); dErr == nil {
+		for i := range out {
+			if d, ok := described[out[i].Group]; ok && d.Err == nil {
+				out[i].Protocol = d.Protocol
+			}
+		}
+	}
 	return out, nil
 }
 
