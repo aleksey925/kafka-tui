@@ -378,6 +378,13 @@ const frameInset = 2
 // left border + left padding + right padding + right border.
 const frameWidthInset = 2 + 2*layout.FrameSidePadding
 
+// screenSideMargin is the number of blank columns kept between the
+// terminal edges and the rendered chrome (header, body frame, command
+// line, flash). Without this margin the right border of the frame
+// (and the right-aligned build identity in the header) sit flush
+// against the terminal edge — visually cramped on wide terminals.
+const screenSideMargin = 1
+
 // bodyHeight returns the inner height left for the active screen after the
 // chrome and the body frame border are subtracted. The command-prompt rows
 // only count when the bar is active — when closed, the body uses the full
@@ -395,9 +402,21 @@ func (m *Model) bodyHeight() int {
 }
 
 // bodyWidth returns the inner width inside the body frame (terminal width
-// minus the frame's left/right borders and side padding).
+// minus the outer side margin, the frame's left/right borders, and side
+// padding).
 func (m *Model) bodyWidth() int {
-	w := m.width - frameWidthInset
+	w := m.screenWidth() - frameWidthInset
+	if w < 1 {
+		return 0
+	}
+	return w
+}
+
+// screenWidth returns the width available to the chrome (header, body
+// frame, command line, flash) after the outer [screenSideMargin] is
+// subtracted from each side.
+func (m *Model) screenWidth() int {
+	w := m.width - 2*screenSideMargin
 	if w < 1 {
 		return 0
 	}

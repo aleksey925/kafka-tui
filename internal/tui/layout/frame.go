@@ -24,7 +24,9 @@ type FrameOpts struct {
 // FrameSidePadding is the number of blank columns inserted between each
 // vertical border (`│`) and the body content, on each side. Hosts sizing
 // screens for the inner area must subtract `2*FrameSidePadding + 2` from
-// the terminal width to account for borders + padding.
+// the terminal width to account for borders + padding. Matches k9s'
+// `SetBorderPadding(0,0,1,1)`. Any visual gap between the frame border
+// and the terminal edge is the host's responsibility, not this package.
 const FrameSidePadding = 1
 
 // Frame wraps body in a rounded box with the title embedded in the top
@@ -44,7 +46,12 @@ func Frame(s theme.Styles, opts FrameOpts, body string) string {
 	bodyH := opts.Height - 2
 
 	border := frameBorderStyle(s, opts.Focused)
-	top := border.Render("╭" + frameTopLine(s, opts.Title, innerEdge) + "╮")
+	// render the corners as standalone styled segments — wrapping the
+	// whole "╭…╮" string in a single border.Render leaves the right
+	// corner unstyled because frameTopLine emits internal resets
+	// (\x1b[m) for its title segment, which collapse the outer style
+	// before it can paint the closing corner.
+	top := border.Render("╭") + frameTopLine(s, opts.Title, innerEdge) + border.Render("╮")
 	bottom := border.Render("╰" + strings.Repeat("─", innerEdge) + "╯")
 
 	lines := strings.Split(body, "\n")

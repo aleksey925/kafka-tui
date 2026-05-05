@@ -31,33 +31,49 @@ func (m *Model) Render() string {
 
 func (m *Model) render() string {
 	if m.mode == ModeHelp {
-		return m.renderHelp()
+		return indentLines(m.renderHelp(), screenSideMargin)
 	}
 
+	w := m.screenWidth()
 	header := layout.Header(
 		m.styles,
 		m.header,
 		m.statusForRender(),
 		m.activeKeyHints(),
 		layout.Build{Version: m.build.Version, Commit: m.build.Commit},
-		m.width,
+		w,
 	)
 
 	bar := m.command
 	if m.mode == ModeSearch {
 		bar = m.search
 	}
-	cmdBox := layout.CommandLine(m.styles, bar, m.width)
+	cmdBox := layout.CommandLine(m.styles, bar, w)
 
 	body := m.renderBody()
-	flash := layout.FlashLine(m.styles, m.flash, m.width)
+	flash := layout.FlashLine(m.styles, m.flash, w)
 
 	parts := []string{header}
 	if cmdBox != "" {
 		parts = append(parts, cmdBox)
 	}
 	parts = append(parts, body, flash)
-	return strings.Join(parts, "\n")
+	return indentLines(strings.Join(parts, "\n"), screenSideMargin)
+}
+
+// indentLines prefixes every line of s with `n` spaces. Used to apply
+// the outer horizontal screen margin without forcing every chrome
+// component to render its own padding.
+func indentLines(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = pad + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // flashTickMsg triggers a re-render so a non-sticky toast that has just
@@ -148,7 +164,8 @@ func (m *Model) renderBody() string {
 // is rendered centered in the top border (k9s-style); breadcrumb context,
 // if any, is folded into the title by the screen.
 func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
-	if m.width <= 4 || m.bodyHeight() < 1 {
+	w := m.screenWidth()
+	if w <= 4 || m.bodyHeight() < 1 {
 		return body
 	}
 	combined := title
@@ -160,7 +177,7 @@ func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
 		}
 	}
 	return layout.Frame(m.styles, layout.FrameOpts{
-		Width:  m.width,
+		Width:  w,
 		Height: m.bodyHeight() + frameInset,
 		Title:  combined,
 	}, body)
@@ -188,7 +205,7 @@ func (m *Model) renderHelp() string {
 		}
 	}
 
-	width := m.width
+	width := m.screenWidth()
 	if width <= 0 {
 		width = 80
 	}
