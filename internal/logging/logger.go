@@ -1,9 +1,5 @@
-// Package logging configures slog-based file logging for kafka-tui with
-// size-based rotation, level selection, and a path-resolution helper that
-// expands `~` and `${env:VAR}` / `${env:VAR:-default}` placeholders.
-//
-// The full placeholder pipeline (file/vault) lives in the config package
-// (Tasks 4-5). For the log-file path, env+`~` is sufficient.
+// Package logging configures slog-based file logging with size-based rotation
+// and `~` / `${env:VAR}` path expansion.
 package logging
 
 import (
@@ -20,27 +16,19 @@ import (
 )
 
 const (
-	// DefaultMaxSizeMB is the rotation threshold when not configured.
 	DefaultMaxSizeMB = 10
-	// DefaultMaxFiles is the number of rotated files to keep when not configured.
-	DefaultMaxFiles = 5
-	// DefaultLevel is used when the configured level is empty.
-	DefaultLevel = "info"
+	DefaultMaxFiles  = 5
+	DefaultLevel     = "info"
 )
 
-// Options configures Init.
+// Options configures Init. File supports `~` and `${env:VAR}` placeholders.
+// Zero MaxSizeMB / MaxFiles fall back to defaults.
 type Options struct {
-	// Level is one of "debug", "info", "warn", "error" (case-insensitive).
-	// Empty defaults to DefaultLevel.
-	Level string
-	// File is the destination path. Supports `~` and `${env:VAR}` placeholders.
-	File string
-	// MaxSizeMB is the rotation threshold; 0 falls back to DefaultMaxSizeMB.
+	Level     string
+	File      string
 	MaxSizeMB int
-	// MaxFiles is the number of rotated archives kept; 0 falls back to DefaultMaxFiles.
-	MaxFiles int
-	// HomeDir overrides $HOME for `~` expansion (used in tests).
-	HomeDir string
+	MaxFiles  int
+	HomeDir   string
 }
 
 // Logger bundles the slog.Logger with the underlying writer so callers can
@@ -51,7 +39,6 @@ type Logger struct {
 	ResolvedAt string
 }
 
-// Close flushes and closes the underlying writer.
 func (l *Logger) Close() error {
 	if l == nil || l.Writer == nil {
 		return nil
@@ -62,10 +49,9 @@ func (l *Logger) Close() error {
 	return nil
 }
 
-// Init opens (creating parent dirs as needed) the log file and returns a
-// configured *Logger. Callers that want this logger to be the package-wide
-// default should call slog.SetDefault on Logger.Logger themselves — Init
-// avoids touching the global default so test isolation is preserved.
+// Init opens the log file (creating parent dirs as needed). Init does not
+// touch slog's global default so test isolation is preserved — callers that
+// want it global must call slog.SetDefault themselves.
 func Init(opts Options) (*Logger, error) {
 	level, err := ParseLevel(opts.Level)
 	if err != nil {
@@ -104,7 +90,7 @@ func Init(opts Options) (*Logger, error) {
 	return &Logger{Logger: logger, Writer: w, ResolvedAt: resolved}, nil
 }
 
-// ParseLevel maps a textual level into slog.Level. Empty falls back to DefaultLevel.
+// ParseLevel maps a textual level into slog.Level. Empty → DefaultLevel.
 func ParseLevel(s string) (slog.Level, error) {
 	if s == "" {
 		s = DefaultLevel
@@ -127,10 +113,9 @@ func ParseLevel(s string) (slog.Level, error) {
 // `:-default` may itself contain any character except a closing brace.
 var envPlaceholder = regexp.MustCompile(`\$\{env:([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 
-// ResolveFilePath expands a leading `~` (using homeDir or $HOME) and any
-// `${env:VAR}` / `${env:VAR:-default}` placeholders inside path.
-//
-// An unresolved placeholder without a default returns an error.
+// ResolveFilePath expands a leading `~` and any `${env:VAR}` /
+// `${env:VAR:-default}` placeholders. Unresolved placeholders without a
+// default return an error.
 func ResolveFilePath(path, homeDir string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -188,10 +173,8 @@ func expandHome(path, homeDir string) (string, error) {
 }
 
 // OpenInPager opens path in $PAGER (or `less -R` as a fallback). It blocks
-// until the pager exits and wires stdin/stdout/stderr through.
-//
-// If path does not exist, a clear error is returned so the CLI can print
-// a friendly message.
+// until the pager exits and wires stdin/stdout/stderr through. A missing
+// file returns a clear error so the CLI can print a friendly message.
 func OpenInPager(ctx context.Context, path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -7,11 +7,6 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
 
-// handleKey is the top-level keystroke dispatcher. It routes every key
-// to the handler for the model's current mode (normal, command bar,
-// search prompt, help overlay), each of which knows whether to
-// consume the key, forward it to the active screen, or change the
-// mode itself.
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case ModeCommand:
@@ -26,21 +21,17 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleNormalKey runs the default-mode pipeline: ctrl+c always quits,
-// raw-input screens get every key as a literal (so `:` / `/` / `?` /
-// `ctrl+r` reach the form), then the global shortcuts get a chance,
-// then the esc filter-clear cascade, then we forward to the active
-// screen and use the q/esc fallback only when nothing claimed the key.
+// raw-input screens get every key as a literal, then global shortcuts,
+// then the esc filter-clear cascade, then forward to the active screen
+// with q/esc fallback only when nothing claimed the key.
 func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is always global so the user can quit even from inside a form.
 	if key.String() == "ctrl+c" {
 		m.quit = true
 		return m, tea.Quit
 	}
-	// when the active screen is editing free-form text (produce form, topic
-	// create/clone, reset params), route every key to it as a literal so
-	// global shortcuts don't interfere with typing. Form-screens narrow
-	// this to their actively-editing sub-state — see [RawInputs] — so
-	// shortcuts like `?` still work outside the inner edit mode.
+	// raw-input screens (forms) get every key as a literal so global
+	// shortcuts don't interfere with typing. See [RawInputs].
 	if m.active != nil && screenWantsRawInput(m.active) {
 		cmd := m.forwardToActive(key)
 		routeCmd := m.routeActiveAction()
@@ -49,20 +40,15 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.handleGlobalShortcut(key) {
 		return m, nil
 	}
-	// esc cascade: if the screen has a modal overlay open, esc belongs
-	// to it (close confirm/chooser/etc.), not to the filter-clear or pop
-	// path below. Capture the pre-state so we can also suppress the pop
-	// after the screen closes its overlay.
+	// esc cascade: when an overlay is open, esc belongs to it; capture the
+	// pre-state so we can suppress the pop after the screen closes its
+	// overlay too.
 	hadOverlay := m.active != nil && screenHasOverlay(m.active)
 	if key.String() == "esc" && !hadOverlay && m.active != nil && screenActiveFilter(m.active) != "" {
-		// no overlay in the way — clear the screen-level filter first;
-		// next esc will pop. Mirrors k9s behavior.
+		// clear the screen-level filter first; next esc will pop.
 		setScreenSearch(m.active, "")
 		return m, nil
 	}
-	// forward to active screen first; it may consume q/esc itself
-	// (e.g. close an overlay). After the screen handles it we look at the
-	// resulting Action; if no screen wants to keep us, q/esc pops the stack.
 	cmd := m.forwardToActive(key)
 	routeCmd := m.routeActiveAction()
 	if cmd == nil && routeCmd == nil {
@@ -73,9 +59,8 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, teaBatch(cmd, routeCmd)
 }
 
-// handleGlobalShortcut runs the screen-agnostic shortcut switch (`:` /
-// `/` / `?` / `ctrl+r`). Returns false when the key isn't one of those
-// so the caller falls through to the screen-aware path.
+// handleGlobalShortcut runs the screen-agnostic shortcut switch
+// (`:` / `/` / `?` / `ctrl+r`). Returns false when the key isn't one of those.
 func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 	switch key.String() {
 	case ":":
@@ -84,8 +69,8 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 		m.applySize()
 		return true
 	case "/":
-		// only open the prompt for screens that can actually filter — on
-		// detail/form views the prompt would just swallow keystrokes.
+		// detail/form views have nothing to filter — swallow `/` instead
+		// of opening an inert prompt.
 		if m.active != nil && !screenSupportsSearch(m.active) {
 			return true
 		}
@@ -102,21 +87,12 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 }
 
 // handleQuitFallback decides what `q` / `esc` should do when the active
-// screen returned no command and no Action — i.e. it didn't claim the
-// key for an overlay or transition. Returns ok=false for keys outside
-// q/esc, leaving the caller to teaBatch the screen's nil cmds.
-//
-// `hadOverlay` mirrors the same guard for both keys: when the screen
-// reports an active overlay (forms, confirms, modal sub-modes), q/esc
-// must NOT pop the screen. A user inside an overlay typing `q` should
-// at worst no-op, never get kicked back to the previous screen.
+// screen returned no command and no Action. When hadOverlay is true, q/esc
+// must NOT pop the screen — the user is inside an overlay/form.
 func (m *Model) handleQuitFallback(key tea.KeyPressMsg, hadOverlay bool) (tea.Cmd, bool) {
 	switch key.String() {
 	case "q":
 		if hadOverlay {
-			// the screen has an active overlay — `q` must not pop it
-			// out from under the user. Forms ignore literal `q` already;
-			// modals like confirm dialogs only react to y/n.
 			return nil, true
 		}
 		// `q` quits at the root, otherwise pops a screen.
@@ -128,12 +104,10 @@ func (m *Model) handleQuitFallback(key tea.KeyPressMsg, hadOverlay bool) (tea.Cm
 		return m.activeInit(), true
 	case "esc":
 		if hadOverlay {
-			// the screen just closed its overlay via the forwarded esc —
-			// don't double-act by also popping.
 			return nil, true
 		}
-		// at the root esc is a no-op so users don't quit the app by
-		// accident. ctrl+c remains the unconditional exit.
+		// at the root esc is a no-op so users don't quit by accident.
+		// ctrl+c remains the unconditional exit.
 		if m.router.Depth() > 1 {
 			m.popScreen()
 			return m.activeInit(), true
@@ -143,9 +117,6 @@ func (m *Model) handleQuitFallback(key tea.KeyPressMsg, hadOverlay bool) (tea.Cm
 	return nil, false
 }
 
-// handleCommandKey runs the `:` command-bar prompt: typing edits the
-// buffer (with live tab-completion suggestions), enter parses and
-// dispatches the command, esc dismisses the bar.
 func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
@@ -188,10 +159,8 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// openSearchPrompt switches into ModeSearch with an empty buffer and
-// surfaces the newest history entry as a ghost suggestion. The screen's
-// applied filter is left untouched until the user types — typing an empty
-// buffer first clears it (live filtering). Mirrors k9s behavior.
+// openSearchPrompt switches into ModeSearch with an empty buffer; the
+// applied filter is left untouched until the user types.
 func (m *Model) openSearchPrompt() {
 	m.mode = ModeSearch
 	m.search = layout.CommandBar{Active: true, Prefix: '/'}
@@ -199,12 +168,10 @@ func (m *Model) openSearchPrompt() {
 	m.applySize()
 }
 
-// searchHistoryCap mirrors k9s's MaxHistory (20). Per-screen, in-memory.
 const searchHistoryCap = 20
 
 // activeSearchHistory returns the filter-history bucket for the active
-// screen, creating one lazily on first use. Returns nil when there is no
-// active screen — callers must guard.
+// screen, creating one lazily. Returns nil when no screen is active.
 func (m *Model) activeSearchHistory() *filterhistory.History {
 	if m.active == nil {
 		return nil
@@ -222,8 +189,7 @@ func (m *Model) activeSearchHistory() *filterhistory.History {
 }
 
 // refreshSearchSuggestions recomputes the ghost suggestion list for the
-// current buffer against the active screen's history. Index resets to 0
-// (newest match) on every recompute, matching k9s.
+// current buffer. Index resets to 0 (newest match) on every recompute.
 func (m *Model) refreshSearchSuggestions() {
 	hist := m.activeSearchHistory()
 	if hist == nil {
@@ -242,8 +208,8 @@ func (m *Model) refreshSearchSuggestions() {
 	m.search.Suggestion = m.searchSuggestions[0]
 }
 
-// closeSearchPrompt drops the prompt's transient state. Does not touch
-// the screen's applied filter — Esc/Enter handle that separately.
+// closeSearchPrompt drops transient prompt state without touching the
+// screen's applied filter — Esc/Enter handle that separately.
 func (m *Model) closeSearchPrompt() {
 	m.mode = ModeNormal
 	m.search = layout.CommandBar{}
@@ -252,17 +218,12 @@ func (m *Model) closeSearchPrompt() {
 	m.applySize()
 }
 
-// handleSearchKey runs the k9s-style filter prompt. Each keystroke that
-// changes the buffer is forwarded to the active screen so rows filter
-// live; suggestions are recomputed against the per-screen history.
-//
+// handleSearchKey runs the live filter prompt:
 //   - esc            clears the filter and closes (no history push).
-//   - enter / ctrl+e commits: pushes the buffer to history (when non-empty),
-//     closes the prompt; the live filter stays applied.
-//   - tab / right / ctrl+f promotes the current ghost suggestion into the
-//     buffer and applies it.
-//   - up / down      cycle through suggestion matches (newest ↔ oldest, wraps).
-//   - ctrl+u / ctrl+w wipe the buffer (k9s parity — both are full clear).
+//   - enter / ctrl+e commits the buffer to history; live filter stays applied.
+//   - tab / right / ctrl+f promotes the current ghost suggestion.
+//   - up / down      cycle through suggestion matches (wraps).
+//   - ctrl+u / ctrl+w wipe the buffer.
 //   - backspace / delete drop the last rune.
 func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
@@ -326,9 +287,8 @@ func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// cycleSearchSuggestion advances the suggestion index by step (+1 = next
-// older, -1 = next newer, both wrap). No-op when the suggestion list is
-// empty.
+// cycleSearchSuggestion advances the suggestion index by step
+// (+1 = next older, -1 = next newer, both wrap).
 func (m *Model) cycleSearchSuggestion(step int) {
 	n := len(m.searchSuggestions)
 	if n == 0 {
@@ -343,9 +303,8 @@ func (m *Model) cycleSearchSuggestion(step int) {
 	m.search.Suggestion = m.searchSuggestions[idx]
 }
 
-// handleHelpKey closes the help overlay on any of the documented exit
-// keys; everything else is silently swallowed so the user can't trigger
-// an unrelated action while the help is up.
+// handleHelpKey closes the overlay on documented exit keys; everything
+// else is silently swallowed.
 func (m *Model) handleHelpKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q", "?":

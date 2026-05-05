@@ -21,9 +21,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// Service abstracts the Kafka read/produce operations the messages screen
-// needs. Production code wires this to a real *kafka.Client; tests pass a
-// fake.
+// Service abstracts the Kafka operations the messages screen needs.
 type Service interface {
 	FetchLastN(ctx context.Context, topic string, n int, partitions []int32) ([]kafka.Message, error)
 	FetchEarliest(ctx context.Context, topic string, n int, partitions []int32) ([]kafka.Message, error)
@@ -37,56 +35,43 @@ type Service interface {
 	Follow(ctx context.Context, topic string, partitions []int32) (*kafka.FollowSession, error)
 }
 
-// ViewStateRepository persists per-(cluster, topic) seek + partition state
-// between sessions. A nil repository disables persistence; the screen
-// behaves as if the user always starts at `latest`.
+// ViewStateRepository persists per-(cluster, topic) seek+partition state
+// between sessions. nil disables persistence.
 type ViewStateRepository interface {
 	LoadMessagesView(ctx context.Context, cluster, topic string) (ViewState, bool, error)
 	SaveMessagesView(ctx context.Context, cluster, topic string, view ViewState) error
 }
 
-// ViewState is the persisted shape of "where am I looking in this topic".
-// Live mode is intentionally not representable here: when the user picks
-// `live`, the previously saved record stays untouched so a restart returns
-// to the last non-live position rather than re-entering live tail.
+// ViewState is the persisted "where am I looking" state. Live mode is
+// intentionally not representable so a restart returns to the last
+// non-live position rather than re-entering live tail.
 type ViewState struct {
 	SeekMode   SeekMode
-	Partition  int32     // valid for SeekFromOffset / SeekToOffset when ExplicitPartition
-	Offset     int64     // valid for offset modes
-	Timestamp  time.Time // valid for timestamp modes
-	HasPart    bool      // partition is explicit (vs offset-only fuzzy form)
-	Partitions string    // raw partition filter syntax ("" == all)
+	Partition  int32
+	Offset     int64
+	Timestamp  time.Time
+	HasPart    bool
+	Partitions string
 }
 
-// Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed esc/q with no overlay open.
-	Back bool
-	// Produce, when non-empty, requests the produce form prefilled from the
-	// selected message ("resend"). When PrefillFromMessage is non-nil it
-	// holds the source message; otherwise this is a fresh produce.
+	Back               bool
 	Produce            string
 	PrefillFromMessage *kafka.Message
 }
 
-// Mode is the screen's current sub-mode.
 type Mode int
 
 const (
-	// ModeList: messages table is visible (default).
 	ModeList Mode = iota
-	// ModeDetail: detail view is overlaid for the focused message.
 	ModeDetail
-	// ModeSeek: seek popup is open (stage 1 menu or stage 2 input).
 	ModeSeek
-	// ModePartitions: partition filter form is open.
 	ModePartitions
-	// ModeSmartFilter: smart filter stub modal is open.
 	ModeSmartFilter
 )
 
-// SeekMode is the active "where to read from" axis. Order matches the
-// digits 1..7 in the seek popup so digit shortcuts can index directly.
+// SeekMode order matches the digits 1..7 in the seek popup so digit
+// shortcuts can index directly.
 type SeekMode int
 
 const (
@@ -99,7 +84,6 @@ const (
 	SeekLive
 )
 
-// String returns a short human-readable label for the seek mode.
 func (s SeekMode) String() string {
 	switch s {
 	case SeekLatest:
@@ -120,44 +104,26 @@ func (s SeekMode) String() string {
 	return "?"
 }
 
-// DefaultColumns is used when config does not override.
 var DefaultColumns = []string{"timestamp", "partition", "offset", "key", "headers", "value"}
 
-// DefaultPageSize is the number of messages fetched on initial load and per
-// `[`/`]` window step.
 const DefaultPageSize = 200
 
-// Options configure a [Model].
 type Options struct {
-	Service Service
-	Topic   string
-	// Cluster is the active cluster name. Used as the persistence key
-	// alongside Topic so the same topic name in two clusters keeps
-	// independent view state. Empty disables per-cluster scoping.
-	Cluster string
-	// ReadOnly disables produce/resend hotkeys.
-	ReadOnly bool
-	// Columns lists the column keys to render, in order.
-	Columns []string
-	// PageSize bounds how many records are fetched per request.
-	PageSize int
-	// Clipboard is forwarded to the detail view for copy hotkeys.
-	Clipboard Clipboard
-	// FileWriter is forwarded to the detail view for save hotkeys.
+	Service    Service
+	Topic      string
+	Cluster    string
+	ReadOnly   bool
+	Columns    []string
+	PageSize   int
+	Clipboard  Clipboard
 	FileWriter FileWriter
-	// Pager is forwarded to the detail view for the pager hotkey.
-	Pager PagerOpener
-	// OutputDir is forwarded to the detail view for save targets.
-	OutputDir string
-	// ViewState persists seek/partition state across sessions. Optional.
-	ViewState ViewStateRepository
-	// Now is the injected clock (defaults to time.Now).
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Pager      PagerOpener
+	OutputDir  string
+	ViewState  ViewStateRepository
+	Now        func() time.Time
+	Styles     theme.Styles
 }
 
-// Model is the messages list + detail screen.
 type Model struct {
 	svc      Service
 	topic    string
@@ -179,46 +145,30 @@ type Model struct {
 
 	mode   Mode
 	detail *DetailModel
-	// wrap is the user's soft-wrap preference for the detail view. Held at
-	// this level so it survives detail re-opens within the same session.
+	// wrap is held at this level so it survives detail re-opens.
 	wrap bool
 
 	follow *kafka.FollowSession
-	// live tracks whether the screen is in live-tail mode. Set when the
-	// user picks `live` (before the async dial completes) and cleared by
-	// stopFollow / Close. Decoupled from m.follow so [Model.Following]
-	// reports true during the brief window between "user picked live" and
-	// "session established".
+	// live is decoupled from m.follow so [Model.Following] reports true
+	// during the dial window before the session attaches.
 	live bool
 
-	// seek state
 	seek SeekState
-	// captured edges of the active seek window. fromBoundary is set by
-	// from-offset / from-timestamp dispatches as the lowest valid offset
-	// per partition (`[` stops there); toBoundary is set by to-offset /
-	// to-timestamp dispatches as the highest valid offset per partition
-	// (`]` stops there). nil means "no edge in that direction".
+	// captured edges of the active seek window so `[` / `]` can clamp.
 	fromBoundary map[int32]int64
 	toBoundary   map[int32]int64
-	// fetchGen is bumped on every dispatchSeek and stopFollow. Every async
-	// fetch / follow command captures the current value and tags its
-	// returned message with it; handlers ignore messages whose Gen does
-	// not match the live counter. This is how we stop a stale
-	// MessagesLoadedMsg from a previous seek (or a stale FollowChunkMsg
-	// from a previous live session) from leaking onto the screen after
-	// the user has already moved on. Recognized as stale on arrival.
+	// fetchGen is bumped on every dispatchSeek / stopFollow; async cmds
+	// stamp this on results, handlers drop messages with stale Gen so
+	// late arrivals from a previous seek/live session can't leak onto
+	// the screen after the user has moved on.
 	fetchGen uint64
 
-	// spinnerFrame advances on every LiveTickMsg and is rendered next to
-	// the LIVE label in [Title], so the user always has a visible
-	// "live tail is alive" cue even when records arrive slowly.
+	// spinnerFrame advances on LiveTickMsg so the LIVE label always
+	// shows movement on quiet topics.
 	spinnerFrame int
 
-	// manualRefresh is set when the user pressed `r` (non-live mode) and
-	// is consumed by handleLoaded to push a one-shot success toast.
 	manualRefresh bool
 
-	// popups
 	seekPopup       *seekPopup
 	partitionsPopup *partitionsPopup
 	smartFilterOpen bool
@@ -232,7 +182,6 @@ type Model struct {
 	styles theme.Styles
 }
 
-// SeekState describes the active seek configuration.
 type SeekState struct {
 	Mode      SeekMode
 	Partition int32
@@ -241,7 +190,6 @@ type SeekState struct {
 	HasPart   bool
 }
 
-// New constructs a Model.
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -284,10 +232,8 @@ func New(opts Options) *Model {
 	}
 }
 
-// Init returns the initial load command. When a persisted view state exists
-// for (cluster, topic), restoration is two-phase: fetch fresh watermarks
-// asynchronously, then clamp/drop stale fields and dispatch. Without
-// persistence, dispatches the default seek straight away.
+// Init: with persisted state, restoration is two-phase (fetch watermarks,
+// then clamp/drop stale fields). Otherwise dispatches the default seek.
 func (m *Model) Init() tea.Cmd {
 	if m.repo != nil && m.cluster != "" && m.topic != "" {
 		view, ok, err := m.repo.LoadMessagesView(context.Background(), m.cluster, m.topic)
@@ -298,8 +244,6 @@ func (m *Model) Init() tea.Cmd {
 	return m.dispatchSeek()
 }
 
-// viewRestoredMsg carries the snapshot needed to silently clamp persisted
-// state against the topic's current shape.
 type viewRestoredMsg struct {
 	raw        ViewState
 	watermarks map[int32]kafka.PartitionWatermarks
@@ -315,16 +259,10 @@ func restoreViewCmd(svc Service, topic string, raw ViewState) tea.Cmd {
 	}
 }
 
-// handleViewRestored applies the persisted view after silently clamping
-// stale fields against fresh watermarks (offset out of range → clamp;
-// partition no longer present → drop from filter; live mode → fall back to
-// latest). On metadata fetch failure, falls back to the default dispatch.
-//
-// stopFollow is invoked unconditionally before the seek state is overwritten
-// so that any in-flight live-tail dial the user may have triggered while the
-// async restore was pending is canceled — without it, a late
-// FollowStartedMsg could attach a session that does not match the restored
-// seek state.
+// handleViewRestored clamps stale fields against fresh watermarks and
+// dispatches. stopFollow runs first so a late FollowStartedMsg from a
+// dial the user kicked off during the async restore can't attach to a
+// session that doesn't match the restored seek state.
 func (m *Model) handleViewRestored(msg viewRestoredMsg) tea.Cmd {
 	m.stopFollow()
 	if msg.err != nil {
@@ -361,55 +299,42 @@ func (m *Model) handleViewRestored(msg viewRestoredMsg) tea.Cmd {
 			}
 		}
 	case SeekLatest, SeekEarliest, SeekFromTimestamp, SeekToTimestamp, SeekLive:
-		// no offset to clamp; timestamp clamping is done at fetch time
-		// (OffsetsForTimestamp / FetchAtTimestamp return empty for ranges
-		// outside the topic, which dispatchSeek treats as latest/earliest).
+		// timestamp clamping happens at fetch time.
 	}
 	m.seek = state
 	return m.dispatchSeek()
 }
 
-// Topic returns the topic this screen is bound to.
 func (m *Model) Topic() string { return m.topic }
 
-// Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
-// Detail returns the detail view (or nil) for tests.
 func (m *Model) Detail() *DetailModel { return m.detail }
 
-// Following reports whether live-tail mode is active.
 func (m *Model) Following() bool { return m.live }
 
-// SeekState returns the active seek state (for tests / chrome).
 func (m *Model) SeekState() SeekState { return m.seek }
 
-// FetchGen returns the current dispatch generation. Exported for tests
-// that need to forge race-protected messages (LiveTickMsg, MessagesLoaded
-// etc.) with the right Gen so the handler accepts them.
+// FetchGen is exported so tests can forge race-protected messages with
+// the right Gen so the handler accepts them.
 func (m *Model) FetchGen() uint64 { return m.fetchGen }
 
-// PartitionFilter returns the active partition filter (defensive copy).
 func (m *Model) PartitionFilter() []int32 {
 	out := make([]int32, len(m.filter))
 	copy(out, m.filter)
 	return out
 }
 
-// Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
-// LatestFlash returns the freshest live toast from this screen's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {
 	if m.toasts == nil {
 		return components.Toast{}, false
@@ -417,7 +342,6 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
 	total := len(m.messages)
 	body := fmt.Sprintf("Messages · %s [%d]", m.topic, total)
@@ -436,8 +360,6 @@ func (m *Model) Title() string {
 	return body
 }
 
-// detailTitleSuffix appends scroll position and wrap mode to the frame title
-// while the detail view is active.
 func (m *Model) detailTitleSuffix() string {
 	out := ""
 	if first, last, total, ok := m.detail.ScrollSummary(); ok {
@@ -451,9 +373,6 @@ func (m *Model) detailTitleSuffix() string {
 	return out
 }
 
-// Breadcrumb describes the selected message (right-aligned in the frame).
-// In ModeDetail it tracks the detail view's focused message so n/p
-// navigation updates the chrome alongside the body.
 func (m *Model) Breadcrumb() string {
 	if m.mode == ModeDetail && m.detail != nil {
 		cur := m.detail.Current()
@@ -466,19 +385,14 @@ func (m *Model) Breadcrumb() string {
 	return row.ID
 }
 
-// Messages returns the loaded messages in display order (newest first).
 func (m *Model) Messages() []kafka.Message {
 	out := make([]kafka.Message, len(m.messages))
 	copy(out, m.messages)
 	return out
 }
 
-// SearchAvailable reports whether search is currently usable. Detail view
-// and overlay popups have nothing to filter so they suppress `/`.
 func (m *Model) SearchAvailable() bool { return m.mode == ModeList }
 
-// SetSearch forwards a host-driven filter query to the underlying table.
-// Only meaningful in ModeList.
 func (m *Model) SetSearch(query string) {
 	if m.mode != ModeList {
 		return
@@ -486,8 +400,6 @@ func (m *Model) SetSearch(query string) {
 	m.table.SetSearch(query)
 }
 
-// ActiveFilter returns the list table's current search query (empty when
-// not in list mode).
 func (m *Model) ActiveFilter() string {
 	if m.mode != ModeList {
 		return ""
@@ -495,23 +407,17 @@ func (m *Model) ActiveFilter() string {
 	return m.table.Search()
 }
 
-// HasOverlay reports whether the screen is showing a modal-like overlay
-// the host should yield esc to.
 func (m *Model) HasOverlay() bool {
 	return m.mode == ModeDetail || m.mode == ModeSeek || m.mode == ModePartitions || m.mode == ModeSmartFilter
 }
 
-// Layout budgets used to compute how many rows are available for
-// dynamic content. If the popup chrome (border + title + labels + input
-// + hint) is changed, popupChromeRows must be adjusted to match — the
-// list area on big topics depends on this for scroll bounds.
+// popupChromeRows must be kept in sync with renderPartitionsPopup —
+// the list area on big topics depends on it for scroll bounds.
 const (
-	chromeRows      = 8  // rows reserved by host chrome + screen-local state header
-	popupChromeRows = 12 // rows reserved by the partition popup's own chrome
+	chromeRows      = 8
+	popupChromeRows = 12
 )
 
-// bodyHeight is the number of rows available for the table or a popup
-// rendered in its place. Returns 0 when the size is not yet known.
 func (m *Model) bodyHeight() int {
 	if m.height <= 0 {
 		return 0
@@ -519,7 +425,6 @@ func (m *Model) bodyHeight() int {
 	return maxInt(1, m.height-chromeRows)
 }
 
-// SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
@@ -533,21 +438,14 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints derives the bottom-row entries from the current mode's
-// bindings table, so adding a binding automatically appears here.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.activeBindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the current
-// mode's bindings table — exact same source as the dispatcher, so
-// drift between code and documentation is structurally impossible.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.activeBindings())
 }
 
-// activeBindings returns the bindings slice for whichever sub-mode
-// the screen is in. Each sub-mode dispatcher consumes the same slice.
 func (m *Model) activeBindings() []keymap.Binding {
 	switch m.mode {
 	case ModeList:
@@ -566,7 +464,6 @@ func (m *Model) activeBindings() []keymap.Binding {
 	return m.listBindings()
 }
 
-// listBindings is the single source of truth for messages list mode.
 func (m *Model) listBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "open message detail", Category: "Browse", Hint: true, Handler: func() tea.Cmd { m.openDetail(); return nil }},
@@ -578,9 +475,7 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"s"}, Label: "seek (offset / time / strategy)", Category: "Filtering", Hint: true, Handler: func() tea.Cmd { m.openSeek(); return nil }},
 		{Keys: []string{"P"}, Label: "partition filter", Category: "Filtering", Hint: true, Handler: m.openPartitions},
 		{Keys: []string{"f"}, Label: "smart filter (key/value/headers)", Category: "Filtering", Hint: true, Handler: func() tea.Cmd { m.openSmartFilter(); return nil }},
-		// `/` and `ctrl+r` are globals handled by the host — listed here
-		// (advertise-only, no Handler) so they appear in the bottom hints
-		// bar and the `?` overlay alongside screen-local actions.
+		// advertise-only: `/` is owned by the host.
 		{Keys: []string{"/"}, Label: "live filter on visible rows", Category: "Filtering", Hint: true},
 	}
 	prod := []keymap.Binding{
@@ -588,7 +483,6 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"R"}, Label: "resend selected message", Category: "Produce", Hint: true, Handler: func() tea.Cmd { m.handleResendKey(); return nil }},
 	}
 	if m.readOnly {
-		// keys still consumed (toast emitted) but hidden from help / hints.
 		for i := range prod {
 			prod[i].Category = ""
 			prod[i].Hint = false
@@ -602,12 +496,9 @@ func (m *Model) actBack() tea.Cmd {
 	return nil
 }
 
-// seekBindings is the source of truth for the seek popup. At the
-// menu stage we delegate to [components.Menu.Bindings] so the menu
-// component IS the single source of truth for its own keys (arrows,
-// j/k, tab, enter, esc, and 1-N digit shortcuts) — drift between
-// menu.Update and our help is structurally impossible. At the input
-// stage esc/enter dispatch through this slice into the form.
+// seekBindings: the menu stage delegates to [components.Menu.Bindings]
+// so the menu owns its own key set; the input stage dispatches esc/enter
+// through this slice.
 func (m *Model) seekBindings() []keymap.Binding {
 	if m.seekPopup != nil && m.seekPopup.stage == stageInput {
 		return []keymap.Binding{
@@ -622,7 +513,6 @@ func (m *Model) seekBindings() []keymap.Binding {
 	return nil
 }
 
-// actSeekApply applies the current input form and dispatches the seek.
 func (m *Model) actSeekApply() tea.Cmd {
 	pop := m.seekPopup
 	state, err := m.parseSeekForm(pop.chosen, pop.form)
@@ -635,8 +525,6 @@ func (m *Model) actSeekApply() tea.Cmd {
 	return m.dispatchSeek()
 }
 
-// actSeekBackToMenu rewinds the wizard from input back to strategy
-// selection without committing.
 func (m *Model) actSeekBackToMenu() tea.Cmd {
 	pop := m.seekPopup
 	pop.stage = stageMenu
@@ -645,20 +533,14 @@ func (m *Model) actSeekBackToMenu() tea.Cmd {
 	return nil
 }
 
-// partitionsBindings is the source of truth for the partitions popup.
-// The dispatcher is split by focus: top-level (esc/tab/enter) goes
-// through here; the list-pane and input-pane sub-dispatchers route
-// their own keys through this same table.
 func (m *Model) partitionsBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "apply partition filter", Category: "Partition filter", Hint: true, Handler: m.actPartApply},
 		{Keys: []string{"esc"}, Label: "back", Category: "Partition filter", Hint: true, Handler: m.actPartCancel},
 		{Keys: []string{"tab"}, Label: "switch focus (list ↔ input)", Category: "Partition filter", Hint: true, Handler: m.actPartToggleFocus},
 	}
-	// list-pane navigation only reacts when the list is focused; the
-	// input-pane sub-dispatcher (text editing — left/right/backspace/
-	// delete + literal text) is exempt since those are universal text
-	// keys not surfaced in help.
+	// list-pane keys only fire when the list is focused; text-editing
+	// keys for the input pane are universal and aren't surfaced here.
 	if m.partitionsPopup != nil && m.partitionsPopup.focus == focusList {
 		bs = append(bs,
 			keymap.Binding{Keys: []string{"space", " "}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
@@ -772,9 +654,6 @@ func (m *Model) actPartCursorTo(idx int) func() tea.Cmd {
 	}
 }
 
-// smartFilterBindings drives the help/hints for the smart-filter
-// description popup. The popup currently shows static help text and
-// only dismisses on `esc`.
 func (m *Model) smartFilterBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"esc"}, Label: "close", Category: "Smart filter", Hint: true, Handler: m.actCloseSmartFilter},
@@ -787,7 +666,6 @@ func (m *Model) actCloseSmartFilter() tea.Cmd {
 	return nil
 }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -877,7 +755,6 @@ func (m *Model) handleResendKey() {
 	}
 }
 
-// openDetail enters the detail view for the focused row.
 func (m *Model) openDetail() {
 	idx, ok := m.cursorIndex()
 	if !ok {
@@ -922,7 +799,6 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// selected returns the message under the table cursor, or false if empty.
 func (m *Model) selected() (kafka.Message, bool) {
 	idx, ok := m.cursorIndex()
 	if !ok {
@@ -931,7 +807,6 @@ func (m *Model) selected() (kafka.Message, bool) {
 	return m.messages[idx], true
 }
 
-// cursorIndex returns the index into m.messages for the focused row.
 func (m *Model) cursorIndex() (int, bool) {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -951,7 +826,7 @@ func (m *Model) cursorIndex() (int, bool) {
 
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 	if msg.Gen != m.fetchGen {
-		return // stale: user moved on to a newer dispatch
+		return
 	}
 	m.loading = false
 	if msg.Err != nil {
@@ -975,7 +850,7 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 
 func (m *Model) handleAppended(msg MessagesAppendedMsg) {
 	if msg.Gen != m.fetchGen {
-		return // stale: paging result for a seek the user has since left
+		return
 	}
 	m.loading = false
 	if msg.Err != nil {
@@ -996,7 +871,7 @@ func (m *Model) handleAppended(msg MessagesAppendedMsg) {
 
 func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 	if msg.Gen != m.fetchGen {
-		return // stale: chunk from a previous live session
+		return
 	}
 	if len(msg.Messages) > 0 {
 		// follow yields newest records — prepend to keep newest-first ordering.
@@ -1016,9 +891,6 @@ func (m *Model) handleFollowErr(msg FollowErrMsg) {
 	m.stopFollow()
 }
 
-// startFollowCmd dials the broker for a live-tail session in the
-// background. Result arrives as [FollowStartedMsg] which the host promotes
-// into a polling loop.
 func startFollowCmd(svc Service, topic string, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		sess, err := svc.Follow(context.Background(), topic, parts)
@@ -1028,7 +900,6 @@ func startFollowCmd(svc Service, topic string, parts []int32, gen uint64) tea.Cm
 
 func (m *Model) handleFollowStarted(msg FollowStartedMsg) tea.Cmd {
 	if msg.Gen != m.fetchGen {
-		// stale: user has dispatched a new seek since this dial was issued.
 		if msg.Session != nil {
 			msg.Session.Close()
 		}
@@ -1040,7 +911,6 @@ func (m *Model) handleFollowStarted(msg FollowStartedMsg) tea.Cmd {
 		return nil
 	}
 	if !m.live {
-		// user moved away from live before the session attached — discard.
 		if msg.Session != nil {
 			msg.Session.Close()
 		}
@@ -1057,21 +927,18 @@ func (m *Model) stopFollow() {
 		m.follow = nil
 	}
 	m.live = false
-	// bump generation: any chunk already in flight from the now-closed
-	// follow session will be discarded by handleFollowChunk on arrival.
+	// bump generation so in-flight chunks from the closed session are
+	// dropped on arrival.
 	m.fetchGen++
-	// clearing the manual-refresh flag here keeps the toast tied strictly
-	// to a press of `r` — every other path that switches the load context
-	// (seek change, view restore, …) goes through stopFollow first, so a
-	// flag set by an earlier `r` whose response never arrived can't leak
-	// onto a later, unrelated dispatchSeek and produce a misleading
-	// "refreshed" toast. refresh() re-sets the flag *after* stopFollow.
+	// every load-context switch goes through stopFollow first, so clearing
+	// here prevents a stale `r` flag (whose response never arrived) from
+	// leaking a misleading "refreshed" toast onto a later dispatchSeek.
+	// refresh() re-sets the flag *after* stopFollow.
 	m.manualRefresh = false
 }
 
-// Close releases any background resources owned by the screen. The host
-// calls it before swapping the active screen, so an open follow session
-// doesn't leak its kgo consumer / goroutine.
+// Close releases background resources before the host swaps screens, so
+// an open follow session doesn't leak its kgo consumer / goroutine.
 func (m *Model) Close() {
 	m.stopFollow()
 }
@@ -1112,8 +979,8 @@ func (m *Model) followPollCmd() tea.Cmd {
 	}
 }
 
-// loadEarlier handles `[`. Honors per-mode boundaries — `from-*` clamps
-// at the captured left edge, `live` flips to latest before stepping.
+// loadEarlier handles `[`. `from-*` clamps at the captured left edge,
+// `live` flips to latest before stepping.
 func (m *Model) loadEarlier() tea.Cmd {
 	if m.seek.Mode == SeekLive {
 		m.toasts.Push(components.ToastInfo, "paused live to step — back to latest")
@@ -1133,8 +1000,6 @@ func (m *Model) loadEarlier() tea.Cmd {
 	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
 }
 
-// loadLater handles `]`. Honors boundaries the same way as loadEarlier
-// but on the right side: `to-*` and `latest` clamp at their captured edges.
 func (m *Model) loadLater() tea.Cmd {
 	if m.seek.Mode == SeekLive {
 		m.toasts.Push(components.ToastInfo, "paused live to step — back to latest")
@@ -1156,13 +1021,10 @@ func (m *Model) loadLater() tea.Cmd {
 	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
 }
 
-// partitionsFromBaseline narrows the paging fetch to only those partitions
-// the user has already seen records from. Without this restriction the
-// kafka layer's "no baseline → load from watermark" fallback would pull
-// unrelated tails of partitions that were never part of the seek result
-// (e.g. an explicit `from offset 3:500` would start showing tails of
-// partitions 0, 1, 2, ... on the next `[`/`]`). Returns sorted ids for
-// deterministic dispatch.
+// partitionsFromBaseline restricts paging to partitions the user has
+// already seen — without this an explicit `from offset 3:500` would
+// start showing tails of partitions 0, 1, 2... on the next `[`/`]`
+// because the kafka layer falls back to watermark-loading otherwise.
 func partitionsFromBaseline(baseline map[int32]int64) []int32 {
 	out := make([]int32, 0, len(baseline))
 	for p := range baseline {
@@ -1174,7 +1036,6 @@ func partitionsFromBaseline(baseline map[int32]int64) []int32 {
 
 // ----- seek popup -----
 
-// seekStage discriminates the two-stage popup body.
 type seekStage int
 
 const (
@@ -1182,8 +1043,6 @@ const (
 	stageInput
 )
 
-// seekPopup holds the transient state of the seek wizard (one window, two
-// stages — menu, then mode-specific input).
 type seekPopup struct {
 	stage  seekStage
 	chosen SeekMode
@@ -1231,7 +1090,6 @@ func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
 		pop.chosen = mode
 		switch mode {
 		case SeekLatest, SeekEarliest, SeekLive:
-			// no parameters — dispatch immediately.
 			m.applySeek(SeekState{Mode: mode})
 			m.closeSeek()
 			return m.dispatchSeek()
@@ -1271,7 +1129,6 @@ func (m *Model) buildSeekForm(mode SeekMode) *components.Form {
 			prefill = msg.Timestamp.UTC().Format(time.RFC3339)
 		}
 	case SeekLatest, SeekEarliest, SeekLive:
-		// parameter-less modes never reach this builder.
 	}
 	return components.NewForm(
 		[]components.Field{{Key: "value", Label: label, Kind: components.FieldText, Value: prefill}},
@@ -1279,7 +1136,6 @@ func (m *Model) buildSeekForm(mode SeekMode) *components.Form {
 	)
 }
 
-// parseSeekForm validates the input field and returns a populated SeekState.
 func (m *Model) parseSeekForm(mode SeekMode, form *components.Form) (SeekState, error) {
 	fld, _ := form.Field("value")
 	raw := strings.TrimSpace(fld.Value)
@@ -1297,13 +1153,11 @@ func (m *Model) parseSeekForm(mode SeekMode, form *components.Form) (SeekState, 
 		}
 		return SeekState{Mode: mode, Timestamp: ts}, nil
 	case SeekLatest, SeekEarliest, SeekLive:
-		// parameter-less modes — no validation needed.
 	}
 	return SeekState{Mode: mode}, nil
 }
 
-// parseOffsetExpression accepts `partition:offset` or `offset` and returns
-// (partition, offset, hasPartition, err).
+// parseOffsetExpression accepts `partition:offset` or `offset`.
 func parseOffsetExpression(s string) (int32, int64, bool, error) {
 	if s == "" {
 		return 0, 0, false, errors.New("invalid offset: expected partition:offset or offset")
@@ -1327,8 +1181,6 @@ func parseOffsetExpression(s string) (int32, int64, bool, error) {
 	return 0, off, false, nil
 }
 
-// applySeek records the new seek state and stops follow if active. Persists
-// the state (when a repository is wired and the mode is not live).
 func (m *Model) applySeek(state SeekState) {
 	m.stopFollow()
 	m.seek = state
@@ -1337,18 +1189,12 @@ func (m *Model) applySeek(state SeekState) {
 	m.persistView()
 }
 
-// refresh re-issues the current seek without changing any state. Stops any
-// live-tail session first so its kgo consumer / goroutine are released
-// before a fresh dispatch — refreshing while live would otherwise leak the
-// previous session (its chunks would still be filtered out by fetchGen, but
-// the goroutine and broker connection would linger until Close). In live
-// mode the user effectively asked for a stream restart — surface that
-// immediately, since live-tail completion is asynchronous and never lands
-// in handleLoaded. In non-live modes the success toast is deferred to
-// handleLoaded so it can include the message count.
+// refresh re-issues the current seek. stopFollow first so refreshing while
+// live doesn't leak the previous session's goroutine/broker connection.
+// Live-mode toasts are surfaced immediately (no handleLoaded path);
+// non-live mode defers the success toast to handleLoaded for the count.
 func (m *Model) refresh() tea.Cmd {
-	// snapshot live state before stopFollow flips m.live to false; we need
-	// the pre-stop value to pick the right toast wording.
+	// capture live state before stopFollow flips m.live.
 	wasLive := m.live
 	m.stopFollow()
 	if wasLive || m.seek.Mode == SeekLive {
@@ -1359,14 +1205,9 @@ func (m *Model) refresh() tea.Cmd {
 	return m.dispatchSeek()
 }
 
-// dispatchSeek issues the fetch command appropriate for the active seek
-// state, applying watermark clamps for offset-only forms. Any previously
-// loaded messages are cleared first so the user does not see stale records
-// from the prior view while the new fetch is in flight (or, in live mode,
-// while waiting for the first incoming record).
-//
-// fetchGen is bumped here so any in-flight fetch from the previous view is
-// recognized as stale by the handlers and dropped on arrival.
+// dispatchSeek bumps fetchGen so any in-flight fetch from the previous
+// view is dropped, clears the table so stale records don't linger during
+// the new fetch, then dispatches the command for the active seek state.
 func (m *Model) dispatchSeek() tea.Cmd {
 	m.fetchGen++
 	gen := m.fetchGen
@@ -1388,10 +1229,8 @@ func (m *Model) dispatchSeek() tea.Cmd {
 	case SeekToTimestamp:
 		return m.dispatchToTimestamp(gen)
 	case SeekLive:
-		// live tail starts from an empty screen and streams only new
-		// records — matches the semantics of kafbat-ui, AKHQ, Kowl and
-		// `kafka-console-consumer` (without --from-beginning). No
-		// historical fetch; the user sees records as they arrive.
+		// no historical fetch — stream only new records, matching
+		// kafbat-ui / AKHQ / kafka-console-consumer semantics.
 		m.live = true
 		return tea.Batch(
 			startFollowCmd(m.svc, m.topic, m.filter, gen),
@@ -1420,9 +1259,8 @@ func (m *Model) dispatchFromOffset(gen uint64) tea.Cmd {
 	return m.dispatchOffsetClampedForward(gen)
 }
 
-// dispatchFromTimestamp resolves the timestamp into per-partition starting
-// offsets (so the left edge of the seek window is captured for `[`
-// boundary checks), then forward-loads from those offsets.
+// dispatchFromTimestamp captures per-partition starting offsets for `[`
+// boundary checks, then forward-loads.
 func (m *Model) dispatchFromTimestamp(gen uint64) tea.Cmd {
 	svc := m.svc
 	topic := m.topic
@@ -1459,11 +1297,9 @@ func (m *Model) dispatchOffsetClampedForward(gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		// FetchAtOffsets clamps each per-partition offset against the
-		// topic's watermarks internally, so no upfront WatermarksFor is
-		// needed when the partition set is already known. When the user
-		// has no filter we still need the partition list — fall back to
-		// watermarks just for that case.
+		// FetchAtOffsets clamps internally; no upfront WatermarksFor
+		// needed when the partition set is known. Without a filter we
+		// still need the partition list — fall back to watermarks.
 		offsets := map[int32]int64{}
 		if len(parts) > 0 {
 			for _, p := range parts {
@@ -1480,8 +1316,6 @@ func (m *Model) dispatchOffsetClampedForward(gen uint64) tea.Cmd {
 		}
 		per := perPartShare(pageSize, len(offsets))
 		msgs, err := svc.FetchAtOffsets(ctx, topic, offsets, per)
-		// FromBoundary is the same per-partition starting point for the
-		// fuzzy offset jump — `[` will refuse to step before it.
 		return MessagesLoadedMsg{Messages: msgs, FromBoundary: maps.Clone(offsets), SetBoundary: true, Gen: gen, Err: err}
 	}
 }
@@ -1551,7 +1385,6 @@ func (m *Model) dispatchToTimestamp(gen uint64) tea.Cmd {
 
 // ----- partitions popup -----
 
-// partitionsFocus discriminates which side of the popup receives keys.
 type partitionsFocus int
 
 const (
@@ -1559,26 +1392,22 @@ const (
 	focusInput
 )
 
-// partitionsPopup is the partition-filter dialog: a checkbox list of the
-// topic's actual partitions on top, a free-form text input below. Tab
-// switches focus; the two views stay in sync — toggling a checkbox
-// rewrites the input; valid edits in the input re-tick checkboxes.
+// partitionsPopup keeps checkbox list and input in sync — toggling a
+// checkbox rewrites the input; valid edits re-tick checkboxes.
 type partitionsPopup struct {
 	loading      bool
 	loadErr      string
-	partitions   []int32        // sorted partition ids of the topic
-	selected     map[int32]bool // current selection
+	partitions   []int32
+	selected     map[int32]bool
 	listCursor   int
-	listScroll   int // first visible row in the checkbox list
+	listScroll   int
 	focus        partitionsFocus
 	input        string
-	inputCursor  int    // rune index inside input
-	parseErr     string // last parse error of input ("" == valid)
-	allDiscarded bool   // input parsed ok but referenced unknown partitions (warning)
+	inputCursor  int
+	parseErr     string
+	allDiscarded bool // parsed ok but referenced unknown partitions
 }
 
-// partitionsLoadedMsg carries the topic's partition list to populate the
-// popup once async metadata fetch completes.
 type partitionsLoadedMsg struct {
 	partitions []int32
 	err        error
@@ -1624,7 +1453,6 @@ func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
 		return
 	}
 	pop.partitions = msg.partitions
-	// initial selection: the active filter, or "all" when filter is empty.
 	pop.selected = map[int32]bool{}
 	if len(m.filter) == 0 {
 		for _, p := range pop.partitions {
@@ -1653,18 +1481,12 @@ func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
 	if cmd, ok := keymap.Dispatch(m.partitionsBindings(), key); ok {
 		return cmd
 	}
-	// universal text-editing keys (left/right/backspace/delete + literal
-	// input) are not in the bindings table — they only matter on the
-	// input-pane focus and are handled by the input sub-dispatcher.
 	if m.partitionsPopup.focus == focusInput {
 		m.handlePartitionsInputKey(key)
 	}
 	return nil
 }
 
-// handlePartitionsInputKey routes keys when the text input is focused.
-// Edits the input string in place and re-validates against the topic's
-// partitions; on success, ticks/unticks checkboxes accordingly.
 func (m *Model) handlePartitionsInputKey(key tea.KeyPressMsg) {
 	pop := m.partitionsPopup
 	runes := []rune(pop.input)
@@ -1704,7 +1526,6 @@ func (m *Model) handlePartitionsInputKey(key tea.KeyPressMsg) {
 	}
 }
 
-// selectedPartitions returns the currently-ticked partitions in ascending order.
 func (m *Model) selectedPartitions() []int32 {
 	pop := m.partitionsPopup
 	out := make([]int32, 0, len(pop.selected))
@@ -1716,9 +1537,8 @@ func (m *Model) selectedPartitions() []int32 {
 	return out
 }
 
-// canonicalSelection renders the current ticked set in the canonical
-// `0-4,7,10-12` syntax. "All ticked" or "none ticked" both emit "" so the
-// input visually matches the "all partitions" convention used elsewhere.
+// canonicalSelection: "all ticked" / "none ticked" both emit "" to match
+// the "all partitions" convention.
 func (m *Model) canonicalSelection() string {
 	pop := m.partitionsPopup
 	if len(pop.partitions) == 0 {
@@ -1731,7 +1551,6 @@ func (m *Model) canonicalSelection() string {
 	return renderPartitionFilter(picks)
 }
 
-// syncInputFromSelection mirrors the checkbox state into the input field.
 func (m *Model) syncInputFromSelection() {
 	pop := m.partitionsPopup
 	pop.input = m.canonicalSelection()
@@ -1740,16 +1559,13 @@ func (m *Model) syncInputFromSelection() {
 	pop.allDiscarded = false
 }
 
-// syncSelectionFromInput parses the input field and ticks the corresponding
-// checkboxes when valid. Invalid input is recorded in parseErr and surfaced
-// in the popup body; checkbox state stays untouched until the user types a
-// valid expression. References to partitions outside the topic are kept as
-// a soft warning (allDiscarded) without blocking enter — the kafka layer
-// silently drops unknown partitions on fetch.
+// syncSelectionFromInput keeps checkbox state stable on invalid input.
+// References to unknown partitions are a soft warning (allDiscarded), not
+// a block — the kafka layer silently drops them on fetch.
 func (m *Model) syncSelectionFromInput() {
 	pop := m.partitionsPopup
 	if pop.partitions == nil {
-		// metadata not loaded yet — only validate syntax.
+		// metadata not yet loaded — validate syntax only.
 		_, err := kafka.ParsePartitionFilter(pop.input)
 		if err != nil {
 			pop.parseErr = err.Error()
@@ -1771,7 +1587,6 @@ func (m *Model) syncSelectionFromInput() {
 	}
 	pop.selected = map[int32]bool{}
 	if len(parts) == 0 {
-		// empty input → all partitions selected.
 		for _, p := range pop.partitions {
 			pop.selected[p] = true
 		}
@@ -1830,7 +1645,7 @@ func (m *Model) persistView() {
 	if m.repo == nil || m.cluster == "" || m.topic == "" {
 		return
 	}
-	// live mode is intentionally not persisted.
+	// live mode is intentionally not persisted (see [ViewState]).
 	if m.seek.Mode == SeekLive {
 		return
 	}
@@ -1910,20 +1725,13 @@ func valuePreviewWidth(termWidth int) int {
 	return termWidth
 }
 
-// View renders the screen body. The active-state header line is always
-// rendered above the body; in popup modes the popup replaces the table
-// area, anchored near the top so it does not look unmoored at the bottom
-// of large terminals.
 func (m *Model) View() string {
 	if m.mode == ModeDetail {
 		return m.detail.View()
 	}
 	header := m.renderStateHeader()
-	// ModeDetail is handled at the top of this function and never reaches
-	// the switch below.
 	switch m.mode {
 	case ModeList, ModeDetail:
-		// no popup overlay.
 	case ModeSeek:
 		if m.seekPopup != nil {
 			return header + "\n" + m.placePopupInBody(m.renderSeekPopup())
@@ -1943,9 +1751,6 @@ func (m *Model) View() string {
 	return header + "\n" + m.table.View()
 }
 
-// placeWaitingForLive renders a centered "waiting for new records…" hint
-// in the table area, prefixed with the same brail spinner as the LIVE
-// title indicator so both animations advance in lock-step.
 func (m *Model) placeWaitingForLive() string {
 	hint := m.styles.HintLabel.Render(liveSpinnerFrame(m.spinnerFrame) + " waiting for new records…")
 	if m.width <= 0 {
@@ -1959,8 +1764,6 @@ func (m *Model) placeWaitingForLive() string {
 	return lipgloss.PlaceVertical(h, lipgloss.Center, centered)
 }
 
-// renderStateHeader returns the compact `seek: ... • partitions: ... •
-// smart filter: ...` line shown above the table.
 func (m *Model) renderStateHeader() string {
 	parts := []string{
 		"seek: " + m.describeSeek(),
@@ -2020,11 +1823,9 @@ func (m *Model) renderSeekPopup() string {
 		Render(body)
 }
 
-// placePopupInBody renders the popup horizontally centered and anchored to
-// the top of the table area (so it appears just below the active-state
-// header line rather than at the bottom of the terminal). The reserved
-// height matches `m.table.SetHeight` to keep the chrome stable when
-// switching between list and popup modes.
+// placePopupInBody anchors the popup to the top of the table area so it
+// sits below the state-header line; the reserved height matches
+// table.SetHeight to keep chrome stable across mode switches.
 func (m *Model) placePopupInBody(popup string) string {
 	if m.width <= 0 {
 		return popup
@@ -2037,10 +1838,6 @@ func (m *Model) placePopupInBody(popup string) string {
 	return lipgloss.PlaceVertical(h, lipgloss.Top, centered)
 }
 
-// renderPartitionsPopup draws the dialog: title, checkbox list of the
-// topic's partitions, the canonical input field, and a hint line. Visual
-// focus is moved between list and input so the user always sees where
-// keystrokes will land.
 func (m *Model) renderPartitionsPopup() string {
 	pop := m.partitionsPopup
 	title := m.styles.HelpTitle.Render("partition filter")
@@ -2125,10 +1922,6 @@ func (m *Model) renderPartitionsPopup() string {
 		Render(strings.Join(parts, "\n"))
 }
 
-// partitionsListWindow is how many checkbox rows fit inside the popup
-// without overflowing the body area. Whatever is left of bodyHeight after
-// popupChromeRows goes to the list. A floor keeps the list usable on tiny
-// terminals.
 func (m *Model) partitionsListWindow() int {
 	avail := m.bodyHeight() - popupChromeRows
 	if avail < 3 {
@@ -2137,8 +1930,6 @@ func (m *Model) partitionsListWindow() int {
 	return avail
 }
 
-// clampPartitionsScroll keeps the cursor visible within the [scroll,
-// scroll+window) range, scrolling on demand when the cursor moves out.
 func (m *Model) clampPartitionsScroll(window int) {
 	pop := m.partitionsPopup
 	if window <= 0 || len(pop.partitions) == 0 {
@@ -2160,8 +1951,6 @@ func (m *Model) clampPartitionsScroll(window int) {
 	}
 }
 
-// renderPartitionsInputField draws the text input row with a block cursor
-// when it has focus and a placeholder dash when empty.
 func (m *Model) renderPartitionsInputField() string {
 	pop := m.partitionsPopup
 	if pop.focus != focusInput {
@@ -2183,8 +1972,7 @@ func (m *Model) renderPartitionsInputField() string {
 	return "    " + m.styles.Command.Render(before) + m.styles.Cursor.Render(underCursor) + m.styles.Command.Render(after)
 }
 
-// FormatTimestamp renders a message timestamp as `YYYY-MM-DD HH:MM:SS.mmm`
-// in the local timezone.
+// FormatTimestamp renders `YYYY-MM-DD HH:MM:SS.mmm` in the local timezone.
 func FormatTimestamp(ts time.Time) string {
 	if ts.IsZero() {
 		return "—"
@@ -2279,9 +2067,6 @@ func atToBoundary(msgs []kafka.Message, boundary map[int32]int64) bool {
 	return false
 }
 
-// atFromBoundary reports whether the lowest loaded offset of any seen
-// partition has reached its captured left edge. boundary[p] is the lowest
-// offset that belongs to the seek window for partition p (inclusive).
 func atFromBoundary(msgs []kafka.Message, boundary map[int32]int64) bool {
 	if len(boundary) == 0 || len(msgs) == 0 {
 		return false
@@ -2295,8 +2080,7 @@ func atFromBoundary(msgs []kafka.Message, boundary map[int32]int64) bool {
 	return false
 }
 
-// renderPartitionFilter inverts ParsePartitionFilter into a compact
-// canonical syntax. Empty input yields "".
+// renderPartitionFilter inverts ParsePartitionFilter.
 func renderPartitionFilter(parts []int32) string {
 	if len(parts) == 0 {
 		return ""
@@ -2357,17 +2141,9 @@ func maxInt(a, b int) int {
 
 // ----- Messages -----
 
-// MessagesLoadedMsg replaces the current window with a fresh batch.
-//
-// FromBoundary / ToBoundary are populated by the from- and to-* dispatch
-// paths so the screen can record the captured per-partition left/right
-// edges of the seek window without writing model state from a [tea.Cmd]
-// goroutine. nil means "no edge in that direction"; `SetBoundary` flips
-// the handler from "leave existing edges alone" to "replace with these
-// values".
-//
-// Gen is the value of [Model.fetchGen] at the moment the dispatching cmd
-// was built. Handlers drop the message when it no longer matches.
+// MessagesLoadedMsg replaces the current window. Gen pins the message to
+// the [Model.fetchGen] at dispatch time so handlers drop stale arrivals.
+// SetBoundary flips the handler from "keep existing edges" to "replace".
 type MessagesLoadedMsg struct {
 	Messages     []kafka.Message
 	FromBoundary map[int32]int64
@@ -2377,58 +2153,44 @@ type MessagesLoadedMsg struct {
 	Err          error
 }
 
-// MessagesAppendedMsg appends or prepends a batch to the existing window.
 type MessagesAppendedMsg struct {
 	Messages  []kafka.Message
-	Prepend   bool   // true when the batch is older than the current window
-	Direction string // human-readable direction word for empty-result toast
+	Prepend   bool
+	Direction string
 	Gen       uint64
 	Err       error
 }
 
-// FollowStartedMsg is delivered when the async follow-session dial
-// completes. Session is non-nil iff Err is nil.
+// FollowStartedMsg.Session is non-nil iff Err is nil.
 type FollowStartedMsg struct {
 	Session *kafka.FollowSession
 	Gen     uint64
 	Err     error
 }
 
-// FollowChunkMsg surfaces one batch of records produced by a follow session.
-// Closed is true when the underlying session terminated cleanly.
+// FollowChunkMsg.Closed is true when the underlying session terminated.
 type FollowChunkMsg struct {
 	Messages []kafka.Message
 	Closed   bool
 	Gen      uint64
 }
 
-// FollowErrMsg surfaces an error from a follow session. The session is
-// closed before this message is sent.
 type FollowErrMsg struct {
 	Gen uint64
 	Err error
 }
 
-// LiveTickMsg drives the LIVE-indicator spinner animation. Sent on a
-// recurring timer while live tail is active. Gen pins the tick to the
-// dispatch that started it so a stale chain queued from a previous live
-// session doesn't merge with a fresh one (which would multiply the
-// spinner rate). Exported so tests can advance the spinner synchronously
-// without driving a real timer.
+// LiveTickMsg.Gen pins the tick to its starter dispatch so a stale tick
+// chain from a previous live session can't merge with a fresh one and
+// multiply the spinner rate.
 type LiveTickMsg struct{ Gen uint64 }
 
-// liveSpinnerInterval is the delay between spinner frame advances. Slow
-// enough to be readable, fast enough to feel "alive" on a quiet topic.
 const liveSpinnerInterval = 120 * time.Millisecond
 
-// liveSpinnerFrames is the brail-spinner sequence used by the LIVE
-// indicator and the "waiting for new records" placeholder.
 var liveSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 func liveSpinnerFrame(i int) string {
-	// Use Go modulo with the +len wraparound so any int (including
-	// math.MinInt where -i overflows back to negative) maps to a valid
-	// non-negative index.
+	// +len wraparound covers math.MinInt where -i overflows negative.
 	idx := ((i % len(liveSpinnerFrames)) + len(liveSpinnerFrames)) % len(liveSpinnerFrames)
 	return string(liveSpinnerFrames[idx])
 }

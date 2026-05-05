@@ -1,10 +1,8 @@
-// Package vault implements a small KV v2 client used to resolve
-// `${vault:path[#key]}` placeholders in kafka-tui configuration.
-//
-// The client speaks raw HTTP against Vault's `/v1/<mount>/data/<key>` API to
-// avoid pulling in the heavy `github.com/hashicorp/vault/api` SDK. Each
-// distinct path is fetched at most once per Client instance — multiple
-// placeholders sharing a path (different keys) cause a single network call.
+// Package vault implements a minimal KV v2 client for resolving
+// `${vault:path[#key]}` placeholders. It speaks raw HTTP against
+// `/v1/<mount>/data/<key>` to avoid the heavy hashicorp/vault/api SDK, and
+// caches each distinct path so multiple placeholders against the same secret
+// only trigger one network call.
 package vault
 
 import (
@@ -22,37 +20,24 @@ import (
 )
 
 const (
-	// DefaultTimeout is the per-request HTTP timeout when none is set.
 	DefaultTimeout = 10 * time.Second
-	// EnvVaultToken is the environment variable consulted as the second
-	// step of token resolution.
-	EnvVaultToken = "VAULT_TOKEN"
-	// TokenFileName is the name of the file in the user's home directory
-	// consulted as the final step of token resolution.
-	TokenFileName = ".vault-token"
+	EnvVaultToken  = "VAULT_TOKEN"
+	TokenFileName  = ".vault-token"
 )
 
-// Options configures NewClient.
+// Options configures NewClient. Token, when non-empty, skips the env /
+// token-file fallbacks. Zero Timeout falls back to DefaultTimeout.
 type Options struct {
-	// Address is the Vault server URL (e.g. https://vault.example.com:8200).
 	Address string
-	// Token is the explicit Vault token. When non-empty, it has the highest
-	// priority and skips the env / token-file fallbacks.
-	Token string
-	// Timeout caps each HTTP request. Zero defaults to DefaultTimeout.
+	Token   string
 	Timeout time.Duration
 
-	// HomeDir overrides $HOME for ~/.vault-token resolution (used by tests).
-	HomeDir string
-	// HTTPClient overrides the default HTTP client (used by tests).
+	HomeDir    string
 	HTTPClient *http.Client
-	// EnvLookup overrides os.LookupEnv for $VAULT_TOKEN resolution (used by tests).
-	EnvLookup func(string) (string, bool)
-	// FileReader overrides os.ReadFile for token-file resolution (used by tests).
+	EnvLookup  func(string) (string, bool)
 	FileReader func(string) ([]byte, error)
 }
 
-// Client is a minimal Vault KV v2 reader.
 type Client struct {
 	addr  string
 	token string
@@ -62,9 +47,8 @@ type Client struct {
 	cache map[string]map[string]any
 }
 
-// NewClient constructs a Client. It resolves the token in this order:
-// explicit Token → $VAULT_TOKEN → ~/.vault-token. If none yields a value,
-// it returns an error.
+// NewClient constructs a Client. Token resolution order:
+// explicit Token → $VAULT_TOKEN → ~/.vault-token.
 func NewClient(opts Options) (*Client, error) {
 	addr := strings.TrimRight(strings.TrimSpace(opts.Address), "/")
 	if addr == "" {
@@ -94,15 +78,12 @@ func NewClient(opts Options) (*Client, error) {
 }
 
 // Lookup implements config.VaultResolver. When key is empty, the entire
-// secret payload is returned as a JSON-encoded string.
-//
-// Lookup uses a cache keyed by path so that multiple placeholders pointing
-// at the same secret only trigger one HTTP request.
+// secret payload is returned as a JSON-encoded string. Results are cached
+// per path.
 func (c *Client) Lookup(path, key string) (string, error) {
 	return c.LookupContext(context.Background(), path, key)
 }
 
-// LookupContext is the context-aware variant of Lookup.
 func (c *Client) LookupContext(ctx context.Context, path, key string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("vault: empty path")
@@ -128,9 +109,8 @@ func (c *Client) LookupContext(ctx context.Context, path, key string) (string, e
 	return stringify(v)
 }
 
-// fetch returns the cached secret data for path, fetching from Vault if not
-// yet seen. The mutex guards the cache map; the HTTP request runs unlocked
-// so a slow Vault does not stall unrelated lookups.
+// fetch returns the cached secret for path. The mutex guards only the cache
+// map — HTTP runs unlocked so a slow Vault does not stall unrelated lookups.
 func (c *Client) fetch(ctx context.Context, path string) (map[string]any, error) {
 	c.mu.Lock()
 	if data, ok := c.cache[path]; ok {
@@ -199,7 +179,8 @@ func (c *Client) doRequest(ctx context.Context, path string) (map[string]any, er
 	return parsed.Data.Data, nil
 }
 
-// resolveToken applies the documented fallback chain.
+// resolveToken applies the fallback chain: opts.Token → $VAULT_TOKEN →
+// ~/.vault-token.
 func resolveToken(opts Options) (string, error) {
 	if t := strings.TrimSpace(opts.Token); t != "" {
 		return t, nil
@@ -246,9 +227,8 @@ func resolveToken(opts Options) (string, error) {
 	)
 }
 
-// toAPIPath converts a logical KV v2 path (e.g. "secret/foo/bar") to its API
-// path form ("secret/data/foo/bar") by inserting "data" after the first
-// segment. Leading and trailing slashes are trimmed.
+// toAPIPath converts a logical KV v2 path ("secret/foo/bar") to its API form
+// ("secret/data/foo/bar") by inserting "data" after the first segment.
 func toAPIPath(logical string) string {
 	trimmed := strings.Trim(logical, "/")
 	if trimmed == "" {
@@ -261,9 +241,8 @@ func toAPIPath(logical string) string {
 	return parts[0] + "/data/" + parts[1]
 }
 
-// stringify renders a single field of the secret as a string. Strings pass
-// through verbatim; everything else is JSON-encoded so callers (e.g. config
-// placeholder resolution) always get a usable scalar.
+// stringify renders a secret field as a string. Strings pass through
+// verbatim; everything else is JSON-encoded so callers always get a scalar.
 func stringify(v any) (string, error) {
 	switch val := v.(type) {
 	case string:

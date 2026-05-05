@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-// Placeholder kinds recognized by the resolver.
 const (
 	placeholderEnv   = "env"
 	placeholderFile  = "file"
@@ -15,18 +14,14 @@ const (
 )
 
 // VaultResolver fetches a Vault secret for ${vault:path[#key]} placeholders.
-//
-// Lookup is called once per unique placeholder. When key is empty, the entire
-// secret payload should be returned as a string (typically a JSON encoding —
-// the exact representation is up to the implementation).
+// When key is empty, the entire secret payload is returned as a string
+// (typically JSON — the exact representation is up to the implementation).
 type VaultResolver interface {
 	Lookup(path, key string) (string, error)
 }
 
-// EnvLookup matches the signature of os.LookupEnv.
 type EnvLookup func(name string) (string, bool)
 
-// FileReader returns the contents of a file referenced by a ${file:...} placeholder.
 type FileReader func(path string) ([]byte, error)
 
 // Resolvers configures placeholder resolution. A nil resolver leaves the
@@ -38,14 +33,12 @@ type Resolvers struct {
 	Vault VaultResolver
 }
 
-// EnvFileResolvers returns resolvers backed by os.LookupEnv and os.ReadFile,
-// without a Vault resolver. This is the first phase of two-phase resolution.
+// EnvFileResolvers returns the first phase of two-phase resolution.
 func EnvFileResolvers() Resolvers {
 	return Resolvers{Env: os.LookupEnv, File: os.ReadFile}
 }
 
-// VaultOnlyResolvers returns resolvers that only handle ${vault:...} placeholders.
-// This is the second phase of two-phase resolution.
+// VaultOnlyResolvers returns the second phase of two-phase resolution.
 func VaultOnlyResolvers(v VaultResolver) Resolvers {
 	return Resolvers{Vault: v}
 }
@@ -68,8 +61,8 @@ func ResolveAll(target any, vault VaultResolver) error {
 	return assertNoPlaceholders(target)
 }
 
-// ResolveString replaces placeholders in s using r. Placeholder kinds whose
-// resolver is nil are left intact so callers can run multiple phases.
+// ResolveString leaves placeholder kinds whose resolver is nil intact so
+// callers can run multiple phases.
 func (r Resolvers) ResolveString(s string) (string, error) {
 	if !strings.Contains(s, "${") {
 		return s, nil
@@ -101,8 +94,7 @@ func (r Resolvers) ResolveString(s string) (string, error) {
 }
 
 // ResolveStruct walks v reflectively and resolves placeholders in every
-// settable string field. Pointers, slices, arrays, structs, and maps are
-// traversed recursively.
+// settable string field.
 func (r Resolvers) ResolveStruct(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() {
@@ -163,7 +155,6 @@ func (r Resolvers) resolveValue(v reflect.Value) error {
 	}
 }
 
-// placeholder describes a single ${...} occurrence in a string.
 type placeholder struct {
 	start, end int    // half-open byte range covering ${...}
 	raw        string // the full ${...} text
@@ -317,9 +308,8 @@ func isValidEnvName(name string) bool {
 	return true
 }
 
-// assertNoPlaceholders walks target and returns an error if any string still
-// contains a `${...}` placeholder. Callers use this after the final phase to
-// guarantee the running config has no unresolved secrets.
+// assertNoPlaceholders is the final-phase guard: any remaining `${...}` in
+// strings means an unresolved secret, which must be a hard error.
 func assertNoPlaceholders(target any) error {
 	rv := reflect.ValueOf(target)
 	if !rv.IsValid() {

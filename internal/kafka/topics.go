@@ -18,9 +18,6 @@ const (
 	ConfigMinInSyncReplica = "min.insync.replicas"
 )
 
-// TopicSummary is the lightweight per-topic snapshot used by the topics list
-// screen. Lazy-loaded fields (size, configs, watermarks) live on dedicated
-// helpers below.
 type TopicSummary struct {
 	Name       string
 	Partitions int
@@ -28,7 +25,6 @@ type TopicSummary struct {
 	IsInternal bool
 }
 
-// PartitionDetail mirrors the metadata fields the topic-detail screen shows.
 type PartitionDetail struct {
 	Partition int32
 	Leader    int32
@@ -37,30 +33,26 @@ type PartitionDetail struct {
 }
 
 // TopicConfig is a single resolved topic-level config entry. Synonym chains
-// (broker default → static default) are flattened into a Source string.
+// (broker default → static default) are flattened into Source.
 type TopicConfig struct {
 	Key    string
 	Value  string
 	Source string
 }
 
-// TopicWatermarks holds the message-count math for one topic.
 type TopicWatermarks struct {
 	Partitions   map[int32]PartitionWatermarks
 	MessageCount int64
 }
 
-// PartitionWatermarks holds the low/high offsets of a single partition.
 type PartitionWatermarks struct {
 	Low  int64
 	High int64
 }
 
-// Count returns High - Low summed across all partitions.
 func (w TopicWatermarks) Count() int64 { return w.MessageCount }
 
-// ListTopics returns the cluster's topics. Internal topics are included so
-// the UI can apply the `i` filter on top.
+// ListTopics returns the cluster's topics, internal ones included.
 //
 // The franz-go metadata cache is bypassed: list views must reflect very
 // recent create / delete operations.
@@ -81,9 +73,8 @@ func (c *Client) ListTopics(ctx context.Context) ([]TopicSummary, error) {
 	return out, nil
 }
 
-// freshMetadata issues a metadata request that bypasses the franz-go
-// per-topic cache. We need uncached results in list views and after admin
-// operations such as create / delete.
+// freshMetadata bypasses the franz-go per-topic cache, needed in list views
+// and after admin operations such as create / delete.
 func (c *Client) freshMetadata(ctx context.Context, topics ...string) (kadm.Metadata, error) {
 	req := kmsg.NewPtrMetadataRequest()
 	if len(topics) == 0 {
@@ -102,8 +93,6 @@ func (c *Client) freshMetadata(ctx context.Context, topics ...string) (kadm.Meta
 	return decodeMetadata(resp), nil
 }
 
-// decodeMetadata converts a raw MetadataResponse into the kadm Metadata
-// shape so callers can keep using the familiar types.
 func decodeMetadata(resp *kmsg.MetadataResponse) kadm.Metadata {
 	tds := make(kadm.TopicDetails, len(resp.Topics))
 	for _, t := range resp.Topics {
@@ -140,8 +129,6 @@ func decodeMetadata(resp *kmsg.MetadataResponse) kadm.Metadata {
 	return m
 }
 
-// TopicPartitions returns metadata for each partition of a topic. Used by the
-// topic-configs screen.
 func (c *Client) TopicPartitions(ctx context.Context, topic string) ([]PartitionDetail, error) {
 	md, err := c.freshMetadata(ctx, topic)
 	if err != nil {
@@ -167,9 +154,8 @@ func (c *Client) TopicPartitions(ctx context.Context, topic string) ([]Partition
 	return out, nil
 }
 
-// DescribeTopicConfigs returns the topic-level configs needed by the UI:
-// `cleanup.policy`, `retention.ms`, `min.insync.replicas`. The returned slice
-// preserves a stable order so the configs screen does not jitter.
+// DescribeTopicConfigs returns the UI-relevant topic configs (cleanup.policy,
+// retention.ms, min.insync.replicas) in stable order.
 func (c *Client) DescribeTopicConfigs(ctx context.Context, topic string) ([]TopicConfig, error) {
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topic)
 	if err != nil {
@@ -204,8 +190,7 @@ func (c *Client) DescribeTopicConfigs(ctx context.Context, topic string) ([]Topi
 	return out, nil
 }
 
-// DescribeAllTopicConfigs returns the full config set for a topic — used by
-// the dedicated configs screen (Task 13).
+// DescribeAllTopicConfigs returns the full config set for a topic.
 func (c *Client) DescribeAllTopicConfigs(ctx context.Context, topic string) ([]TopicConfig, error) {
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topic)
 	if err != nil {
@@ -229,8 +214,7 @@ func (c *Client) DescribeAllTopicConfigs(ctx context.Context, topic string) ([]T
 	return out, nil
 }
 
-// TopicSize sums log-dir sizes (across all brokers and partitions) for the
-// given topic. The returned int64 is the total on-disk size in bytes.
+// TopicSize sums log-dir sizes across all brokers and partitions in bytes.
 func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 	md, err := c.freshMetadata(ctx, topic)
 	if err != nil {
@@ -272,14 +256,11 @@ func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 }
 
 // TopicWatermarks returns per-partition low/high watermarks plus the
-// implied message count (sum of high-low). Used by the topics list and by
-// the messages screen for windowing.
+// implied message count (sum of high-low).
 func (c *Client) TopicWatermarks(ctx context.Context, topic string) (TopicWatermarks, error) {
 	all, err := c.TopicWatermarksBatch(ctx, topic)
 	if err != nil {
-		// preserve the topic name in the error message — the batch
-		// helper drops it because it serves multiple topics, but the
-		// singular caller benefits from the per-topic context in logs.
+		// preserve topic name in error — batch helper drops it.
 		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks for %q: %w", topic, err)
 	}
 	w, ok := all[topic]
@@ -290,8 +271,7 @@ func (c *Client) TopicWatermarks(ctx context.Context, topic string) (TopicWaterm
 }
 
 // TopicWatermarksBatch fetches per-partition low/high watermarks for many
-// topics in two RPCs total (one ListStartOffsets, one ListEndOffsets) and
-// folds them into the same shape as [Client.TopicWatermarks]. Topics with
+// topics in two RPCs (ListStartOffsets, ListEndOffsets). Topics with
 // per-topic broker errors are silently dropped from the result map. An
 // empty topics list returns an empty map without contacting the broker.
 func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]TopicWatermarks, error) {
@@ -333,10 +313,8 @@ func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (ma
 	return out, nil
 }
 
-// TopicSizesBatch returns total on-disk size (bytes) per topic. The whole
-// fetch is two RPCs: one Metadata to learn each topic's partitions, then a
-// single DescribeAllLogDirs covering every (topic, partition) pair. An
-// empty topics list returns an empty map without contacting the broker.
+// TopicSizesBatch returns total on-disk size (bytes) per topic via one
+// Metadata RPC plus one DescribeAllLogDirs covering every (topic, partition).
 func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error) {
 	out := make(map[string]int64, len(topics))
 	if len(topics) == 0 {
@@ -380,12 +358,9 @@ func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[str
 	return out, nil
 }
 
-// DescribeTopicConfigsBatch fetches the UI-relevant configs (cleanup.policy,
-// retention.ms, min.insync.replicas) for many topics in a single RPC and
-// returns them keyed by topic name. Per-topic errors inside the batch
-// response (e.g. ACL denied for one topic only) are silently dropped from
-// the result. An empty topics list returns an empty map without contacting
-// the broker.
+// DescribeTopicConfigsBatch fetches the UI-relevant configs for many topics
+// in a single RPC. Per-topic errors inside the batch response (e.g. ACL
+// denied for one topic only) are silently dropped.
 func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]TopicConfig, error) {
 	out := make(map[string][]TopicConfig, len(topics))
 	if len(topics) == 0 {
@@ -421,7 +396,6 @@ func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string
 	return out, nil
 }
 
-// CreateTopicSpec describes the topic to create.
 type CreateTopicSpec struct {
 	Name              string
 	Partitions        int32
@@ -429,8 +403,8 @@ type CreateTopicSpec struct {
 	Configs           map[string]string
 }
 
-// CreateTopic creates a topic with the given spec. Pass partitions=-1 and
-// replicationFactor=-1 to use broker defaults (Kafka 2.4+).
+// CreateTopic creates a topic. Pass partitions=-1 and replicationFactor=-1
+// to use broker defaults (Kafka 2.4+).
 func (c *Client) CreateTopic(ctx context.Context, spec CreateTopicSpec) error {
 	configs := make(map[string]*string, len(spec.Configs))
 	for k, v := range spec.Configs {
@@ -446,7 +420,6 @@ func (c *Client) CreateTopic(ctx context.Context, spec CreateTopicSpec) error {
 	return nil
 }
 
-// DeleteTopic deletes a single topic.
 func (c *Client) DeleteTopic(ctx context.Context, topic string) error {
 	resp, err := c.adm.DeleteTopic(ctx, topic)
 	if err != nil {
@@ -458,8 +431,6 @@ func (c *Client) DeleteTopic(ctx context.Context, topic string) error {
 	return nil
 }
 
-// CloneProgress reports incremental progress while cloning a topic. The
-// caller may receive on the channel to drive a UI progress bar.
 type CloneProgress struct {
 	Total  int64
 	Copied int64
@@ -467,22 +438,16 @@ type CloneProgress struct {
 	Err    error
 }
 
-// CloneOptions tweaks how a topic clone is performed.
+// CloneOptions tweaks how a topic clone is performed. ReplicationFactor of 0
+// falls back to the source topic's replication factor.
 type CloneOptions struct {
-	// CopyConfigs, when true, fetches the source topic's dynamic configs and
-	// applies them to the destination at create time. When false the
-	// destination is created with broker defaults.
-	CopyConfigs bool
-	// ReplicationFactor for the destination. When zero, it falls back to the
-	// source topic's replication factor.
+	CopyConfigs       bool
 	ReplicationFactor int16
 }
 
-// CloneTopic copies all messages from src into a freshly-created dst topic.
-//
-// The destination is created with the same partition count as the source. The
-// caller can monitor progress via the returned channel; the channel is closed
-// once cloning has finished (success or error).
+// CloneTopic copies all messages from src into a freshly-created dst topic
+// with the same partition count. The returned channel is closed when cloning
+// finishes (success or error).
 func (c *Client) CloneTopic(ctx context.Context, src, dst string, opts CloneOptions) (<-chan CloneProgress, error) {
 	md, err := c.freshMetadata(ctx, src)
 	if err != nil {
@@ -633,9 +598,8 @@ func (c *Client) runClone(
 	}
 }
 
-// safeInt32 narrows an int produced by a Kafka response into an int32 with an
-// explicit bounds check (kadm reports counts as len() but the wire protocol
-// is int32-bounded).
+// safeInt32 narrows an int into int32 with bounds check (kadm reports counts
+// as len() but the wire protocol is int32-bounded).
 func safeInt32(n int) (int32, error) {
 	const maxInt32 = int(^uint32(0) >> 1)
 	if n < 0 || n > maxInt32 {
@@ -644,7 +608,6 @@ func safeInt32(n int) (int32, error) {
 	return int32(n), nil
 }
 
-// safeInt16 narrows an int into int16 with the same guard as safeInt32.
 func safeInt16(n int) (int16, error) {
 	const maxInt16 = int(^uint16(0) >> 1)
 	if n < 0 || n > maxInt16 {
@@ -653,10 +616,9 @@ func safeInt16(n int) (int16, error) {
 	return int16(n), nil
 }
 
-// reachedEnd returns true when all partitions whose high watermark we
-// recorded have been consumed up to (or past) that watermark. progressed
-// is the cumulative next-offset observed for each partition across all
-// polls so far.
+// reachedEnd returns true when every partition's cumulative next-offset has
+// reached (or passed) its recorded high watermark. progressed must be
+// cumulative across polls — see runClone.
 func reachedEnd(progressed, ends map[int32]int64) bool {
 	if len(ends) == 0 {
 		return true

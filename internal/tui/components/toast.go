@@ -10,23 +10,19 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// ToastLevel categorizes a toast for color and lifetime decisions
-// (specification §7.11).
+// ToastLevel categorizes a toast for color and lifetime decisions.
 type ToastLevel int
 
 const (
-	// ToastSuccess is a green confirmation, default lifetime 3s.
 	ToastSuccess ToastLevel = iota
-	// ToastInfo is a neutral notice, default lifetime 3s.
 	ToastInfo
-	// ToastWarning is yellow, default lifetime 5s.
 	ToastWarning
-	// ToastError is red and sticky (no auto-dismiss). Cleared on esc/key.
+	// ToastError is red and sticky (no auto-dismiss). Cleared on key/esc.
 	ToastError
 )
 
-// DefaultToastLifetimes maps each level to its auto-dismiss duration. An
-// error toast has zero lifetime, meaning "sticky".
+// DefaultToastLifetimes maps each level to its auto-dismiss duration. Zero
+// means sticky.
 var DefaultToastLifetimes = map[ToastLevel]time.Duration{
 	ToastSuccess: 3 * time.Second,
 	ToastInfo:    3 * time.Second,
@@ -42,10 +38,8 @@ type Toast struct {
 	Lifetime  time.Duration // 0 = sticky
 }
 
-// Sticky reports whether the toast must be explicitly dismissed.
 func (t Toast) Sticky() bool { return t.Lifetime == 0 }
 
-// expired reports whether `now` is past the toast's lifetime.
 func (t Toast) expired(now time.Time) bool {
 	if t.Sticky() {
 		return false
@@ -53,18 +47,14 @@ func (t Toast) expired(now time.Time) bool {
 	return now.Sub(t.CreatedAt) >= t.Lifetime
 }
 
-// Toasts is the toast queue rendered as a stack in a screen corner.
-//
-// Update prunes expired entries given the current clock; Push appends a new
-// toast. Sticky toasts (errors) are dismissed via DismissTopSticky on any
-// keypress, per the spec.
+// Toasts is the toast queue rendered as a stack in a screen corner. Sticky
+// toasts (errors) are dismissed via DismissTopSticky on any keypress.
 type Toasts struct {
 	items  []Toast
 	now    func() time.Time
 	styles theme.Styles
 }
 
-// NewToasts constructs an empty toast queue.
 func NewToasts(opts ...ToastsOption) *Toasts {
 	t := &Toasts{
 		now:    time.Now,
@@ -76,10 +66,8 @@ func NewToasts(opts ...ToastsOption) *Toasts {
 	return t
 }
 
-// ToastsOption configures the queue.
 type ToastsOption func(*Toasts)
 
-// WithToastClock injects a clock (handy for deterministic tests).
 func WithToastClock(now func() time.Time) ToastsOption {
 	return func(t *Toasts) {
 		if now != nil {
@@ -88,19 +76,16 @@ func WithToastClock(now func() time.Time) ToastsOption {
 	}
 }
 
-// WithToastStyles overrides the theme styles.
 func WithToastStyles(s theme.Styles) ToastsOption {
 	return func(t *Toasts) { t.styles = s }
 }
 
-// Push appends a toast. The lifetime defaults to DefaultToastLifetimes[level]
-// when zero.
+// Push appends a toast with the level's default lifetime.
 func (t *Toasts) Push(level ToastLevel, message string) {
 	t.PushWithLifetime(level, message, DefaultToastLifetimes[level])
 }
 
-// PushWithLifetime is the explicit-lifetime variant of Push. Pass 0 to make
-// the toast sticky.
+// PushWithLifetime is the explicit-lifetime variant. Pass 0 for sticky.
 func (t *Toasts) PushWithLifetime(level ToastLevel, message string, lifetime time.Duration) {
 	t.items = append(t.items, Toast{
 		Level:     level,
@@ -110,18 +95,16 @@ func (t *Toasts) PushWithLifetime(level ToastLevel, message string, lifetime tim
 	})
 }
 
-// Items returns the current toast list (defensive copy).
 func (t *Toasts) Items() []Toast {
 	out := make([]Toast, len(t.items))
 	copy(out, t.items)
 	return out
 }
 
-// Len returns the number of live toasts.
 func (t *Toasts) Len() int { return len(t.items) }
 
 // Latest returns the most recently pushed live toast (after pruning expired
-// non-sticky entries). Returns false when the queue is empty.
+// non-sticky entries).
 func (t *Toasts) Latest() (Toast, bool) {
 	t.Tick()
 	if len(t.items) == 0 {
@@ -130,8 +113,7 @@ func (t *Toasts) Latest() (Toast, bool) {
 	return t.items[len(t.items)-1], true
 }
 
-// Tick prunes expired non-sticky toasts. Call from the screen Update loop on
-// every tea.Msg (including timers).
+// Tick prunes expired non-sticky toasts. Call from the screen Update loop.
 func (t *Toasts) Tick() {
 	now := t.now()
 	kept := t.items[:0]
@@ -143,8 +125,7 @@ func (t *Toasts) Tick() {
 	t.items = kept
 }
 
-// DismissTopSticky removes the most recent sticky (error) toast. Returns
-// true if one was removed. Used on any keypress per §7.11.
+// DismissTopSticky removes the most recent sticky (error) toast.
 func (t *Toasts) DismissTopSticky() bool {
 	for i := len(t.items) - 1; i >= 0; i-- {
 		if t.items[i].Sticky() {
@@ -156,7 +137,6 @@ func (t *Toasts) DismissTopSticky() bool {
 }
 
 // Update routes a key message: any keypress dismisses one sticky toast.
-// Non-key messages are ignored.
 func (t *Toasts) Update(msg tea.Msg) (*Toasts, tea.Cmd) {
 	t.Tick()
 	if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -165,7 +145,6 @@ func (t *Toasts) Update(msg tea.Msg) (*Toasts, tea.Cmd) {
 	return t, nil
 }
 
-// View renders all live toasts stacked vertically.
 func (t *Toasts) View() string {
 	if len(t.items) == 0 {
 		return ""
@@ -191,7 +170,6 @@ func (t *Toasts) renderToast(item Toast) string {
 		color = t.styles.Palette.StatusError
 		tag = "ERR"
 	case ToastInfo:
-		// keep defaults (foreground + INFO tag)
 	}
 	style := lipgloss.NewStyle().Foreground(color).Bold(true)
 	return style.Render("["+tag+"]") + " " + t.styles.Command.Render(item.Message)

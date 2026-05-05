@@ -9,15 +9,13 @@ import (
 )
 
 // stateHistory adapts the ctx-bearing [state.Store] to the synchronous
-// [produce.History] interface the produce screen consumes. Errors are
-// surfaced via slog instead of bubbling up; the produce form already treats
-// missing entries as "no history" so a logged read failure degrades to that.
+// [produce.History] interface. Errors are logged instead of bubbling up;
+// the produce form treats missing entries as "no history".
 type stateHistory struct {
 	store *state.Store
 	log   *slog.Logger
 }
 
-// NewStateHistory wraps store as a [produce.History] sink.
 func NewStateHistory(store *state.Store, log *slog.Logger) produce.History {
 	if log == nil {
 		log = slog.Default()

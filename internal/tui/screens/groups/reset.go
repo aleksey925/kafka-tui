@@ -19,30 +19,23 @@ import (
 )
 
 // ResetScope is the user's choice for which (topic, partition) pairs the
-// reset will touch. Implementations are immutable values that the reset model
-// inspects when building the [kafka.ResetSpec].
+// reset will touch.
 type ResetScope interface {
-	// Targets returns the explicit (topic, partition) restriction. Returning
-	// nil/empty defers to the kafka.Client's "every partition the group has
-	// commits for" fallback.
+	// Targets returns the explicit restriction; nil/empty defers to the
+	// kafka.Client's "every partition with commits" fallback.
 	Targets() []kafka.TopicPartition
-	// HeaderLabel returns the §7.8 adaptive header text describing the scope.
 	HeaderLabel(partitionCount, topicCount int) string
 }
 
-// ScopeWholeGroup means "every partition the group has committed offsets
-// for". When Topic is non-empty, the scope is restricted to that topic
-// (the filtered-list entry point).
+// ScopeWholeGroup means every partition the group has committed offsets for.
+// When Topic is non-empty, scope is restricted to that topic.
 type ScopeWholeGroup struct {
 	Group string
-	Topic string // empty = unrestricted
+	Topic string
 }
 
-// Targets restricts the operation to the specific topic when one is set;
-// otherwise it returns nil so the kafka.Client fallback applies.
 func (s ScopeWholeGroup) Targets() []kafka.TopicPartition { return nil }
 
-// HeaderLabel renders the §7.8 adaptive header for a whole-group scope.
 func (s ScopeWholeGroup) HeaderLabel(partitionCount, topicCount int) string {
 	if s.Topic != "" {
 		return fmt.Sprintf("Resetting %d partitions in %s", partitionCount, s.Topic)
@@ -56,16 +49,11 @@ func (s ScopeWholeGroup) HeaderLabel(partitionCount, topicCount int) string {
 	return fmt.Sprintf("Resetting all partitions (%d total)", partitionCount)
 }
 
-// ScopeDetail names the same default as ScopeWholeGroup for the "R from
-// detail view" path; it's a distinct type so callers can distinguish flow
-// origins later if needed.
+// ScopeDetail is the default for "R from detail view".
 type ScopeDetail struct{ Group string }
 
-// Targets returns nil so the kafka.Client falls back to "all committed
-// partitions" — the detail view always operates on the whole group.
 func (s ScopeDetail) Targets() []kafka.TopicPartition { return nil }
 
-// HeaderLabel renders the §7.8 adaptive header for a detail-view scope.
 func (s ScopeDetail) HeaderLabel(partitionCount, topicCount int) string {
 	if topicCount == 1 {
 		return fmt.Sprintf("Resetting %d partitions across 1 topic", partitionCount)
@@ -76,45 +64,35 @@ func (s ScopeDetail) HeaderLabel(partitionCount, topicCount int) string {
 	return fmt.Sprintf("Resetting all partitions (%d total)", partitionCount)
 }
 
-// ResetStep is the current step of the §7.8 4-step flow.
+// ResetStep is the current step of the 4-step flow.
 type ResetStep int
 
 const (
-	// StepStrategy lets the user pick earliest/latest/shift/timestamp/specific.
 	StepStrategy ResetStep = iota
-	// StepParams collects shift / timestamp / specific input (skipped for
-	// earliest and latest).
 	StepParams
-	// StepPreview shows the diff table and waits for y to commit. Skipped in
-	// express mode.
 	StepPreview
-	// StepDone marks the flow as complete (committed or canceled).
 	StepDone
 )
 
 // ResetAction is the host-facing intent of the reset model.
 type ResetAction struct {
-	// Cancel is set when the user pressed esc before committing.
 	Cancel bool
-	// Done is set after a successful commit (Result holds the post-commit
-	// preview) OR after a cancel (Result is nil).
 	Done   bool
 	Result *kafka.ResetPreview
 }
 
-// ResetOptions configure a [ResetModel].
 type ResetOptions struct {
 	Service Service
 	Group   string
 	Scope   ResetScope
-	// Express skips the preview step — params → commit.
+	// Express skips the preview step.
 	Express bool
 	Now     func() time.Time
 	Styles  theme.Styles
 }
 
-// ResetModel hosts the 4-step reset flow. The model is *not* read-only-aware
-// itself: callers gate the flow behind the ReadOnly check.
+// ResetModel hosts the 4-step reset flow. Callers gate the flow behind their
+// own ReadOnly check.
 type ResetModel struct {
 	svc     Service
 	group   string
@@ -137,14 +115,12 @@ type ResetModel struct {
 	styles        theme.Styles
 }
 
-// Reset-form field keys.
 const (
 	resetFieldShift     = "shift"
 	resetFieldTimestamp = "timestamp"
 	resetFieldOffset    = "offset"
 )
 
-// NewResetModel constructs a fresh reset model.
 func NewResetModel(opts ResetOptions) *ResetModel {
 	now := opts.Now
 	if now == nil {
@@ -166,54 +142,36 @@ func NewResetModel(opts ResetOptions) *ResetModel {
 	}
 }
 
-// Init returns no command — the reset model is purely interactive until the
-// user picks a strategy.
 func (r *ResetModel) Init() tea.Cmd { return nil }
 
-// Group returns the group name this reset is bound to.
 func (r *ResetModel) Group() string { return r.group }
 
-// Scope returns the active scope (for tests).
 func (r *ResetModel) Scope() ResetScope { return r.scope }
 
-// Step returns the current flow step (for tests).
 func (r *ResetModel) Step() ResetStep { return r.step }
 
-// Strategy returns the currently selected strategy (for tests).
 func (r *ResetModel) Strategy() kafka.ResetStrategy { return r.strategy }
 
-// Express reports whether this is an express-mode flow.
 func (r *ResetModel) Express() bool { return r.express }
 
-// Preview returns the current preview snapshot (for tests).
 func (r *ResetModel) Preview() kafka.ResetPreview { return r.preview }
 
-// Action returns the current pending action.
 func (r *ResetModel) Action() ResetAction { return r.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (r *ResetModel) ConsumeAction() ResetAction {
 	a := r.action
 	r.action = ResetAction{}
 	return a
 }
 
-// Err returns the latest validation/commit error (or empty).
 func (r *ResetModel) Err() string { return r.err }
 
-// SetSize updates width/height.
 func (r *ResetModel) SetSize(w, h int) { r.width, r.height = w, h }
 
-// KeyHints derives bottom-row entries from the per-step bindings table.
 func (r *ResetModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(r.bindings())
 }
 
-// bindings is the single source of truth for reset-flow shortcuts.
-// The dispatcher iterates this same slice — adding a key requires
-// exactly one append. Form-internal text editing (left/right/etc. in
-// the params form) is exempt: those keys are owned by the form
-// component and not dispatched here.
 func (r *ResetModel) bindings() []keymap.Binding {
 	switch r.step {
 	case StepStrategy:
@@ -282,9 +240,6 @@ func (r *ResetModel) actCommit() tea.Cmd {
 	return commitCmd(r.svc, r.group, spec)
 }
 
-// resetStrategies is the canonical order of reset strategies presented
-// in the StepStrategy picker. Hoisted so the strategy-move handler and
-// the renderer share the same source.
 func resetStrategies() []kafka.ResetStrategy {
 	return []kafka.ResetStrategy{
 		kafka.ResetEarliest,
@@ -295,7 +250,6 @@ func resetStrategies() []kafka.ResetStrategy {
 	}
 }
 
-// Update routes a message into the reset model.
 func (r *ResetModel) Update(msg tea.Msg) (*ResetModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ResetPreviewMsg:
@@ -314,8 +268,7 @@ func (r *ResetModel) handleKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
 	if cmd, ok := keymap.Dispatch(r.bindings(), key); ok {
 		return r, cmd
 	}
-	// the params step forwards unmatched keys to the form so the user
-	// can type into text inputs.
+	// params step forwards unmatched keys to the form for text input.
 	if r.step == StepParams && r.form != nil {
 		f, _ := r.form.Update(key)
 		r.form = f
@@ -323,14 +276,12 @@ func (r *ResetModel) handleKey(key tea.KeyPressMsg) (*ResetModel, tea.Cmd) {
 	return r, nil
 }
 
-// advanceFromStrategy moves out of the strategy step. Earliest/Latest skip the
-// params step; everything else opens the params form.
+// advanceFromStrategy: Earliest/Latest skip the params step.
 func (r *ResetModel) advanceFromStrategy() (*ResetModel, tea.Cmd) {
 	switch r.strategy {
 	case kafka.ResetEarliest, kafka.ResetLatest:
 		return r.dispatchAfterParams()
 	case kafka.ResetShift, kafka.ResetTimestamp, kafka.ResetSpecific:
-		// fall through to the params form below.
 	}
 	r.form = r.buildParamsForm()
 	r.step = StepParams
@@ -357,8 +308,6 @@ func (r *ResetModel) buildParamsForm() *components.Form {
 	return nil
 }
 
-// dispatchAfterParams validates the params and either dispatches the preview
-// (normal flow) or directly commits (express flow).
 func (r *ResetModel) dispatchAfterParams() (*ResetModel, tea.Cmd) {
 	spec, err := r.spec()
 	if err != nil {
@@ -408,7 +357,6 @@ func (r *ResetModel) handleCommitted(msg ResetCommittedMsg) {
 	r.step = StepDone
 }
 
-// spec returns the [kafka.ResetSpec] implied by the current strategy / form.
 func (r *ResetModel) spec() (kafka.ResetSpec, error) {
 	spec := kafka.ResetSpec{
 		Strategy: r.strategy,
@@ -449,7 +397,6 @@ func (r *ResetModel) spec() (kafka.ResetSpec, error) {
 		}
 		spec.Offset = n
 	case kafka.ResetEarliest, kafka.ResetLatest:
-		// no extra parameters required.
 	}
 	return spec, nil
 }
@@ -462,7 +409,6 @@ func (r *ResetModel) fieldValue(key string) string {
 	return f.Value
 }
 
-// View renders the reset flow, dispatching to the per-step renderer.
 func (r *ResetModel) View() string {
 	body := []string{r.headerBlock()}
 	if r.err != "" {
@@ -656,13 +602,11 @@ func padRight(s string, w int) string {
 
 // ----- Messages -----
 
-// ResetPreviewMsg surfaces the preview snapshot from PreviewReset.
 type ResetPreviewMsg struct {
 	Preview kafka.ResetPreview
 	Err     error
 }
 
-// ResetCommittedMsg surfaces the post-commit snapshot from ResetOffsets.
 type ResetCommittedMsg struct {
 	Result kafka.ResetPreview
 	Err    error

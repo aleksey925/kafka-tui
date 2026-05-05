@@ -67,8 +67,6 @@ func mergeClustersList(
 	return dst, nil
 }
 
-// validateClusterTLS rejects clusters that mix inline content and *_file paths
-// in the tls section. An empty TLS section (tls: {}) is allowed.
 func validateClusterTLS(c Cluster) error {
 	if c.TLS == nil {
 		return nil

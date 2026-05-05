@@ -9,39 +9,23 @@ import (
 	"runtime"
 )
 
-// nativeTool describes a candidate command-line tool for writing to the
-// system clipboard.
 type nativeTool struct {
 	name string
 	args []string
 }
 
-// LookPath looks up the absolute path of a CLI tool. Defaults to
-// [exec.LookPath]; tests inject a fake to control which tools are
-// considered available.
 type LookPath func(name string) (string, error)
 
-// CommandRunner runs name with args, piping stdin into the process. The
-// default implementation shells out via [exec.CommandContext]; tests
-// inject a fake to capture invocations.
 type CommandRunner func(ctx context.Context, name string, args []string, stdin []byte) error
 
-// NativeOptions configures [NewNative].
-//
-// Production code leaves all fields zero; tests populate them to swap out
-// platform detection (GOOS/Env), tool discovery (LookPath), and command
-// execution (Runner).
+// NativeOptions configures [NewNative]. Production leaves all fields zero;
+// tests populate them to swap out platform detection, tool discovery, and
+// command execution.
 type NativeOptions struct {
-	// GOOS overrides [runtime.GOOS] for tool selection. Empty defaults to
-	// runtime.GOOS.
-	GOOS string
-	// Env overrides [os.Getenv] for env-driven detection (e.g.
-	// $WAYLAND_DISPLAY to prefer wl-copy over xclip).
-	Env func(string) string
-	// LookPath overrides [exec.LookPath].
+	GOOS     string
+	Env      func(string) string
 	LookPath LookPath
-	// Runner overrides command execution.
-	Runner CommandRunner
+	Runner   CommandRunner
 }
 
 // Native shells out to a platform-specific CLI tool to write to the
@@ -53,7 +37,6 @@ type Native struct {
 	runner   CommandRunner
 }
 
-// NewNative constructs a [Native] clipboard.
 func NewNative(opts NativeOptions) *Native {
 	goos := opts.GOOS
 	if goos == "" {
@@ -79,13 +62,10 @@ func NewNative(opts NativeOptions) *Native {
 	}
 }
 
-// DefaultNative is the production-default native clipboard.
 func DefaultNative() *Native {
 	return NewNative(NativeOptions{})
 }
 
-// Copy writes payload to the system clipboard via the first available
-// platform-specific tool.
 func (n *Native) Copy(ctx context.Context, payload string) error {
 	tool, err := n.selectTool()
 	if err != nil {

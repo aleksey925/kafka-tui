@@ -1,12 +1,7 @@
 // Package state owns the persistent SQLite store for kafka-tui.
 //
-// The only consumer today is the produce form's history (Task 15 / §7.5):
-// past produces are recorded into `produce_history` so ctrl+p / ctrl+n can
-// walk them, and so a freshly opened form can prefill from the most recent
-// produce to the same topic.
-//
-// We deliberately use modernc.org/sqlite (pure Go) rather than the cgo
-// driver so cross-compilation and static linking stay trivial.
+// modernc.org/sqlite (pure Go) is used instead of the cgo driver so
+// cross-compilation and static linking stay trivial.
 package state
 
 import (
@@ -25,13 +20,11 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 )
 
-// driverName is the database/sql driver registered by modernc.org/sqlite.
 const driverName = "sqlite"
 
-// DefaultPath returns the spec-defined location for the state DB:
-// `~/.local/share/kafka-tui/state.db`. Returns an error when the home
-// directory cannot be resolved or is empty so callers can decide whether
-// to fall back to an in-memory store or skip persistence entirely.
+// DefaultPath returns `~/.local/share/kafka-tui/state.db`. Errors when $HOME
+// cannot be resolved so callers can fall back to in-memory or skip
+// persistence.
 func DefaultPath() (string, error) {
 	if dir, err := os.UserHomeDir(); err == nil && dir != "" {
 		return filepath.Join(dir, ".local", "share", "kafka-tui", "state.db"), nil
@@ -42,8 +35,8 @@ func DefaultPath() (string, error) {
 }
 
 // ProduceEntry is the row payload for `produce_history`. It mirrors the
-// produce screen's `Entry` so wiring code can copy fields directly without
-// importing the TUI package (which would create a cycle).
+// produce screen's Entry, decoupled from the TUI package to avoid an import
+// cycle.
 type ProduceEntry struct {
 	Cluster     string
 	Topic       string
@@ -62,13 +55,9 @@ type Store struct {
 	path string
 }
 
-// Open creates (if needed) the parent directory and opens the SQLite
-// database, applying any pending migrations before returning.
-//
-// Special path values:
-//
-//   - ":memory:" — open an in-process DB, useful for tests.
-//   - ""         — resolve via [DefaultPath].
+// Open opens the SQLite database (creating the parent dir as needed) and
+// applies pending migrations. path == ":memory:" opens an in-process DB;
+// path == "" resolves via [DefaultPath].
 func Open(ctx context.Context, path string) (*Store, error) {
 	if path == "" {
 		p, err := DefaultPath()
@@ -104,9 +93,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return &Store{db: db, path: path}, nil
 }
 
-// buildDSN appends sane defaults to the file path. WAL keeps reads from
-// blocking writes; busy_timeout avoids spurious "database is locked" errors
-// when the TUI and a background watcher race on the file.
+// buildDSN appends sane defaults: WAL keeps reads from blocking writes;
+// busy_timeout avoids spurious "database is locked" errors when the TUI and
+// a background watcher race on the file.
 func buildDSN(path string) string {
 	if path == ":memory:" {
 		return path
@@ -114,11 +103,8 @@ func buildDSN(path string) string {
 	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
 }
 
-// Path returns the on-disk location of the database file (":memory:" for
-// the in-memory variant).
 func (s *Store) Path() string { return s.path }
 
-// Close releases the underlying *sql.DB.
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -130,9 +116,7 @@ func (s *Store) Close() error {
 }
 
 // AddProduce inserts a produce-history row and trims the table back down to
-// `historySize` entries (newest kept). When `historySize <= 0` the trim step
-// is skipped — callers can pass the value of `produce.history_size` from
-// config directly.
+// historySize entries (newest kept). historySize <= 0 skips the trim.
 func (s *Store) AddProduce(ctx context.Context, entry ProduceEntry, historySize int) error {
 	headersJSON, err := encodeHeaders(entry.Headers)
 	if err != nil {
@@ -184,8 +168,8 @@ func (s *Store) AddProduce(ctx context.Context, entry ProduceEntry, historySize 
 	return nil
 }
 
-// LastProduceForTopic returns the newest entry for the given topic. The bool
-// is false when no row exists for that topic.
+// LastProduceForTopic returns the newest entry for the given topic; the bool
+// is false when no row exists.
 func (s *Store) LastProduceForTopic(ctx context.Context, topic string) (ProduceEntry, bool, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT cluster, topic, key, value, headers, partition, compression, ts
@@ -205,8 +189,7 @@ func (s *Store) LastProduceForTopic(ctx context.Context, topic string) (ProduceE
 	return entry, true, nil
 }
 
-// RecentProduce returns up to `n` entries, newest-first. When `n <= 0` an
-// empty slice is returned.
+// RecentProduce returns up to n entries, newest-first.
 func (s *Store) RecentProduce(ctx context.Context, n int) ([]ProduceEntry, error) {
 	if n <= 0 {
 		return nil, nil
@@ -237,8 +220,7 @@ func (s *Store) RecentProduce(ctx context.Context, n int) ([]ProduceEntry, error
 	return out, nil
 }
 
-// scanner is the minimal interface implemented by both *sql.Row and
-// *sql.Rows so scanEntry can serve both lookup paths.
+// scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -276,11 +258,9 @@ func scanEntry(s scanner) (ProduceEntry, error) {
 	return entry, nil
 }
 
-// MessagesView is the persisted shape of the messages screen's seek +
-// partition configuration. Stored per (cluster, topic).
-//
-// SeekMode is kept as an int so the state package does not need to import
-// the screen package; the caller is responsible for the mapping.
+// MessagesView is the persisted seek + partition configuration per
+// (cluster, topic). SeekMode stays an int so this package does not need to
+// import the screen package; mapping is the caller's responsibility.
 type MessagesView struct {
 	SeekMode   int
 	Partition  int32
@@ -290,7 +270,6 @@ type MessagesView struct {
 	Partitions string
 }
 
-// messagesViewParams is the JSON-encoded shape of the seek_params column.
 type messagesViewParams struct {
 	Partition int32 `json:"partition,omitempty"`
 	Offset    int64 `json:"offset,omitempty"`
@@ -298,8 +277,8 @@ type messagesViewParams struct {
 	HasPart   bool  `json:"has_part,omitempty"`
 }
 
-// LoadMessagesView returns the persisted seek + partition view for the
-// given (cluster, topic). The bool is false when no row exists.
+// LoadMessagesView returns the persisted seek + partition view; the bool is
+// false when no row exists.
 func (s *Store) LoadMessagesView(ctx context.Context, cluster, topic string) (MessagesView, bool, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT seek_mode, seek_params, partitions
@@ -338,7 +317,6 @@ func (s *Store) LoadMessagesView(ctx context.Context, cluster, topic string) (Me
 	return view, true, nil
 }
 
-// SaveMessagesView upserts the persisted seek + partition view.
 func (s *Store) SaveMessagesView(ctx context.Context, cluster, topic string, view MessagesView) error {
 	params := messagesViewParams{
 		Partition: view.Partition,
@@ -369,9 +347,9 @@ func (s *Store) SaveMessagesView(ctx context.Context, cluster, topic string, vie
 	return nil
 }
 
-// nullableBlob returns a nil interface for empty payloads so SQLite stores
-// SQL NULL rather than an empty BLOB. This keeps the read path symmetrical
-// with how the produce form treats absent keys/values.
+// nullableBlob returns nil for empty payloads so SQLite stores SQL NULL
+// rather than an empty BLOB — keeps reads symmetrical with how the produce
+// form treats absent keys/values.
 func nullableBlob(b []byte) any {
 	if len(b) == 0 {
 		return nil
@@ -379,10 +357,9 @@ func nullableBlob(b []byte) any {
 	return b
 }
 
-// encodedHeader is the on-disk shape used in the `headers` JSON column.
-// We use a separate type with base64-clean encoding so binary header values
-// survive the round-trip — `[]byte` marshals to base64 by default in
-// encoding/json, which is exactly what we want.
+// encodedHeader is the on-disk shape of the `headers` JSON column. The
+// []byte field marshals to base64 by default in encoding/json, so binary
+// header values survive the round-trip.
 type encodedHeader struct {
 	Key   string `json:"key"`
 	Value []byte `json:"value"`

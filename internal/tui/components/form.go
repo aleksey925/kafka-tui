@@ -15,24 +15,20 @@ import (
 type FieldKind int
 
 const (
-	// FieldText is a single-line text input.
 	FieldText FieldKind = iota
-	// FieldDropdown is a single-choice picker over Options.
 	FieldDropdown
-	// FieldList is a dynamic list of strings (Add/Remove). Used for headers.
+	// FieldList is a dynamic list of strings (Add/Remove).
 	FieldList
-	// FieldTextarea is a multi-line text editor.
 	FieldTextarea
 	// FieldSegmented is a compact single-choice picker rendered as
-	// "◂ value ▸". Arrow keys cycle the value in place; enter opens a popup
-	// with the full vertical option list; esc in popup reverts.
+	// "◂ value ▸". Enter opens a popup with the full vertical option list;
+	// esc in popup reverts.
 	FieldSegmented
 )
 
-// Field describes one input on the form. Most fields use a subset of these
-// attributes; the Form treats them uniformly.
+// Field describes one input on the form.
 type Field struct {
-	Key     string // unique field identifier
+	Key     string
 	Label   string
 	Kind    FieldKind
 	Value   string   // text/textarea: current text; dropdown: selected option
@@ -40,27 +36,21 @@ type Field struct {
 	List    []string // list-mode entries
 
 	// Validator, when non-nil, is called for each non-empty list entry
-	// during render and on commit-and-continue. A non-nil error renders
-	// a red `!` marker plus the message next to the entry; hosting
-	// screens can also surface the same error in toasts. Empty entries
-	// are skipped (validator never sees them).
+	// during render and on commit-and-continue. Empty entries are skipped.
 	Validator func(entry string) error
 
-	listCursor      int // for FieldList: which entry is focused
-	listEntryCursor int // for FieldList: rune cursor within the focused entry
-	textCursor      int // FieldText / FieldTextarea: rune index into Value
+	listCursor      int
+	listEntryCursor int
+	textCursor      int
 
-	// segmented state
-	popupOpen     bool   // FieldSegmented: full-list popup is open
+	popupOpen     bool
 	popupOriginal string // FieldSegmented: value at the moment popup opened
 }
 
-// Form is a vertical stack of Fields navigated with tab / shift+tab. Each
-// field implements its own per-character editing.
+// Form is a vertical stack of Fields navigated with tab / shift+tab.
 //
 // `editing` controls cursor visibility on text-like fields. Hosting screens
-// that implement modal editing (e.g. produce's NORMAL/INSERT split) toggle
-// this so the caret is hidden in command mode.
+// implementing modal editing toggle this so the caret is hidden in command mode.
 type Form struct {
 	fields  []Field
 	focus   int
@@ -71,7 +61,6 @@ type Form struct {
 	styles theme.Styles
 }
 
-// NewForm constructs a Form with the given fields.
 func NewForm(fields []Field, opts ...FormOption) *Form {
 	f := &Form{
 		fields:  append([]Field(nil), fields...),
@@ -90,22 +79,16 @@ func NewForm(fields []Field, opts ...FormOption) *Form {
 	return f
 }
 
-// FormOption configures a Form.
 type FormOption func(*Form)
 
-// WithFormStyles overrides the theme styles.
 func WithFormStyles(s theme.Styles) FormOption {
 	return func(f *Form) { f.styles = s }
 }
 
-// Focused returns the index of the currently-focused field.
 func (f *Form) Focused() int { return f.focus }
 
-// FocusedField returns a copy of the currently-focused field.
 func (f *Form) FocusedField() Field { return f.fields[f.focus] }
 
-// CursorAt returns the rune-index cursor position of the named text or
-// textarea field. Returns 0 if the field is missing or not a text-like kind.
 func (f *Form) CursorAt(key string) int {
 	for _, fld := range f.fields {
 		if fld.Key == key {
@@ -115,7 +98,6 @@ func (f *Form) CursorAt(key string) int {
 	return 0
 }
 
-// Field returns a copy of the field with the given key.
 func (f *Form) Field(key string) (Field, bool) {
 	for _, fld := range f.fields {
 		if fld.Key == key {
@@ -125,16 +107,14 @@ func (f *Form) Field(key string) (Field, bool) {
 	return Field{}, false
 }
 
-// Fields returns a defensive copy of all fields.
 func (f *Form) Fields() []Field {
 	out := make([]Field, len(f.fields))
 	copy(out, f.fields)
 	return out
 }
 
-// SetValue updates the Value of the field with the given key (text/textarea
-// fields) or sets the dropdown selection. List fields use SetList instead.
-// For text/textarea fields the cursor is moved to the end of the new value.
+// SetValue updates the value of a text/textarea/dropdown field. List fields
+// use SetList instead. The cursor is moved to the end of the new value.
 func (f *Form) SetValue(key, value string) {
 	for i := range f.fields {
 		if f.fields[i].Key == key {
@@ -147,7 +127,7 @@ func (f *Form) SetValue(key, value string) {
 
 // SetOptions replaces the Options of a FieldDropdown / FieldSegmented field.
 // If the current Value is no longer in the new option set, it falls back to
-// the first option (or "" when the list is empty). No-op for other kinds.
+// the first option (or "" when the list is empty).
 func (f *Form) SetOptions(key string, opts []string) {
 	for i := range f.fields {
 		if f.fields[i].Key != key {
@@ -169,7 +149,6 @@ func (f *Form) SetOptions(key string, opts []string) {
 	}
 }
 
-// SetList replaces the list entries of the field with the given key.
 func (f *Form) SetList(key string, entries []string) {
 	for i := range f.fields {
 		if f.fields[i].Key == key && f.fields[i].Kind == FieldList {
@@ -185,9 +164,8 @@ func (f *Form) SetList(key string, entries []string) {
 	}
 }
 
-// FocusedListEntry returns the value of the row currently focused in the
-// focused FieldList, plus its row index. Returns "", 0, false when the
-// focused field is not a list or has no rows.
+// FocusedListEntry returns the value and index of the focused row in the
+// focused FieldList, or false when the field is not a list / has no rows.
 func (f *Form) FocusedListEntry() (string, int, bool) {
 	if len(f.fields) == 0 {
 		return "", 0, false
@@ -204,8 +182,7 @@ func (f *Form) FocusedListEntry() (string, int, bool) {
 }
 
 // ValidateFocusedListEntry runs the focused list field's Validator on the
-// focused entry. Returns nil for empty entries, no validator, or non-list
-// fields. Used by hosting screens to gate commit-and-continue actions.
+// focused entry. Returns nil for empty entries, no validator, or non-list fields.
 func (f *Form) ValidateFocusedListEntry() error {
 	if len(f.fields) == 0 {
 		return nil
@@ -225,8 +202,6 @@ func (f *Form) ValidateFocusedListEntry() error {
 	return fld.Validator(entry)
 }
 
-// ListEntryCursor returns the rune-cursor inside the focused entry of a
-// FieldList. Returns 0 if the field is missing or empty.
 func (f *Form) ListEntryCursor(key string) int {
 	for _, fld := range f.fields {
 		if fld.Key == key {
@@ -236,7 +211,6 @@ func (f *Form) ListEntryCursor(key string) int {
 	return 0
 }
 
-// FocusKey moves focus to the field with the given key.
 func (f *Form) FocusKey(key string) {
 	for i := range f.fields {
 		if f.fields[i].Key == key {
@@ -246,7 +220,6 @@ func (f *Form) FocusKey(key string) {
 	}
 }
 
-// FocusNext advances focus to the next field, wrapping.
 func (f *Form) FocusNext() {
 	if len(f.fields) == 0 {
 		return
@@ -255,7 +228,6 @@ func (f *Form) FocusNext() {
 	f.focus = (f.focus + 1) % len(f.fields)
 }
 
-// FocusPrev moves focus to the previous field, wrapping.
 func (f *Form) FocusPrev() {
 	if len(f.fields) == 0 {
 		return
@@ -264,21 +236,17 @@ func (f *Form) FocusPrev() {
 	f.focus = (f.focus - 1 + len(f.fields)) % len(f.fields)
 }
 
-// SetEditing toggles whether text-like fields render their caret. Screens
-// implementing modal editing flip this when entering/leaving INSERT.
+// SetEditing toggles whether text-like fields render their caret.
 func (f *Form) SetEditing(on bool) { f.editing = on }
 
 // SetFocusedSuffix sets a short tag rendered next to the focused field's
-// label (e.g. "[EDIT]"). Empty string hides it. Hosting screens use this to
-// surface mode/state locally on the active field.
+// label (e.g. "[EDIT]"). Empty string hides it.
 func (f *Form) SetFocusedSuffix(s string) { f.focusedSuffix = s }
 
-// Editing reports the current editing state.
 func (f *Form) Editing() bool { return f.editing }
 
 // PopupActive reports whether the focused field has a modal popup open
-// (currently only FieldSegmented uses one). Hosting screens can check this
-// to know whether to swallow esc instead of treating it as "close screen".
+// (currently only FieldSegmented).
 func (f *Form) PopupActive() bool {
 	if len(f.fields) == 0 {
 		return false
@@ -286,9 +254,8 @@ func (f *Form) PopupActive() bool {
 	return f.fields[f.focus].popupOpen
 }
 
-// closeFocusedPopup commits any active popup on the focused field by simply
-// dropping the popup state; the value has already been live-updated as the
-// user navigated.
+// closeFocusedPopup drops popup state on the focused field; the value has
+// already been live-updated as the user navigated.
 func (f *Form) closeFocusedPopup() {
 	if len(f.fields) == 0 {
 		return
@@ -298,8 +265,6 @@ func (f *Form) closeFocusedPopup() {
 	fld.popupOriginal = ""
 }
 
-// Update routes a key message to the focused field. tab / shift+tab change
-// focus; everything else is delegated to the active field.
 func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -332,9 +297,8 @@ func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 	return f, nil
 }
 
-// RenderField renders a single field by key with its current focus state.
-// Returns "" if the field is missing. Useful for screens that own their own
-// layout instead of stacking everything via View().
+// RenderField renders a single field by key. Returns "" if missing. Used by
+// screens that own their own layout instead of stacking via View().
 func (f *Form) RenderField(key string) string {
 	for i, fld := range f.fields {
 		if fld.Key == key {
@@ -344,11 +308,9 @@ func (f *Form) RenderField(key string) string {
 	return ""
 }
 
-// InsertAtCursor inserts the given text at the focused field's cursor
-// position. Supported on FieldText, FieldTextarea, and FieldList (writes
-// into the focused entry). No-op on other kinds. Used by hosting screens
-// that need to inject a literal character (e.g. literal `\t` in INSERT
-// mode) without going through the normal key-routing path.
+// InsertAtCursor inserts text at the focused field's cursor position.
+// Supported on FieldText, FieldTextarea, and FieldList (writes into the
+// focused entry). No-op on other kinds.
 func (f *Form) InsertAtCursor(text string) {
 	if len(f.fields) == 0 || text == "" {
 		return
@@ -370,14 +332,12 @@ func (f *Form) InsertAtCursor(text string) {
 		fld.List[i] = string(runes[:fld.listEntryCursor]) + text + string(runes[fld.listEntryCursor:])
 		fld.listEntryCursor += len([]rune(text))
 	case FieldDropdown, FieldSegmented:
-		// no-op: choice fields have no rune cursor to insert into
 	}
 }
 
 // AppendListRow adds a new empty entry to the focused list field, moves
-// the row cursor onto it, and resets the entry cursor. Used by screens
-// that bind a dedicated "add row" command (e.g. NORMAL `=` on Headers).
-// No-op when the focused field is not a list.
+// the row cursor onto it, and resets the entry cursor. No-op when the
+// focused field is not a list.
 func (f *Form) AppendListRow() bool {
 	if len(f.fields) == 0 {
 		return false
@@ -392,9 +352,8 @@ func (f *Form) AppendListRow() bool {
 	return true
 }
 
-// RemoveListRow removes the focused row from the focused list field.
-// Returns true when something was removed. No-op for non-list fields or
-// when the list is already empty.
+// RemoveListRow removes the focused row. Returns true when something was
+// removed.
 func (f *Form) RemoveListRow() bool {
 	if len(f.fields) == 0 {
 		return false
@@ -407,9 +366,7 @@ func (f *Form) RemoveListRow() bool {
 	return true
 }
 
-// SetSegmentedPopup forces the popup state of a FieldSegmented value. Used
-// by hosting screens that want the field rendered as the expanded list (e.g.
-// the produce form in fullscreen mode shows compression as the full list).
+// SetSegmentedPopup forces the popup state of a FieldSegmented value.
 func (f *Form) SetSegmentedPopup(key string, open bool) {
 	for i := range f.fields {
 		if f.fields[i].Key == key && f.fields[i].Kind == FieldSegmented {
@@ -422,7 +379,6 @@ func (f *Form) SetSegmentedPopup(key string, open bool) {
 	}
 }
 
-// View renders the whole form.
 func (f *Form) View() string {
 	if len(f.fields) == 0 {
 		return ""
@@ -485,8 +441,6 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 		}
 		return "    " + renderLineWithCursor(s, s.Command, "", runes, cursor)
 	}
-	// multiline: split by \n, indent each, draw the cursor inside the line
-	// that contains the cursor at the right column.
 	if !focused || !caretOn {
 		if value == "" {
 			return "    " + s.HintLabel.Render("—")
@@ -497,7 +451,6 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 		}
 		return s.Command.Render(strings.Join(lines, "\n"))
 	}
-	// find (lineIdx, col) for cursor.
 	lineIdx := 0
 	lineStartIdx := 0
 	for i := range cursor {
@@ -521,16 +474,10 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 	return strings.Join(out, "\n")
 }
 
-// renderLineWithCursor renders a single line of text with a "block" cursor
-// drawn at `col` — the standard terminal-cursor look (the character under
-// the cursor is reverse-video, no extra glyph between adjacent characters).
-// If `col == len(runes)`, a single trailing space is reverse-video'd to
-// represent "cursor past end of line".
-//
-// `surround` styles everything outside the cursor (before/after); `prefix`
-// is rendered with the same style and is concatenated immediately before
-// the "before" segment — list rendering passes a row prefix here so the
-// existing single-Render call shape is preserved.
+// renderLineWithCursor renders a line with a reverse-video block cursor at
+// col. If col == len(runes), a trailing space stands in for "past EOL".
+// `prefix` is rendered with `surround` style and concatenated before the
+// "before" segment.
 func renderLineWithCursor(s theme.Styles, surround lipgloss.Style, prefix string, runes []rune, col int) string {
 	before := string(runes[:col])
 	var underCursor, after string
@@ -572,12 +519,10 @@ func renderSegmented(s theme.Styles, fld Field, focused bool) string {
 		return "    " + s.StatusInfo.Render("(no options)")
 	}
 	if !fld.popupOpen {
-		// compact inline view: ◂ value ▸
 		body := "◂ " + fld.Value + " ▸"
 		hint := s.HintLabel.Render("  (←/→ cycle, enter for list)")
 		return "    " + s.CommandHL.Render(body) + hint
 	}
-	// expanded popup: vertical list with current value highlighted
 	parts := make([]string, 0, len(fld.Options)+1)
 	for _, opt := range fld.Options {
 		marker := "( ) "
@@ -609,8 +554,6 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 			prefix = "  ▸ "
 			style = s.CommandHL
 		}
-		// per-entry validator decoration — only flagged for non-empty
-		// invalid entries. valid and empty rows render plain.
 		var marker string
 		if entry != "" && fld.Validator != nil {
 			if err := fld.Validator(entry); err != nil {
@@ -632,10 +575,6 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 	return strings.Join(parts, "\n")
 }
 
-// updateText handles single-line and multi-line text editing with a cursor
-// model. cursor is a rune index into Value, 0 <= cursor <= len([]rune(Value)).
-// When allowNewline is true the field is treated as a textarea and supports
-// up/down navigation, line-aware home/end and enter at the cursor.
 func updateText(fld *Field, key tea.KeyPressMsg, allowNewline bool) {
 	runes := []rune(fld.Value)
 	clampCursor(&fld.textCursor, len(runes))
@@ -645,8 +584,6 @@ func updateText(fld *Field, key tea.KeyPressMsg, allowNewline bool) {
 	textEdit(fld, runes, key, allowNewline)
 }
 
-// textNavigate handles cursor-only key presses. Returns true if the key was
-// a navigation key (consumed).
 func textNavigate(fld *Field, runes []rune, key tea.KeyPressMsg, allowNewline bool) bool {
 	n := len(runes)
 	switch key.String() {
@@ -686,7 +623,6 @@ func textNavigate(fld *Field, runes []rune, key tea.KeyPressMsg, allowNewline bo
 	return true
 }
 
-// textEdit handles modifying key presses (backspace/delete/enter/typing).
 func textEdit(fld *Field, runes []rune, key tea.KeyPressMsg, allowNewline bool) {
 	n := len(runes)
 	switch key.String() {
@@ -721,8 +657,6 @@ func clampCursor(cursor *int, n int) {
 	}
 }
 
-// lineStart returns the rune index of the first character on the line that
-// contains cursor.
 func lineStart(runes []rune, cursor int) int {
 	i := cursor
 	for i > 0 && runes[i-1] != '\n' {
@@ -731,8 +665,6 @@ func lineStart(runes []rune, cursor int) int {
 	return i
 }
 
-// lineEnd returns the rune index of the newline that terminates the line
-// containing cursor (or len(runes) if it's the final line).
 func lineEnd(runes []rune, cursor int) int {
 	i := cursor
 	for i < len(runes) && runes[i] != '\n' {
@@ -741,9 +673,8 @@ func lineEnd(runes []rune, cursor int) int {
 	return i
 }
 
-// moveLine moves cursor by delta lines preserving the visual column. Returns
-// the new rune index. delta = -1 → up, +1 → down. No-op if there is no line
-// in the requested direction.
+// moveLine moves cursor by delta lines preserving the visual column.
+// delta = -1 up, +1 down.
 func moveLine(runes []rune, cursor, delta int) int {
 	curStart := lineStart(runes, cursor)
 	col := cursor - curStart
@@ -751,7 +682,6 @@ func moveLine(runes []rune, cursor, delta int) int {
 		if curStart == 0 {
 			return cursor
 		}
-		// previous line: from curStart-1 walk back to its start.
 		prevEnd := curStart - 1
 		prevStart := lineStart(runes, prevEnd)
 		prevLen := prevEnd - prevStart
@@ -760,7 +690,6 @@ func moveLine(runes []rune, cursor, delta int) int {
 		}
 		return prevStart + col
 	}
-	// down
 	curEnd := lineEnd(runes, cursor)
 	if curEnd >= len(runes) {
 		return cursor
@@ -776,10 +705,6 @@ func moveLine(runes []rune, cursor, delta int) int {
 
 func runeLen(s string) int { return len([]rune(s)) }
 
-// updateSegmented handles the compact inline picker. ←/→/↑/↓ cycle the value
-// in place (live, like FieldDropdown). enter opens the full popup; esc
-// reverts and closes; tab is intercepted by Form.Update which closes any
-// open popup automatically.
 func updateSegmented(fld *Field, key tea.KeyPressMsg) {
 	if len(fld.Options) == 0 {
 		return
@@ -841,14 +766,7 @@ func updateDropdown(fld *Field, key tea.KeyPressMsg) {
 }
 
 // updateList handles list-mode editing with a per-entry rune cursor.
-//
-// Up/down move between rows (and reset the entry cursor to the end of the
-// newly-focused entry). Left/right/home/end/backspace/delete and printable
-// characters edit the focused entry at the cursor.
-//
-// Discoverable shortcuts: enter on the last entry adds a new empty entry;
-// backspace on an empty entry removes the entry. The legacy ctrl+a / ctrl+d
-// add/remove shortcuts are kept for users who already learned them.
+// Up/down move between rows; backspace on an empty entry removes the row.
 func updateList(fld *Field, key tea.KeyPressMsg) {
 	if listStructural(fld, key) {
 		return
@@ -865,8 +783,6 @@ func updateList(fld *Field, key tea.KeyPressMsg) {
 	listEntryEdit(fld, runes, key)
 }
 
-// listStructural handles row-level operations (move between entries,
-// add/remove). Returns true when the key was consumed at this level.
 func listStructural(fld *Field, key tea.KeyPressMsg) bool {
 	switch key.String() {
 	case "down":
@@ -885,7 +801,6 @@ func listStructural(fld *Field, key tea.KeyPressMsg) bool {
 	return true
 }
 
-// listEntryNavigate handles cursor-only key presses inside the focused entry.
 func listEntryNavigate(fld *Field, runes []rune, key tea.KeyPressMsg) bool {
 	switch key.String() {
 	case "left":
@@ -906,8 +821,8 @@ func listEntryNavigate(fld *Field, runes []rune, key tea.KeyPressMsg) bool {
 	return true
 }
 
-// listEntryEdit handles modifying key presses inside the focused entry.
-// backspace on an empty entry removes the row (besides ctrl+d).
+// listEntryEdit handles edit keys inside the focused entry. Backspace on an
+// empty entry removes the row.
 func listEntryEdit(fld *Field, runes []rune, key tea.KeyPressMsg) {
 	i := fld.listCursor
 	n := len(runes)
@@ -933,8 +848,6 @@ func listEntryEdit(fld *Field, runes []rune, key tea.KeyPressMsg) {
 	}
 }
 
-// listRemoveCurrent removes the focused entry and snaps the row + entry
-// cursors to a valid neighbor.
 func listRemoveCurrent(fld *Field) {
 	i := fld.listCursor
 	if i < 0 || i >= len(fld.List) {
@@ -960,7 +873,6 @@ func indexOf(items []string, target string) int {
 	return -1
 }
 
-// String of FieldKind helps tests produce readable diagnostics.
 func (k FieldKind) String() string {
 	switch k {
 	case FieldText:

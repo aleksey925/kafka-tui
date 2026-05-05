@@ -22,7 +22,7 @@ type SortMode int
 
 const (
 	// SortGrouped sorts rows topic-first, partition-second, with a "┄┄┄"
-	// separator between topics. This is the default §7.7 view.
+	// separator between topics.
 	SortGrouped SortMode = iota
 	// SortFlat sorts by lag descending, ignoring topic boundaries.
 	SortFlat
@@ -30,23 +30,16 @@ const (
 
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
-	// Back signals esc/q.
-	Back bool
-	// OpenReset asks the host to push the reset model with scope = whole detail.
-	OpenReset bool
-	// OpenResetExpress is OpenReset + skip preview.
+	Back             bool
+	OpenReset        bool
 	OpenResetExpress bool
-	// Delete asks the host to confirm deleting the group.
-	Delete bool
-	// Topic, when non-empty, requests navigation to the messages screen for
-	// the group's single topic (raised by `t` when the group has one topic).
-	Topic string
-	// TopicsForGroup, when non-empty, requests a topics list filtered to the
-	// group's subscribed topics (raised by `t` when the group has multiple).
+	Delete           bool
+	// Topic / TopicsForGroup request navigation from `t`: single subscribed
+	// topic vs filtered topics list.
+	Topic          string
 	TopicsForGroup []string
 }
 
-// DetailOptions configure a [DetailModel].
 type DetailOptions struct {
 	Service  Service
 	Group    string
@@ -71,20 +64,16 @@ type DetailModel struct {
 	width, height int
 	loading       bool
 	loadErr       string
-	// manualRefresh is set when the user pressed `r` and is consumed by
-	// HandleLoaded to push a one-shot success toast (auto ticks stay silent).
+	// manualRefresh is consumed by HandleLoaded to push a one-shot success
+	// toast (auto ticks stay silent).
 	manualRefresh bool
-	// lastRefresh marks the wall-clock time of the most recent successful
-	// detail load. Drives the chrome's "X ago" indicator while the user
-	// is in detail mode.
-	lastRefresh time.Time
+	lastRefresh   time.Time
 
 	action DetailAction
 	now    func() time.Time
 	styles theme.Styles
 }
 
-// NewDetailModel constructs a fresh detail view.
 func NewDetailModel(opts DetailOptions) *DetailModel {
 	now := opts.Now
 	if now == nil {
@@ -106,7 +95,6 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 	}
 }
 
-// detailColumns returns the column specs for the per-partition table.
 func detailColumns() []components.Column {
 	return []components.Column{
 		{Title: "Topic", Width: 24, Sortable: true},
@@ -118,39 +106,30 @@ func detailColumns() []components.Column {
 	}
 }
 
-// Init dispatches the initial load.
 func (d *DetailModel) Init() tea.Cmd {
 	d.loading = true
 	return loadDetailCmd(d.svc, d.group)
 }
 
-// RefreshCmd dispatches another refresh (used by the auto-refresh tick and
-// the manual `r` press).
 func (d *DetailModel) RefreshCmd() tea.Cmd {
 	d.loading = true
 	return loadDetailCmd(d.svc, d.group)
 }
 
-// Group returns the group name this detail view is bound to.
 func (d *DetailModel) Group() string { return d.group }
 
-// SortMode returns the current sort mode.
 func (d *DetailModel) SortMode() SortMode { return d.sortMode }
 
-// Description returns the loaded group description (defensive copy).
 func (d *DetailModel) Description() kafka.GroupDescription { return d.desc }
 
-// Rows returns the loaded partition rows (defensive copy).
 func (d *DetailModel) Rows() []kafka.PartitionLag {
 	out := make([]kafka.PartitionLag, len(d.rows))
 	copy(out, d.rows)
 	return out
 }
 
-// Toasts exposes the toast queue (for tests).
 func (d *DetailModel) Toasts() *components.Toasts { return d.toasts }
 
-// LatestFlash returns the freshest live toast from this submodel's queue.
 func (d *DetailModel) LatestFlash() (components.Toast, bool) {
 	if d.toasts == nil {
 		return components.Toast{}, false
@@ -158,41 +137,33 @@ func (d *DetailModel) LatestFlash() (components.Toast, bool) {
 	return d.toasts.Latest()
 }
 
-// Action returns the current pending action.
 func (d *DetailModel) Action() DetailAction { return d.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (d *DetailModel) ConsumeAction() DetailAction {
 	a := d.action
 	d.action = DetailAction{}
 	return a
 }
 
-// SetSearch forwards a host-driven filter query to the partition table.
 func (d *DetailModel) SetSearch(query string) { d.table.SetSearch(query) }
 
-// ActiveFilter returns the partition table's current search query.
 func (d *DetailModel) ActiveFilter() string { return d.table.Search() }
 
-// SetSize updates width/height.
 func (d *DetailModel) SetSize(w, h int) {
 	d.width, d.height = w, h
 	if h > 0 {
-		// reserve rows for the header block and chrome.
 		d.table.SetHeight(maxInt(1, h-headerLineCount-3))
 	}
 }
 
 // headerLineCount is the number of header lines reserved by View() for the
-// title block (group name, members, coordinator). Used to size the table.
+// title block. Used to size the table.
 const headerLineCount = 4
 
-// KeyHints derives bottom-row entries from the bindings table.
 func (d *DetailModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(d.bindings())
 }
 
-// bindings is the single source of truth for group-detail shortcuts.
 func (d *DetailModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"tab"}, Label: "toggle grouped / flat view", Category: "Group", Hint: true, Handler: d.actToggleSort},
@@ -255,7 +226,6 @@ func (d *DetailModel) actRefresh() tea.Cmd {
 	return d.RefreshCmd()
 }
 
-// Update routes a message into the detail view.
 func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case DetailLoadedMsg:
@@ -284,9 +254,8 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	return d, nil
 }
 
-// handleTopicJump implements §7.7 `t`: jump to topics scoped to this group.
-// One subscribed topic → straight to messages of that topic; multiple → topics
-// list filtered by the group's topics.
+// handleTopicJump implements `t`: one subscribed topic → messages of that
+// topic; multiple → topics list filtered by the group's topics.
 func (d *DetailModel) handleTopicJump() {
 	topics := d.subscribedTopics()
 	switch len(topics) {
@@ -299,8 +268,6 @@ func (d *DetailModel) handleTopicJump() {
 	}
 }
 
-// subscribedTopics returns the (sorted, deduplicated) list of topics this
-// group has commits for or is currently subscribed to.
 func (d *DetailModel) subscribedTopics() []string {
 	seen := map[string]struct{}{}
 	for _, r := range d.rows {
@@ -331,8 +298,7 @@ func (d *DetailModel) toggleSort() {
 	d.refreshTable()
 }
 
-// HandleLoaded merges fresh data into the detail view (also called by the
-// list-screen router so DetailLoadedMsg can be dispatched from outside).
+// HandleLoaded merges fresh data; also called by the list-screen router.
 func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 	d.loading = false
 	if msg.Err != nil {
@@ -354,11 +320,8 @@ func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
 	}
 }
 
-// LastRefresh returns the wall-clock time of the most recent successful
-// detail load (zero before any load completes).
 func (d *DetailModel) LastRefresh() time.Time { return d.lastRefresh }
 
-// refreshTable rebuilds the partition rows according to the active sort mode.
 func (d *DetailModel) refreshTable() {
 	rows := append([]kafka.PartitionLag(nil), d.rows...)
 	switch d.sortMode {
@@ -410,7 +373,6 @@ func rowID(r kafka.PartitionLag) string {
 	return r.Topic + "/" + strconv.FormatInt(int64(r.Partition), 10)
 }
 
-// View renders the detail body.
 func (d *DetailModel) View() string {
 	parts := d.headerBlock()
 	parts = append(parts, d.table.View())
@@ -420,9 +382,8 @@ func (d *DetailModel) View() string {
 	return strings.Join(parts, "\n")
 }
 
-// headerBlock returns the §7.7 header lines: title, members, coordinator,
-// sort-mode indicator. Always returns exactly headerLineCount lines so the
-// layout can size the table reliably.
+// headerBlock returns exactly headerLineCount lines so layout can size the
+// table reliably.
 func (d *DetailModel) headerBlock() []string {
 	title := d.styles.HelpTitle.Render("Group · " + d.group)
 	state := d.desc.State
@@ -464,8 +425,6 @@ func valueOr(s, fallback string) string {
 	return s
 }
 
-// formatMembersLine renders the §7.7 members preview, truncating to fit width
-// with `+N more`.
 func (d *DetailModel) formatMembersLine() string {
 	if len(d.desc.Members) == 0 {
 		return "members: (none)"
@@ -483,8 +442,6 @@ func (d *DetailModel) formatMembersLine() string {
 	return prefix + truncateMembers(names, avail)
 }
 
-// truncateMembers joins names with ", " and replaces any tail that would
-// overflow with "+N more".
 func truncateMembers(names []string, width int) string {
 	if len(names) == 0 {
 		return ""
@@ -502,7 +459,6 @@ func truncateMembers(names []string, width int) string {
 		}
 		if b.Len()+len(piece)+len(moreSuffix) > width {
 			if b.Len() == 0 {
-				// even a single name overflows — render it raw.
 				b.WriteString(n)
 				if i < len(names)-1 {
 					b.WriteString(", +")
@@ -544,8 +500,7 @@ func lagCell(v int64) string {
 
 // ----- Messages -----
 
-// DetailLoadedMsg surfaces the (description, partition lags) snapshot for the
-// detail view. Dispatched both by Init and by the auto-refresh tick.
+// DetailLoadedMsg surfaces the (description, partition lags) snapshot.
 type DetailLoadedMsg struct {
 	Description kafka.GroupDescription
 	Rows        []kafka.PartitionLag

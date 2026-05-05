@@ -28,7 +28,6 @@ var ver = "0.0.0"
 func main() {
 	flags, ok := cli.MustParseOrExit()
 	if !ok {
-		// help shown — clean exit.
 		return
 	}
 
@@ -71,9 +70,7 @@ func main() {
 	}
 }
 
-// run wires bootstrap (config, logging, state, kafka dialer) and starts the
-// Bubble Tea program. Split out from main so deferred cleanup runs before
-// any os.Exit.
+// run is split out from main so deferred cleanup runs before any os.Exit.
 func run(flags *cli.Flags) error {
 	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
@@ -168,10 +165,9 @@ func run(flags *cli.Flags) error {
 	return nil
 }
 
-// buildClusterList prepends/replaces the CLI inline cluster onto the loaded
-// list. Returns the merged list and the CLI cluster name (empty when no
-// --brokers was given). The loader has already removed any same-named entry
-// from clusters.yaml before we get here, so a simple append is safe.
+// buildClusterList prepends the CLI inline cluster onto the loaded list. The
+// loader has already removed any same-named entry from clusters.yaml before
+// we get here, so a simple append is safe.
 func buildClusterList(loaded []config.Cluster, inline cli.CLICluster) ([]config.Cluster, string) {
 	if !inline.HasInlineCluster() {
 		return loaded, ""
@@ -183,9 +179,8 @@ func buildClusterList(loaded []config.Cluster, inline cli.CLICluster) ([]config.
 	return merged, c.Name
 }
 
-// cliInlineToCluster converts the flat CLI inline-cluster shape into a
-// [config.Cluster]. SASL / TLS sub-structs are only populated when at least
-// one of their fields was set on the command line.
+// cliInlineToCluster only populates SASL / TLS sub-structs when at least one
+// of their fields was set on the command line.
 func cliInlineToCluster(inline cli.CLICluster) config.Cluster {
 	c := config.Cluster{
 		Name:     inline.Name,
@@ -211,9 +206,6 @@ func cliInlineToCluster(inline cli.CLICluster) config.Cluster {
 	return c
 }
 
-// configPaths returns the absolute paths of the global and project config
-// directories' clusters.yaml files (best-effort — empty when unavailable).
-// Used by the clusters screen edit-target chooser.
 func configPaths() (globalPath, projectPath string) {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		globalPath = filepath.Join(home, config.DirName, config.ClustersFileName)
@@ -227,8 +219,7 @@ func configPaths() (globalPath, projectPath string) {
 }
 
 // findProjectDir walks parents of startDir looking for a `.kafka-tui/` dir,
-// matching the loader's project-detection logic. Returns the absolute path
-// of that directory.
+// matching the loader's project-detection logic.
 func findProjectDir(startDir string) (string, bool) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -247,8 +238,6 @@ func findProjectDir(startDir string) (string, bool) {
 	}
 }
 
-// produceHistory builds a [tui.NewStateHistory] when the store opened
-// successfully. Otherwise returns nil so produce.Options.History stays nil.
 func produceHistory(store *state.Store, log *slog.Logger) produce.History {
 	if store == nil {
 		return nil
@@ -256,8 +245,6 @@ func produceHistory(store *state.Store, log *slog.Logger) produce.History {
 	return tui.NewStateHistory(store, log)
 }
 
-// messagesViewState builds the persistent view-state repository when the
-// store opened successfully. nil disables persistence.
 func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateRepository {
 	if store == nil {
 		return nil
@@ -265,8 +252,6 @@ func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateR
 	return tui.NewStateMessagesView(store, log)
 }
 
-// resolveLogPath loads config (without failing on missing files) and returns
-// the resolved absolute path of the log file.
 func resolveLogPath(flags *cli.Flags) (string, error) {
 	loaded, err := config.Load(config.LoaderOptions{ConfigPath: flags.ConfigPath})
 	logFile := config.Defaults().Logging.File

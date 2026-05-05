@@ -1,12 +1,4 @@
-// Package topics implements the topics list screen — the main entry point
-// for browsing topics on the active cluster.
-//
-// The screen renders a sortable, searchable, configurable-columns table of
-// topics with a counter line ("47 topics, 3 internal hidden"), and dispatches
-// hotkeys for navigation (enter / m → messages, c → configs, g → consumer
-// groups for the topic, p → produce) plus inline overlays for create / clone
-// / delete. It owns no Kafka client itself — all admin and read calls flow
-// through a pluggable [Service], which keeps the screen unit-testable.
+// Package topics implements the topics list screen.
 package topics
 
 import (
@@ -28,7 +20,6 @@ import (
 )
 
 // Service abstracts the Kafka admin operations the topics screen needs.
-// Production code wires this to a real *kafka.Client; tests pass a fake.
 type Service interface {
 	ListTopics(ctx context.Context) ([]kafka.TopicSummary, error)
 	TopicWatermarks(ctx context.Context, topic string) (kafka.TopicWatermarks, error)
@@ -40,71 +31,43 @@ type Service interface {
 	DeleteTopic(ctx context.Context, topic string) error
 	CloneTopic(ctx context.Context, src, dst string, opts kafka.CloneOptions) (<-chan kafka.CloneProgress, error)
 
-	// Batch fetchers used by the list view to render the full row in
-	// O(1) RPCs (per category) regardless of topic count.
+	// Batch fetchers — one RPC per category regardless of topic count.
 	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.TopicWatermarks, error)
 	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error)
 	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]kafka.TopicConfig, error)
 }
 
 // Action describes the screen's pending intent for the host (router).
-//
-// It is read after every Update; the host reacts and clears it via
-// [Model.ConsumeAction]. Multiple fields can be set in the same struct, but
-// in practice only one will ever be non-zero per Update tick.
 type Action struct {
-	// Messages requests navigation to the messages screen for the named topic.
 	Messages string
-	// Configs requests navigation to the topic configs screen.
-	Configs string
-	// Groups requests navigation to the consumer-groups list filtered by topic.
-	Groups string
-	// Produce requests navigation to the produce form for the named topic.
-	Produce string
-	// Quit signals the user pressed esc/q on the list view.
-	Quit bool
+	Configs  string
+	Groups   string
+	Produce  string
+	Quit     bool
 }
 
-// Mode is the screen's current sub-mode.
 type Mode int
 
 const (
-	// ModeList: showing the topic list (default).
 	ModeList Mode = iota
-	// ModeCreate: create-topic form is overlaid.
 	ModeCreate
-	// ModeClone: clone-topic form is overlaid.
 	ModeClone
-	// ModeCloning: clone is in flight, progress overlay visible.
 	ModeCloning
 )
 
-// Options configure a [Model].
 type Options struct {
-	// Service is the Kafka admin abstraction. Required.
-	Service Service
-	// ReadOnly disables destructive hotkeys (n/D/y/p) and surfaces warnings.
-	ReadOnly bool
-	// Columns lists the column keys to render, in order. Empty falls back to
-	// [DefaultColumns].
-	Columns []string
-	// FilterTopics, when non-empty, limits the displayed topics to this set.
-	// Used for groups→topics navigation.
-	FilterTopics []string
-	// FocusTopic, when non-empty, moves the cursor to this topic after load.
-	FocusTopic string
-	// RefreshInterval, when > 0, enables periodic auto-refresh.
+	Service         Service
+	ReadOnly        bool
+	Columns         []string
+	FilterTopics    []string
+	FocusTopic      string
 	RefreshInterval time.Duration
-	// Now is the injected clock (defaults to time.Now).
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Now             func() time.Time
+	Styles          theme.Styles
 }
 
-// DefaultColumns is used when config does not override.
 var DefaultColumns = []string{"name", "partitions", "replicas", "cleanup_policy", "messages", "size"}
 
-// Model is the topics list screen.
 type Model struct {
 	svc      Service
 	readOnly bool
@@ -116,14 +79,12 @@ type Model struct {
 	hiddenIntern int
 	showInternal bool
 
-	// per-topic lazy data
 	watermarks map[string]kafka.TopicWatermarks
 	sizes      map[string]int64
 	configs    map[string][]kafka.TopicConfig
 
 	// shownWarnings deduplicates batch-fetch warnings across refresh ticks
 	// so a permanent ACL/feature failure doesn't spam a toast every 5s.
-	// Reset when the screen is reinstantiated (e.g. cluster switch).
 	shownWarnings map[string]struct{}
 
 	table   *components.Table
@@ -141,8 +102,6 @@ type Model struct {
 	width, height int
 	loading       bool
 	refresher     components.Refresher
-	// manualRefresh is set when the user pressed `r` and is consumed by
-	// handleLoaded to push a one-shot success toast (auto ticks stay silent).
 	manualRefresh bool
 
 	action Action
@@ -151,14 +110,10 @@ type Model struct {
 	styles theme.Styles
 }
 
-// pendingOp tracks a destructive action awaiting confirmation. An empty
-// topic means no operation is pending; only the delete flow uses this
-// today, so a single field is enough.
 type pendingOp struct {
 	topic string
 }
 
-// New constructs a Model.
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -203,33 +158,24 @@ func New(opts Options) *Model {
 	}
 }
 
-// Init returns a tea command that loads the initial topics list and
-// schedules the first auto-refresh tick (when configured). Without
-// scheduling here the recurring tick chain would never start, since
-// HandleRefreshTick only fires from within RefreshTickMsg handling.
+// Init schedules the first auto-refresh tick — the recurring chain only
+// sustains itself once started.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.refreshCmd(), m.AutoRefreshTick())
 }
 
-// Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
-// WantsRawInput reports true only while the create / clone form is
-// actively editing a field (INSERT) or has a segmented popup open. In
-// NORMAL the form ignores letter keys, so leaving raw-input off there
-// lets the user open the help overlay with `?` and use other global
-// shortcuts. Switching back to INSERT restores raw-input so literal
-// `?`, `:`, `/` land in the field text.
+// WantsRawInput is true in INSERT / segmented popup so global shortcuts
+// like `?` stay reachable from NORMAL.
 func (m *Model) WantsRawInput() bool {
 	switch m.mode {
 	case ModeCreate:
@@ -242,10 +188,8 @@ func (m *Model) WantsRawInput() bool {
 	return false
 }
 
-// Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
-// LatestFlash returns the freshest live toast from this screen's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {
 	if m.toasts == nil {
 		return components.Toast{}, false
@@ -253,24 +197,18 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Topics returns the topics currently visible (after the internal-toggle
-// filter), in declared order. For tests.
 func (m *Model) Topics() []kafka.TopicSummary {
 	return m.visibleTopics()
 }
 
-// AllTopics returns every topic loaded (including hidden internals). For tests.
 func (m *Model) AllTopics() []kafka.TopicSummary {
 	out := make([]kafka.TopicSummary, len(m.allTopics))
 	copy(out, m.allTopics)
 	return out
 }
 
-// Cursor returns the current table cursor position. For tests.
 func (m *Model) Cursor() int { return m.table.Cursor() }
 
-// Title returns the frame title rendered by the host: "Topics[<n>]" with an
-// internal-hidden suffix when applicable.
 func (m *Model) Title() string {
 	visible := len(m.visibleTopics())
 	body := fmt.Sprintf("Topics[%d]", visible)
@@ -285,7 +223,6 @@ func (m *Model) Title() string {
 	return body
 }
 
-// Breadcrumb returns the selected topic name (right-aligned in the frame).
 func (m *Model) Breadcrumb() string {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -294,32 +231,22 @@ func (m *Model) Breadcrumb() string {
 	return row.ID
 }
 
-// ShowInternal reports whether internal topics are currently visible.
 func (m *Model) ShowInternal() bool { return m.showInternal }
 
-// HiddenInternalCount returns the number of internal topics currently hidden.
 func (m *Model) HiddenInternalCount() int { return m.hiddenIntern }
 
-// CreateForm returns the active create form (or nil).
 func (m *Model) CreateForm() *CreateForm { return m.create }
 
-// CloneForm returns the active clone form (or nil).
 func (m *Model) CloneForm() *CloneForm { return m.clone }
 
-// CloneProgress returns the latest in-flight clone progress (zero when idle).
 func (m *Model) CloneProgress() kafka.CloneProgress { return m.progress }
 
-// SetSearch forwards a host-driven filter query to the underlying table.
 func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 
-// ActiveFilter returns the table's current search query.
 func (m *Model) ActiveFilter() string { return m.table.Search() }
 
-// HasOverlay reports whether a modal (delete confirm, in-flight clone
-// progress popup, or an open create/clone form) is on top of the list.
-// Forms are included so the host's q/esc fallback yields to the form
-// instead of popping the screen — the form's own dispatcher decides
-// what `q` / `esc` mean inside its NORMAL/INSERT state machine.
+// HasOverlay includes forms so the host's q/esc fallback yields to the
+// form's NORMAL/INSERT dispatcher instead of popping the screen.
 func (m *Model) HasOverlay() bool {
 	return m.confirm != nil ||
 		m.mode == ModeCloning ||
@@ -327,7 +254,6 @@ func (m *Model) HasOverlay() bool {
 		m.mode == ModeClone
 }
 
-// SetSize updates width/height. Reserves chrome rows.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
@@ -338,23 +264,14 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints returns the screen-specific bottom-row hints, derived
-// from whichever bindings table the current mode is dispatching from
-// — so the hints can never drift from the real dispatcher.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.activeBindings())
 }
 
-// HelpSections returns the categorized bindings shown in the `?`
-// overlay. Same source as the dispatcher.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.activeBindings())
 }
 
-// activeBindings picks the bindings slice that the dispatcher is
-// currently consuming. Sub-mode dispatchers (create / clone / cloning
-// / confirm) each consume their own slice — KeyHints and
-// HelpSections mirror them.
 func (m *Model) activeBindings() []keymap.Binding {
 	switch m.mode {
 	case ModeCreate:
@@ -369,10 +286,6 @@ func (m *Model) activeBindings() []keymap.Binding {
 	return m.listBindings()
 }
 
-// listBindings is the single source of truth for list-mode shortcuts.
-// Both the dispatcher (handleListKey) and the user-facing surfaces
-// (KeyHints, HelpSections) consume this slice — adding a binding
-// requires exactly one append.
 func (m *Model) listBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter", "m"}, Label: "browse messages", Category: "Topic", Hint: true, Handler: m.actMessages},
@@ -389,17 +302,13 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"D"}, Label: "delete topic", Category: "Mutating", Hint: true, Handler: m.actDeleteTopic},
 	}
 	if m.readOnly {
-		// keys still claimed (toast emitted) but hidden from hints / help —
-		// the user shouldn't see actions that won't work.
 		for i := range mut {
 			mut[i].Category = ""
 			mut[i].Hint = false
 		}
 	}
 	bs = append(bs, mut...)
-	// `/` and `ctrl+r` are globals handled by the host — listed here
-	// (advertise-only, no Handler) so they appear in the chrome's hints
-	// bar and the `?` overlay alongside screen-local actions.
+	// advertise-only: `/` and `ctrl+r` are owned by the host.
 	bs = append(bs,
 		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Topic", Hint: true},
 		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Topic", Hint: true},
@@ -407,7 +316,6 @@ func (m *Model) listBindings() []keymap.Binding {
 	return bs
 }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -439,7 +347,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	switch m.mode {
 	case ModeList:
-		// fall through to list-mode handling below.
 	case ModeCreate:
 		return m.handleCreateKey(key)
 	case ModeClone:
@@ -457,9 +364,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	return m.handleListKey(key)
 }
 
-// handleListKey routes a keystroke through the bindings table; keys
-// not claimed by any binding fall through to the table component for
-// row-navigation (j/k/arrow/pgup/pgdn).
 func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
 		return cmd
@@ -468,8 +372,6 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	m.table = tbl
 	return nil
 }
-
-// --- list-mode binding handlers ---
 
 func (m *Model) actMessages() tea.Cmd {
 	if row, ok := m.table.SelectedRow(); ok {
@@ -499,8 +401,6 @@ func (m *Model) actToggleInternal() tea.Cmd {
 }
 
 func (m *Model) actRefresh() tea.Cmd {
-	// skip duplicate loads — pressing `r` while a previous fetch is
-	// still in flight would just queue redundant RPCs.
 	if m.loading {
 		return nil
 	}
@@ -513,10 +413,6 @@ func (m *Model) actQuit() tea.Cmd {
 	return nil
 }
 
-// blockedReadOnly emits the standard "cluster is read-only — X blocked"
-// toast and returns a nil cmd so the caller can `return m.blocked(...)`.
-// Centralizes the gate logic without coupling handlers to a magic key
-// string the way an actMutating(key) factory would.
 func (m *Model) blockedReadOnly(action string) tea.Cmd {
 	m.toasts.Push(components.ToastWarning, "cluster is read-only — "+action+" blocked")
 	return nil
@@ -555,7 +451,6 @@ func (m *Model) actDeleteTopic() tea.Cmd {
 	return m.openDeleteConfirm()
 }
 
-// openDeleteConfirm pops the delete-confirmation modal for the focused topic.
 func (m *Model) openDeleteConfirm() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -608,10 +503,9 @@ func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// createBindings is the source of truth for the create-topic form.
-// esc has dual semantics: in INSERT or with a popup it's owned by the
-// form (returns to NORMAL / closes popup); in plain NORMAL it closes
-// the overlay. HandlerMsg routes the original keystroke into the form.
+// createBindings owns the create-topic form. esc has dual semantics: in
+// INSERT or with a popup it's owned by the form (returns to NORMAL / closes
+// popup); in plain NORMAL it closes the overlay.
 func (m *Model) createBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"ctrl+s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
@@ -712,10 +606,9 @@ func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
 	return nil
 }
 
-// Close releases any background resources owned by the screen. The host
-// calls it before swapping the active screen, so an in-flight clone
-// goroutine doesn't keep running (and holding a worker kgo.Client) until
-// its outer context times out. Safe to call when nothing is in flight.
+// Close releases background resources — the host calls it before swapping
+// screens so an in-flight clone goroutine doesn't keep its kgo.Client
+// pinned until the outer context times out. Safe when nothing is in flight.
 func (m *Model) Close() {
 	if m.cloneCxl != nil {
 		m.cloneCxl()
@@ -749,13 +642,10 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// PendingTopic returns the topic name currently awaiting confirmation (for
-// tests).
 func (m *Model) PendingTopic() string {
 	return m.pending.topic
 }
 
-// ConfirmOpen reports whether a confirm dialog is currently visible (tests).
 func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
 func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
@@ -822,7 +712,6 @@ func (m *Model) visibleTopics() []kafka.TopicSummary {
 	return out
 }
 
-// refreshTable rebuilds the underlying table rows from m.allTopics.
 func (m *Model) refreshTable() {
 	visible := m.visibleTopics()
 	rows := make([]components.Row, 0, len(visible))
@@ -835,8 +724,6 @@ func (m *Model) refreshTable() {
 	m.table.SetRows(rows)
 }
 
-// rowValues returns the rendered cell values for a topic in the configured
-// column order.
 func (m *Model) rowValues(t kafka.TopicSummary) []string {
 	out := make([]string, 0, len(m.columns))
 	for _, col := range m.columns {
@@ -879,11 +766,9 @@ func (m *Model) cellFor(col string, t kafka.TopicSummary) string {
 	}
 }
 
-// View renders the screen body.
 func (m *Model) View() string {
 	switch m.mode {
 	case ModeList:
-		// fall through to default list rendering below.
 	case ModeCreate:
 		return m.create.View(m.width)
 	case ModeClone:
@@ -910,20 +795,18 @@ func (m *Model) renderCloningOverlay() string {
 	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
 }
 
-// refreshCmd dispatches a topic list reload.
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
 	return loadCmd(m.svc)
 }
 
-// AutoRefreshTick returns a [tea.Cmd] that emits a tick for the configured
-// refresh interval. Hosts that opt-in call this from Init.
+// AutoRefreshTick emits a tick for the configured refresh interval. Hosts
+// that opt-in call this from Init.
 func (m *Model) AutoRefreshTick() tea.Cmd { return m.refresher.Tick(RefreshTickMsg{}) }
 
 // HandleRefreshTick triggers a reload + reschedules another tick. The reload
-// itself is skipped while a previous load is in flight (`m.loading`) or the
-// host has paused auto-refresh via [Model.SetRefreshPaused]; the ticker
-// keeps running so resuming is instantaneous.
+// is skipped while a previous load is in flight or auto-refresh is paused;
+// the ticker keeps running so resuming is instantaneous.
 func (m *Model) HandleRefreshTick() tea.Cmd {
 	next := m.refresher.Tick(RefreshTickMsg{})
 	if next == nil || m.loading || m.refresher.Paused() {
@@ -932,20 +815,11 @@ func (m *Model) HandleRefreshTick() tea.Cmd {
 	return tea.Batch(m.refreshCmd(), next)
 }
 
-// RefreshInterval returns the screen's configured auto-refresh tick (0 if
-// auto-refresh is disabled in config).
 func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
 
-// SetRefreshPaused toggles the auto-refresh pause flag. The host calls it
-// from the global ctrl+r handler so refresh state stays in sync with the
-// chrome's Refresh: indicator.
 func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
 
-// LastRefresh returns the wall-clock time of the most recent successful
-// load, or zero when no load has completed yet.
 func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
-
-// ----- Messages -----
 
 // TopicsLoadedMsg is dispatched after a refresh completes.
 type TopicsLoadedMsg struct {
@@ -953,27 +827,22 @@ type TopicsLoadedMsg struct {
 	Watermarks []TopicWatermarkResult
 	Sizes      []TopicSizeResult
 	Configs    []TopicConfigResult
-	// Warnings carries human-readable summaries of whole-category batch-RPC
-	// failures (e.g. broker rejected DescribeConfigs entirely). Per-topic
-	// errors inside an otherwise-successful batch are silently dropped.
+	// Warnings carries summaries of whole-category batch-RPC failures.
+	// Per-topic errors inside an otherwise-successful batch are dropped.
 	Warnings []string
 	Err      error
 }
 
-// TopicWatermarkResult pairs a topic with its watermarks for batch loading.
 type TopicWatermarkResult struct {
 	Topic      string
 	Watermarks kafka.TopicWatermarks
 }
 
-// TopicSizeResult pairs a topic with its on-disk size in bytes.
 type TopicSizeResult struct {
 	Topic string
 	Size  int64
 }
 
-// TopicConfigResult pairs a topic with its resolved configs (cleanup.policy,
-// retention.ms, etc.) so the list view can render them inline.
 type TopicConfigResult struct {
 	Topic   string
 	Configs []kafka.TopicConfig
@@ -986,20 +855,16 @@ type TopicMutatedMsg struct {
 	Err   error
 }
 
-// CloneProgressMsg surfaces a clone-progress update.
 type CloneProgressMsg struct {
 	Progress kafka.CloneProgress
 }
 
-// RefreshTickMsg is the periodic auto-refresh tick.
 type RefreshTickMsg struct{}
 
 // loadCmd refreshes the topics list along with per-topic watermarks, sizes,
-// and configs so the list view can render the full row up-front. Each
-// category is one batch RPC against the broker (kadm folds the wire-level
-// fan-out across brokers itself); the three batches run concurrently so
-// the wall-clock load time is bound by the slowest single RPC, not by
-// topic count. A whole-category failure is surfaced as one warning toast.
+// and configs. The three batches run concurrently so wall-clock load time
+// is bound by the slowest single RPC, not by topic count. A whole-category
+// failure is surfaced as one warning toast.
 func loadCmd(svc Service) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1093,9 +958,6 @@ type batchFetchStat struct {
 	err  error
 }
 
-// batchFetchWarnings turns batch-level errors into user-facing toasts. A
-// single batch RPC failure means *all* per-topic data in that category is
-// missing, so we always surface it (no thresholding needed).
 func batchFetchWarnings(stats ...batchFetchStat) []string {
 	var out []string
 	for _, s := range stats {
@@ -1124,18 +986,13 @@ func createCmd(svc Service, spec kafka.CreateTopicSpec) tea.Cmd {
 	}
 }
 
-// cloneStartedMsg is the internal handoff from cloneStartCmd to the model:
-// it carries the freshly-opened progress channel so the screen can keep
-// streaming intermediate updates into the overlay.
+// cloneStartedMsg hands the freshly-opened progress channel back to the
+// model so it can drive a chain of clonePollCmds.
 type cloneStartedMsg struct {
 	ch     <-chan kafka.CloneProgress
 	cancel context.CancelFunc
 }
 
-// cloneStartCmd kicks off a clone. svc.CloneTopic returns a progress
-// channel immediately; we hand it to the model via cloneStartedMsg so the
-// model can drive a chain of clonePollCmds and surface every intermediate
-// progress tick to the overlay.
 func cloneStartCmd(svc Service, src, dst string, opts kafka.CloneOptions) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -1148,9 +1005,9 @@ func cloneStartCmd(svc Service, src, dst string, opts kafka.CloneOptions) tea.Cm
 	}
 }
 
-// clonePollCmd reads one progress message from ch. When the channel is
-// closed before a Done flag arrived, it synthesizes one so the screen
-// always transitions back to ModeList.
+// clonePollCmd reads one progress message from ch. When the channel closes
+// before a Done flag arrived, it synthesizes one so the screen always
+// transitions back to ModeList.
 func clonePollCmd(ch <-chan kafka.CloneProgress) tea.Cmd {
 	return func() tea.Msg {
 		p, ok := <-ch
@@ -1161,15 +1018,14 @@ func clonePollCmd(ch <-chan kafka.CloneProgress) tea.Cmd {
 	}
 }
 
-// drainChannel pulls items from ch until it's closed. Used to release the
-// clone goroutine when the user transitions away before the channel is
-// fully drained.
+// drainChannel releases the clone goroutine when the user transitions away
+// before the channel is fully drained.
 func drainChannel(ch <-chan kafka.CloneProgress) {
-	for range ch { //nolint:revive // intentional drain.
+	for range ch {
+		_ = struct{}{}
 	}
 }
 
-// buildColumns maps the column-keys list into [components.Column] specs.
 func buildColumns(keys []string) []components.Column {
 	out := make([]components.Column, 0, len(keys))
 	for _, k := range keys {
@@ -1212,7 +1068,6 @@ func findConfig(cfgs []kafka.TopicConfig, key string) string {
 	return "—"
 }
 
-// formatThousands renders an integer with thousands separators.
 func formatThousands(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	neg := false

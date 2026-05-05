@@ -27,27 +27,22 @@ type CLICluster struct {
 	SASLPassword  string
 }
 
-// HasInlineCluster reports whether enough flags were provided to build an inline cluster.
 func (c *CLICluster) HasInlineCluster() bool {
 	return c != nil && len(c.Brokers) > 0
 }
 
 // Flags is the parsed result of CLI arguments.
 type Flags struct {
-	// Mode flags — when set, exit before starting the TUI.
 	ShowVersion bool
 	ShowLogs    bool
 	ShowLogsDir bool
 
-	// Configuration overrides.
 	ConfigPath string
 
-	// Cluster selection / inline definition.
 	ClusterName string
 	Inline      CLICluster
 }
 
-// ParseError describes a CLI flag validation problem.
 type ParseError struct {
 	Msg string
 }
@@ -59,9 +54,6 @@ func (e *ParseError) Error() string { return e.Msg }
 var ErrHelpRequested = errors.New("cli: help requested")
 
 // Parse parses the given args (without the program name) and returns Flags.
-//
-// stdout / stderr are wired into the underlying pflag.FlagSet so the caller can
-// capture or redirect output (used in tests).
 func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 	fs := pflag.NewFlagSet("kafka-tui", pflag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -101,7 +93,6 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 		return nil, &ParseError{Msg: fmt.Sprintf("unexpected argument: %q", fs.Arg(0))}
 	}
 
-	// resolve cluster name when only --brokers is given
 	if flags.Inline.HasInlineCluster() && flags.Inline.Name == "" {
 		flags.Inline.Name = flags.ClusterName
 		if flags.Inline.Name == "" {
@@ -118,7 +109,6 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 	return flags, nil
 }
 
-// validate enforces cross-flag invariants (e.g. TLS sub-flags require --tls).
 func validate(f *Flags) error {
 	if err := validateTLS(&f.Inline); err != nil {
 		return err
@@ -202,8 +192,8 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// MustParseOrExit parses os.Args and prints any error to stderr, exiting with code 2 on error.
-// Returns false when the process should exit cleanly (help shown).
+// MustParseOrExit parses os.Args, exits with code 2 on error, and returns
+// false when the process should exit cleanly (help shown).
 func MustParseOrExit() (*Flags, bool) {
 	f, err := Parse(os.Args[1:], os.Stdout, os.Stderr)
 	switch {

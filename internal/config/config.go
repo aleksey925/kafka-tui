@@ -1,15 +1,9 @@
 // Package config loads and merges kafka-tui YAML configuration files.
-//
-// Two layers are supported (low to high priority):
-//   - global:  ~/.kafka-tui/{config,clusters}.yaml
-//   - project: nearest .kafka-tui/{config,clusters}.yaml found by walking up
-//     from the current working directory (similar to .git lookup)
-//
-// The optional --config flag points to either a single YAML file or a directory
-// and disables hierarchy lookup for the corresponding file(s).
+// Two layers are supported (low to high priority): global
+// (~/.kafka-tui/) and project (nearest .kafka-tui/ walking up from cwd).
+// The --config flag overrides hierarchy lookup for matching files.
 package config
 
-// Config is the merged content of config.yaml.
 type Config struct {
 	Logging   LoggingConfig   `yaml:"logging"`
 	Refresh   RefreshConfig   `yaml:"refresh"`
@@ -21,7 +15,6 @@ type Config struct {
 	Vault     VaultConfig     `yaml:"vault"`
 }
 
-// LoggingConfig controls log destination, level, and rotation.
 type LoggingConfig struct {
 	Level     string `yaml:"level"`
 	File      string `yaml:"file"`
@@ -29,47 +22,39 @@ type LoggingConfig struct {
 	MaxFiles  int    `yaml:"max_files"`
 }
 
-// RefreshConfig holds auto-refresh intervals for each list view.
-// Values are duration strings ("5s", "30s") or "off".
+// RefreshConfig values are duration strings ("5s", "30s") or "off".
 type RefreshConfig struct {
 	TopicsList  string `yaml:"topics_list"`
 	GroupsList  string `yaml:"groups_list"`
 	GroupDetail string `yaml:"group_detail"`
 }
 
-// TopicsConfig controls the topics list screen.
 type TopicsConfig struct {
 	Columns []string `yaml:"columns"`
 }
 
-// GroupsConfig controls the consumer groups list screen.
 type GroupsConfig struct {
 	Columns []string `yaml:"columns"`
 }
 
-// MessagesConfig controls the messages list screen.
 type MessagesConfig struct {
 	Columns []string `yaml:"columns"`
 }
 
-// ProduceConfig controls the produce form behavior.
 type ProduceConfig struct {
 	HistorySize        int    `yaml:"history_size"`
 	DefaultCompression string `yaml:"default_compression"`
 }
 
-// ClipboardConfig controls how copied text is exported.
 type ClipboardConfig struct {
 	Method string `yaml:"method"` // auto | native | osc52 | off
 }
 
-// VaultConfig holds Vault connection settings used by ${vault:...} placeholders.
 type VaultConfig struct {
 	Address string `yaml:"address"`
 	Token   string `yaml:"token"`
 }
 
-// Defaults returns a Config populated with the documented default values.
 func Defaults() Config {
 	return Config{
 		Logging: LoggingConfig{

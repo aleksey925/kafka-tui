@@ -1,6 +1,4 @@
-// Package logs implements the `:logs` viewer screen — a paginated, searchable
-// view of the configured log file with optional follow-mode (tail -f) and
-// color-coded level tags (DEBUG, INFO, WARN, ERROR).
+// Package logs implements the `:logs` viewer screen.
 package logs
 
 import (
@@ -23,33 +21,21 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// DefaultFollowInterval is how often the model polls the log file for new
-// content while follow-mode is active.
 const DefaultFollowInterval = 500 * time.Millisecond
 
-// Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed esc/q on the list view.
 	Back bool
 }
 
-// Options configure a [Model].
 type Options struct {
-	// Path is the absolute path of the log file to display. Required.
-	Path string
-	// FollowInterval, when > 0, overrides DefaultFollowInterval.
+	Path           string
 	FollowInterval time.Duration
-	// Now is the injected clock (defaults to time.Now). Used only for the
-	// toast queue today; reserved for future timestamp formatting.
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
-	// MaxLines caps how many lines are kept in memory at once. Older lines
-	// are dropped when the buffer overflows. Zero means "unlimited".
+	Now            func() time.Time
+	Styles         theme.Styles
+	// MaxLines caps the in-memory buffer. Zero means unlimited.
 	MaxLines int
 }
 
-// Model is the logs viewer screen.
 type Model struct {
 	path           string
 	followInterval time.Duration
@@ -63,10 +49,6 @@ type Model struct {
 	cursor   int
 	viewport int
 
-	// search state. The host owns the `/` prompt (see app.go) and pushes
-	// the live query into [Model.SetSearch]; the screen only keeps the
-	// resulting query plus the precomputed line indices for n/N
-	// navigation.
 	search      string
 	matches     []int
 	matchCursor int
@@ -81,7 +63,6 @@ type Model struct {
 	now    func() time.Time
 }
 
-// New constructs a Model.
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -105,44 +86,34 @@ func New(opts Options) *Model {
 	}
 }
 
-// Init dispatches the initial file load.
 func (m *Model) Init() tea.Cmd {
 	return loadCmd(m.path, 0)
 }
 
-// Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// Path returns the log file path the screen is bound to.
 func (m *Model) Path() string { return m.path }
 
-// Lines returns the loaded lines (defensive copy) for tests.
 func (m *Model) Lines() []string {
 	out := make([]string, len(m.lines))
 	copy(out, m.lines)
 	return out
 }
 
-// Following reports whether follow-mode is on (for tests).
 func (m *Model) Following() bool { return m.follow }
 
-// Missing reports whether the log file is missing (for tests).
 func (m *Model) Missing() bool { return m.missing }
 
-// Cursor returns the current cursor index.
 func (m *Model) Cursor() int { return m.cursor }
 
-// Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
-// LatestFlash returns the freshest live toast from this screen's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {
 	if m.toasts == nil {
 		return components.Toast{}, false
@@ -150,7 +121,6 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
 	body := fmt.Sprintf("Logs · %d lines", len(m.lines))
 	if m.search != "" {
@@ -162,14 +132,10 @@ func (m *Model) Title() string {
 	return body
 }
 
-// Breadcrumb returns the log file path (right-aligned in the frame).
 func (m *Model) Breadcrumb() string { return m.path }
 
-// SetSearch applies a host-driven filter query. The match-index list is
-// rebuilt right away so n/N navigation (and the title's "X matches" hint)
-// reflect the new query without waiting for the user to advance, and
-// the cursor jumps to the first match so the user sees the result of
-// each keystroke live.
+// SetSearch rebuilds match indices and jumps to the first match so the user
+// sees the result of each keystroke live.
 func (m *Model) SetSearch(query string) {
 	m.search = query
 	m.recomputeMatches()
@@ -180,27 +146,21 @@ func (m *Model) SetSearch(query string) {
 	}
 }
 
-// ActiveFilter returns the current search query.
 func (m *Model) ActiveFilter() string { return m.search }
 
-// SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	m.clampViewport()
 }
 
-// KeyHints derives bottom-row entries from the bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.bindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the dispatcher's
-// bindings table.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.bindings())
 }
 
-// bindings is the single source of truth for log-viewer shortcuts.
 func (m *Model) bindings() []keymap.Binding {
 	followLabel := "follow tail"
 	if m.follow {
@@ -214,9 +174,7 @@ func (m *Model) bindings() []keymap.Binding {
 		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: m.actMoveUp},
 		{Keys: []string{"ctrl+d"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
 		{Keys: []string{"ctrl+u"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
-		// `gg` is a two-key chord: pressing `g` arms the chord, the
-		// next key (when `g`) scrolls to top. Documented as "gg" but
-		// dispatched off the first `g`.
+		// `gg` is a two-key chord; first `g` arms, second fires.
 		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Hint: true, Handler: m.actChordG},
 		{Keys: []string{"G"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Logs", Handler: m.actBack},
@@ -237,10 +195,6 @@ func (m *Model) actScrollBottom() tea.Cmd {
 	return nil
 }
 
-// actChordG handles the `gg` two-key chord. The first `g` arms the
-// chord; the second `g` (still routed through this same handler
-// because the dispatcher iterates the bindings table on every key)
-// scrolls to top and disarms.
 func (m *Model) actChordG() tea.Cmd {
 	if m.gPrimed {
 		m.gPrimed = false
@@ -252,7 +206,6 @@ func (m *Model) actChordG() tea.Cmd {
 	return nil
 }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -282,10 +235,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 			m.clampViewport()
 			return nil
 		}
-		// otherwise fall through; treat the second key normally
 	}
-	// any non-`g` key disarms the gg chord — pressing `g` then anything
-	// else should not silently arm the next `g` press.
+	// non-`g` disarms the gg chord so the next `g` doesn't silently fire.
 	if m.gPrimed && key.String() != "g" {
 		m.gPrimed = false
 	}
@@ -338,7 +289,6 @@ func (m *Model) bodyHeight() int {
 	if m.height <= 0 {
 		return len(m.lines)
 	}
-	// reserve one line each for header, search line, key hints.
 	body := m.height - 4
 	if body < 1 {
 		return 1
@@ -409,7 +359,7 @@ func (m *Model) handleLoaded(msg LoadedMsg) {
 func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "tail: "+msg.Err.Error())
-		// keep follow loop alive — transient errors should not stop the screen
+		// keep follow loop alive on transient errors.
 		return tickCmd(m.followInterval)
 	}
 	if len(msg.Lines) > 0 {
@@ -423,7 +373,7 @@ func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {
 		m.clampViewport()
 	}
 	if msg.Truncated {
-		// the underlying file shrank (rotation): restart from the beginning
+		// log rotation: restart from the beginning
 		m.readOff = msg.NextOffset
 		return loadCmd(m.path, 0)
 	}
@@ -454,7 +404,6 @@ func (m *Model) trimLines() {
 	}
 }
 
-// View renders the screen body.
 func (m *Model) View() string {
 	var parts []string
 	if m.missing {
@@ -462,9 +411,7 @@ func (m *Model) View() string {
 	} else {
 		parts = append(parts, m.renderBody())
 	}
-	// inline search line is intentionally not rendered — the host owns
-	// the prompt (k9s-style top bar) and the screen surfaces matches in
-	// the frame title.
+	// search prompt is owned by the host; matches surface in the frame title.
 	return strings.Join(parts, "\n")
 }
 
@@ -495,10 +442,8 @@ func (m *Model) renderLine(idx int) string {
 	return prefix + rendered
 }
 
-// colorizeLevel finds the first level token (DEBUG/INFO/WARN/ERROR) in the
-// line and renders it with the matching theme color. If none match, the line
-// is returned as-is. Detection is case-sensitive — slog text handlers emit
-// uppercase levels.
+// colorizeLevel finds the first level token and applies a theme color.
+// Case-sensitive — slog text handlers emit uppercase levels.
 func (m *Model) colorizeLevel(line string) string {
 	tag, idx := detectLevel(line)
 	if idx < 0 {
@@ -523,10 +468,8 @@ func (m *Model) levelStyle(tag string) lipgloss.Style {
 	}
 }
 
-// detectLevel returns the first level tag found in s (DEBUG, INFO, WARN, or
-// ERROR) along with its byte index. Tokens are matched only when bounded by
-// non-letter characters on both sides — so "infos" or "errored" do not match.
-// Returns ("", -1) when no level is present.
+// detectLevel matches level tokens bounded by non-letters on both sides
+// (so "infos" / "errored" do not match). Returns ("", -1) on no match.
 func detectLevel(s string) (string, int) {
 	tags := []string{"ERROR", "WARN", "DEBUG", "INFO"}
 	bestIdx := -1
@@ -568,7 +511,6 @@ func isLetter(b byte) bool {
 
 // ----- Messages -----
 
-// LoadedMsg is dispatched on initial load (or after rotation truncation).
 type LoadedMsg struct {
 	Lines      []string
 	NextOffset int64
@@ -576,10 +518,8 @@ type LoadedMsg struct {
 	Err        error
 }
 
-// AppendedMsg is dispatched after a follow-tick yields new bytes.
-//
-// Truncated is true when the underlying file shrank (log rotation): the host
-// should treat the offset as invalid and trigger a fresh load.
+// AppendedMsg.Truncated is true when the underlying file shrank (rotation):
+// the host should treat the offset as invalid and trigger a fresh load.
 type AppendedMsg struct {
 	Lines      []string
 	NextOffset int64
@@ -587,7 +527,6 @@ type AppendedMsg struct {
 	Err        error
 }
 
-// FollowTickMsg is the periodic poll while follow-mode is active.
 type FollowTickMsg struct{}
 
 func loadCmd(path string, off int64) tea.Cmd {
@@ -613,7 +552,6 @@ func appendCmd(path string, from int64) tea.Cmd {
 			return AppendedMsg{Err: err}
 		}
 		if info.Size() < from {
-			// log rotation: file shrank
 			return AppendedMsg{Truncated: true, NextOffset: 0}
 		}
 		if info.Size() == from {
@@ -633,10 +571,8 @@ func tickCmd(d time.Duration) tea.Cmd {
 	})
 }
 
-// readAll reads from offset to EOF and returns the lines plus the new offset.
-// The trailing fragment without a final newline is included as its own line so
-// no content is lost between consecutive reads. Lines never carry trailing
-// newlines.
+// readAll reads from offset to EOF; trailing fragments without a final
+// newline are included so no content is lost between consecutive reads.
 func readAll(path string, off int64) ([]string, int64, error) {
 	f, err := os.Open(path) //nolint:gosec // path is from user-supplied config.
 	if err != nil {
@@ -644,8 +580,7 @@ func readAll(path string, off int64) ([]string, int64, error) {
 	}
 	defer func() { _ = f.Close() }()
 	// stat BEFORE scanning so writes that arrive while we read don't bump the
-	// reported next-offset past content we never observed (those bytes get
-	// picked up on the next tick instead).
+	// reported next-offset past content we never observed.
 	info, err := f.Stat()
 	if err != nil {
 		return nil, off, fmt.Errorf("logs: stat %s: %w", path, err)

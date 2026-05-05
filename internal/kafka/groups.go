@@ -12,9 +12,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kerr"
 )
 
-// GroupListInfo is the lightweight per-group snapshot used by the groups list
-// screen — the data ListGroups returns without an extra DescribeGroups round
-// trip.
+// GroupListInfo is the lightweight per-group snapshot from ListGroups,
+// without the extra DescribeGroups round trip.
 type GroupListInfo struct {
 	Group        string
 	State        string
@@ -22,7 +21,6 @@ type GroupListInfo struct {
 	Coordinator  int32
 }
 
-// GroupMember is a single consumer in a described group.
 type GroupMember struct {
 	MemberID    string
 	InstanceID  string
@@ -32,14 +30,11 @@ type GroupMember struct {
 	Assignments []MemberAssignment
 }
 
-// MemberAssignment is the (topic, partitions) pair owned by a single member.
 type MemberAssignment struct {
 	Topic      string
 	Partitions []int32
 }
 
-// GroupDescription is the detailed view §7.7 of the spec consumes — members,
-// coordinator, protocol, and state.
 type GroupDescription struct {
 	Group           string
 	State           string
@@ -51,8 +46,6 @@ type GroupDescription struct {
 	Members         []GroupMember
 }
 
-// PartitionLag mirrors the columns the group-detail screen renders: per
-// partition committed/end/lag with the owning member's id.
 type PartitionLag struct {
 	Topic     string
 	Partition int32
@@ -63,27 +56,23 @@ type PartitionLag struct {
 	Err       error
 }
 
-// ResetStrategy is one of the offset-reset strategies the §7.8 dialog exposes.
+// ResetStrategy selects how ResetOffsets computes the new committed offset.
 type ResetStrategy int
 
 const (
-	// ResetEarliest moves every targeted partition to its log-start offset.
 	ResetEarliest ResetStrategy = iota
-	// ResetLatest moves every targeted partition to its log-end offset.
 	ResetLatest
-	// ResetShift adds Shift to the current commit (negative shifts move
-	// backwards). Out-of-range results are clamped to [low, high].
+	// ResetShift adds Shift to the current commit (negative moves backwards).
+	// Out-of-range results are clamped to [low, high].
 	ResetShift
 	// ResetTimestamp seeks the first record with timestamp >= Timestamp.
 	// Partitions with no record at/after the timestamp fall back to the
 	// log-end offset (with a "→ high" note in the preview).
 	ResetTimestamp
-	// ResetSpecific sets every targeted partition to Offset, clamped to
-	// [low, high].
+	// ResetSpecific sets every targeted partition to Offset, clamped to [low, high].
 	ResetSpecific
 )
 
-// String returns the strategy name used in toast messages and the spec.
 func (s ResetStrategy) String() string {
 	switch s {
 	case ResetEarliest:
@@ -101,30 +90,21 @@ func (s ResetStrategy) String() string {
 	}
 }
 
-// TopicPartition is a (topic, partition) pair used for reset scopes.
 type TopicPartition struct {
 	Topic     string
 	Partition int32
 }
 
-// ResetSpec describes a single reset operation.
+// ResetSpec describes a single reset operation. Empty Targets means every
+// partition the group has committed offsets for.
 type ResetSpec struct {
-	// Strategy selects the algorithm used to compute the new offset.
-	Strategy ResetStrategy
-	// Shift is the delta applied to the current commit when Strategy is
-	// ResetShift. Negative values move backwards.
-	Shift int64
-	// Timestamp is the time used by ResetTimestamp.
+	Strategy  ResetStrategy
+	Shift     int64
 	Timestamp time.Time
-	// Offset is the absolute offset used by ResetSpecific.
-	Offset int64
-	// Targets restricts the reset to these (topic, partition) pairs. When
-	// empty the reset applies to every partition the group has committed
-	// offsets for.
-	Targets []TopicPartition
+	Offset    int64
+	Targets   []TopicPartition
 }
 
-// PartitionResetPreview is the per-partition row of the §7.8 preview table.
 type PartitionResetPreview struct {
 	Topic     string
 	Partition int32
@@ -137,32 +117,17 @@ type PartitionResetPreview struct {
 }
 
 const (
-	// ResetNoteClampedLow indicates the requested offset (shift/specific)
-	// was below the partition's low watermark and was clamped up.
-	ResetNoteClampedLow = "clamped to low"
-	// ResetNoteClampedHigh indicates the requested offset was above the
-	// partition's high watermark and was clamped down.
-	ResetNoteClampedHigh = "clamped to high"
-	// ResetNoteTimestampNoBefore indicates no record predates the requested
-	// timestamp; the partition was sent to its low watermark.
+	ResetNoteClampedLow        = "clamped to low"
+	ResetNoteClampedHigh       = "clamped to high"
 	ResetNoteTimestampNoBefore = "→ low (no msgs before)"
-	// ResetNoteTimestampNoAfter indicates no record matches/follows the
-	// requested timestamp; the partition was sent to its high watermark.
-	ResetNoteTimestampNoAfter = "→ high (no msgs after)"
+	ResetNoteTimestampNoAfter  = "→ high (no msgs after)"
 )
 
-// ResetSummary aggregates re-consume / skip estimates for the preview footer.
 type ResetSummary struct {
-	// Reconsume is the number of records the group will re-process (sum of
-	// negative diffs, magnitude). Populated for earliest/shift/timestamp.
 	Reconsume int64
-	// Skipped is the number of records the group will skip past (sum of
-	// positive diffs). Populated for latest/shift.
-	Skipped int64
+	Skipped   int64
 }
 
-// ResetPreview is the §7.8 preview returned by PreviewReset. The same shape
-// is returned by ResetOffsets so the UI can render the post-commit table.
 type ResetPreview struct {
 	Group      string
 	Strategy   ResetStrategy
@@ -170,8 +135,7 @@ type ResetPreview struct {
 	Summary    ResetSummary
 }
 
-// ListConsumerGroups returns a cheap snapshot of all consumer-protocol groups
-// in the cluster. The list view uses this; lag is loaded lazily on focus.
+// ListConsumerGroups returns a snapshot of all consumer-protocol groups.
 func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error) {
 	listed, err := c.adm.ListGroups(ctx)
 	if err != nil {
@@ -193,8 +157,6 @@ func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error
 	return out, nil
 }
 
-// DescribeConsumerGroup returns members, coordinator, and protocol info for a
-// single group.
 func (c *Client) DescribeConsumerGroup(ctx context.Context, group string) (GroupDescription, error) {
 	described, err := c.adm.DescribeGroups(ctx, group)
 	if err != nil {
@@ -308,8 +270,7 @@ func (c *Client) GroupOffsets(ctx context.Context, group string) ([]PartitionLag
 }
 
 // FilterGroupsByTopic returns the groups that have committed offsets for the
-// given topic OR have members subscribed to it. Used by `g` on the topics
-// screen to scope the groups list to a topic.
+// given topic OR have members subscribed to it.
 func (c *Client) FilterGroupsByTopic(ctx context.Context, topic string) ([]GroupListInfo, error) {
 	groups, err := c.ListConsumerGroups(ctx)
 	if err != nil {
@@ -356,13 +317,12 @@ func matchesTopic(group, topic string, described kadm.DescribedGroups, commits k
 }
 
 // PreviewReset computes the per-partition diff implied by spec without
-// committing anything. Use this to drive the §7.8 preview table.
+// committing anything.
 func (c *Client) PreviewReset(ctx context.Context, group string, spec ResetSpec) (ResetPreview, error) {
 	return c.computeReset(ctx, group, spec)
 }
 
-// ResetOffsets commits the offsets implied by spec and returns the same
-// preview shape so the UI can render the post-commit confirmation.
+// ResetOffsets commits the offsets implied by spec and returns the preview.
 func (c *Client) ResetOffsets(ctx context.Context, group string, spec ResetSpec) (ResetPreview, error) {
 	preview, err := c.computeReset(ctx, group, spec)
 	if err != nil {
@@ -387,7 +347,7 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, spec ResetSpec)
 }
 
 // DeleteConsumerGroup deletes a group, but only when it is in the Empty state
-// (KIP-229 requires no active members). Returns a structured error otherwise.
+// (KIP-229 requires no active members). Returns ErrNonEmptyGroup otherwise.
 func (c *Client) DeleteConsumerGroup(ctx context.Context, group string) error {
 	described, err := c.adm.DescribeGroups(ctx, group)
 	if err != nil {
@@ -413,9 +373,6 @@ func (c *Client) DeleteConsumerGroup(ctx context.Context, group string) error {
 	return nil
 }
 
-// computeReset is the shared body of PreviewReset and ResetOffsets — it
-// resolves the targets, loads watermarks/commits, and applies the strategy
-// with clamping.
 func (c *Client) computeReset(ctx context.Context, group string, spec ResetSpec) (ResetPreview, error) {
 	if spec.Strategy < ResetEarliest || spec.Strategy > ResetSpecific {
 		return ResetPreview{}, fmt.Errorf("kafka: unknown reset strategy %d", spec.Strategy)
@@ -488,8 +445,8 @@ func (c *Client) computeReset(ctx context.Context, group string, spec ResetSpec)
 	return preview, nil
 }
 
-// resolveResetTargets returns either the explicit targets, deduplicated, or —
-// if targets is empty — every (topic, partition) the group has a commit for.
+// resolveResetTargets returns the dedup'd explicit targets, or every
+// (topic, partition) the group has a commit for when targets is empty.
 func resolveResetTargets(targets []TopicPartition, commits kadm.OffsetResponses) []TopicPartition {
 	if len(targets) > 0 {
 		seen := make(map[TopicPartition]struct{}, len(targets))
@@ -621,10 +578,10 @@ func computeResetTarget(
 	}
 }
 
-// lookupListedOffsetAt returns the offset for tp in offsets, but only when the
-// broker reported a real (non-negative) offset for it. A -1 offset means
-// "no record at-or-after the requested timestamp" and is treated as a miss so
-// the caller can apply the empty-partition fallback.
+// lookupListedOffsetAt returns the offset for tp only when the broker
+// reported a non-negative value. -1 means "no record at-or-after the
+// requested timestamp" and is treated as a miss so the caller can apply the
+// empty-partition fallback.
 func lookupListedOffsetAt(offsets kadm.ListedOffsets, tp TopicPartition) (int64, bool) {
 	ps, ok := offsets[tp.Topic]
 	if !ok {
@@ -649,13 +606,12 @@ func clampOffset(want, low, high int64) (int64, string) {
 }
 
 // ErrNonEmptyGroup is returned when DeleteConsumerGroup or ResetOffsets is
-// called on a group that still has active members. The TUI maps this to a
-// dedicated toast.
+// called on a group that still has active members.
 var ErrNonEmptyGroup = errors.New("group is not empty")
 
 // IsNonEmptyGroup reports whether err signals the "group must be Empty"
-// precondition surfaced by ResetOffsets and DeleteConsumerGroup. Either our
-// own preflight check or the broker's NON_EMPTY_GROUP error qualifies.
+// precondition. Either our preflight check or the broker's NON_EMPTY_GROUP
+// error qualifies.
 func IsNonEmptyGroup(err error) bool {
 	if err == nil {
 		return false

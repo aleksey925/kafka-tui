@@ -1,11 +1,9 @@
 package config
 
-// ClustersFile is the parsed content of clusters.yaml.
 type ClustersFile struct {
 	Clusters []Cluster `yaml:"clusters"`
 }
 
-// Cluster is the configuration for a single Kafka cluster.
 type Cluster struct {
 	Name     string      `yaml:"name"`
 	Brokers  []string    `yaml:"brokers"`
@@ -15,19 +13,17 @@ type Cluster struct {
 	TLS      *TLSConfig  `yaml:"tls,omitempty"`
 }
 
-// SASLConfig holds SASL authentication settings for a cluster.
 type SASLConfig struct {
 	Mechanism string `yaml:"mechanism"`
 	Username  string `yaml:"username"`
 	Password  string `yaml:"password"`
 }
 
-// TLSConfig holds TLS settings for a cluster.
-//
-// Inline fields (CA / Cert / Key) and their *_file counterparts are mutually
-// exclusive: specifying both inline content and a file path for the same key
-// is a load error. An empty section (`tls: {}`) is valid and means TLS with
-// system CAs and no client certificate.
+// TLSConfig holds TLS settings for a cluster. Inline fields (CA / Cert /
+// Key) and their *_file counterparts are mutually exclusive: specifying
+// both inline content and a file path for the same key is a load error. An
+// empty section (`tls: {}`) is valid and means TLS with system CAs and no
+// client certificate.
 type TLSConfig struct {
 	CA         string `yaml:"ca,omitempty"`
 	CAFile     string `yaml:"ca_file,omitempty"`

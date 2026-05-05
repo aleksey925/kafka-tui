@@ -13,16 +13,13 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// DefaultDebounce is the time the watcher waits after the last filesystem
-// event before triggering a reload.
+// DefaultDebounce coalesces editor saves (atomic-rename writes show up as
+// rapid Create+Write+Rename bursts, all within ~tens of ms).
 const DefaultDebounce = 500 * time.Millisecond
 
-// Snapshot is a reload result emitted by Watcher.
 type Snapshot struct {
-	// Loaded is the new merged config when the reload succeeded; nil otherwise.
 	Loaded *Loaded
-	// Err is non-nil when the reload failed.
-	Err error
+	Err    error
 	// ActiveClusterChanged is true when the active cluster's fields differ
 	// from the previous snapshot. The TUI uses this to surface a warning
 	// toast advising the user to reconnect.
@@ -49,12 +46,9 @@ type Watcher struct {
 }
 
 // NewWatcher loads the configuration once and starts watching every file
-// that contributed to the result. The initial Loaded value is returned so
-// the caller can wire it into the application; subsequent reloads are
-// delivered on the channel returned by Snapshots.
-//
-// activeCluster, when non-empty, enables ActiveClusterChanged detection. A
-// debounce of zero falls back to DefaultDebounce.
+// that contributed to the result. activeCluster, when non-empty, enables
+// ActiveClusterChanged detection. A debounce of zero falls back to
+// DefaultDebounce.
 func NewWatcher(opts LoaderOptions, activeCluster string, debounce time.Duration) (*Watcher, *Loaded, error) {
 	if debounce <= 0 {
 		debounce = DefaultDebounce
@@ -88,13 +82,9 @@ func NewWatcher(opts LoaderOptions, activeCluster string, debounce time.Duration
 	return w, initial, nil
 }
 
-// Snapshots returns the channel on which reload events are delivered. The
-// channel is closed when the watcher is closed.
+// Snapshots is closed when the watcher is closed.
 func (w *Watcher) Snapshots() <-chan Snapshot { return w.snapshots }
 
-// Close stops the watcher's background goroutine and releases the underlying
-// fsnotify resources. The Snapshots channel is closed once the goroutine
-// exits.
 func (w *Watcher) Close() error {
 	w.cancel()
 	err := w.fsw.Close()
@@ -190,8 +180,6 @@ func (w *Watcher) send(ctx context.Context, snap Snapshot) {
 	}
 }
 
-// isTracked reports whether name (the file path reported by fsnotify) is one
-// of the files we care about.
 func (w *Watcher) isTracked(name string) bool {
 	abs, err := filepath.Abs(name)
 	if err != nil {
@@ -201,11 +189,10 @@ func (w *Watcher) isTracked(name string) bool {
 	return ok
 }
 
-// refreshWatchedFiles recomputes the set of files we want to be notified
-// about and updates the underlying fsnotify watcher accordingly. We watch
-// parent directories rather than the files themselves so that editors that
-// save by rename (atomic write) keep producing events, and so a not-yet-
-// existing file becomes observable as soon as it appears.
+// refreshWatchedFiles watches parent directories rather than the files
+// themselves so that editors that save by rename (atomic write) keep
+// producing events, and so a not-yet-existing file becomes observable as
+// soon as it appears.
 func (w *Watcher) refreshWatchedFiles() error {
 	files, err := w.contributingPaths()
 	if err != nil {
@@ -243,10 +230,9 @@ func (w *Watcher) refreshWatchedFiles() error {
 	return nil
 }
 
-// contributingPaths returns absolute or as-given paths for every file that
-// can affect the merged config: the four hierarchy slots (or the explicit
-// override) plus every path referenced by a ${file:...} placeholder in any
-// of those YAML files.
+// contributingPaths returns every file that can affect the merged config:
+// the four hierarchy slots (or the explicit override) plus every path
+// referenced by a ${file:...} placeholder in any of those YAML files.
 func (w *Watcher) contributingPaths() ([]string, error) {
 	configFiles, clustersFiles, err := resolveFilePaths(w.opts)
 	if err != nil {
@@ -281,9 +267,6 @@ func (w *Watcher) contributingPaths() ([]string, error) {
 
 var filePlaceholderRe = regexp.MustCompile(`\$\{file:([^}]+)\}`)
 
-// discoverFilePlaceholders scans raw YAML bytes for every ${file:...}
-// placeholder body. The body is the path verbatim — it mirrors what the
-// placeholder resolver passes to its FileReader.
 func discoverFilePlaceholders(content []byte) []string {
 	matches := filePlaceholderRe.FindAllSubmatch(content, -1)
 	out := make([]string, 0, len(matches))
@@ -293,9 +276,8 @@ func discoverFilePlaceholders(content []byte) []string {
 	return out
 }
 
-// activeClusterChanged returns true when the cluster named name has any
-// field difference between prev and next. A cluster appearing only in one
-// of the two snapshots also counts as a change.
+// activeClusterChanged treats a cluster appearing in only one of the two
+// snapshots as a change.
 func activeClusterChanged(name string, prev, next *Loaded) bool {
 	p := findClusterByName(prev, name)
 	n := findClusterByName(next, name)

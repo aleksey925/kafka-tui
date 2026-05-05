@@ -23,52 +23,38 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// Clipboard abstracts the OSC 52 / native clipboard subsystem (Task 17).
-// The detail view writes through this interface so it can be wired to the
-// real implementation later without modifying screen logic.
+// Clipboard abstracts the OSC 52 / native clipboard subsystem.
 type Clipboard interface {
 	Copy(ctx context.Context, payload string) error
 }
 
-// FileWriter abstracts atomic file writes used by the `s` / `S` save
-// hotkeys. Defaults to writing under the current working directory.
+// FileWriter abstracts atomic file writes used by the save hotkeys.
 type FileWriter interface {
 	Write(path string, data []byte) error
 }
 
-// FileWriterFunc adapts a function into a [FileWriter].
 type FileWriterFunc func(path string, data []byte) error
 
-// Write calls f.
 func (f FileWriterFunc) Write(path string, data []byte) error { return f(path, data) }
 
-// PagerOpener opens a temporary read-only file in `$EDITOR` (or the user's
-// preferred pager). Defaults to [DefaultPagerOpener].
+// PagerOpener opens a temp file in $EDITOR.
 type PagerOpener interface {
 	Open(path string) error
 }
 
-// PagerOpenerFunc adapts a function into a [PagerOpener].
 type PagerOpenerFunc func(path string) error
 
-// Open calls f.
 func (f PagerOpenerFunc) Open(path string) error { return f(path) }
 
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
-	// Back signals the user pressed esc/q.
-	Back bool
-	// Produce, when non-empty, requests the produce form prefilled with the
-	// resend payload (PrefillFromMessage).
+	Back               bool
 	Produce            string
 	PrefillFromMessage *kafka.Message
-	// Toast and Warn surface ephemeral status messages from the detail view
-	// (copy / save outcomes). The host renders them using its toast queue.
-	Toast string
-	Warn  string
+	Toast              string
+	Warn               string
 }
 
-// DetailOptions configure a [DetailModel].
 type DetailOptions struct {
 	Messages   []kafka.Message
 	Index      int
@@ -76,15 +62,14 @@ type DetailOptions struct {
 	Clipboard  Clipboard
 	FileWriter FileWriter
 	Pager      PagerOpener
-	OutputDir  string // where save targets are written; defaults to cwd
-	// Wrap selects the initial soft-wrap mode. The parent screen passes its
-	// remembered value so the user's preference survives detail re-opens.
+	OutputDir  string
+	// Wrap is the initial soft-wrap mode; parent passes its remembered
+	// value so user preference survives detail re-opens.
 	Wrap   bool
 	Now    func() time.Time
 	Styles theme.Styles
 }
 
-// DetailModel is the message-detail screen (§7.4).
 type DetailModel struct {
 	messages  []kafka.Message
 	index     int
@@ -103,16 +88,12 @@ type DetailModel struct {
 	vScroll       int
 	hScroll       int
 	gPrimed       bool
-	// totalLines and maxLineWidth are cached layout geometry. They are
-	// refreshed by [layout] whenever something that affects the
-	// rendered body changes (size, view mode, wrap, current message), and
-	// consumed by scroll math (clampScroll, scrollBottom, ScrollSummary,
-	// hScroll bounds) so jumps work without first calling View().
+	// cached layout geometry refreshed by [layout]; consumed by scroll math
+	// so jumps work without first calling View().
 	totalLines   int
 	maxLineWidth int
 }
 
-// NewDetailModel constructs a detail view focused on opts.Messages[opts.Index].
 func NewDetailModel(opts DetailOptions) *DetailModel {
 	now := opts.Now
 	if now == nil {
@@ -154,24 +135,19 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 	}
 }
 
-// SetSize records the body geometry. Called by the parent screen on every
-// WindowSizeMsg so the viewport can re-clamp.
 func (d *DetailModel) SetSize(w, h int) {
 	d.width, d.height = w, h
 	d.layout()
 }
 
-// Wrap reports the current soft-wrap mode (true = on).
 func (d *DetailModel) Wrap() bool { return d.wrap }
 
-// ScrollOffset returns the current vertical line offset (for tests).
 func (d *DetailModel) ScrollOffset() int { return d.vScroll }
 
-// HScrollOffset returns the current horizontal column offset (for tests).
 func (d *DetailModel) HScrollOffset() int { return d.hScroll }
 
-// ScrollSummary describes the visible window: 1-based first/last visible
-// line and the total line count. Returns ok=false when geometry is unknown.
+// ScrollSummary returns 1-based first/last visible line plus total. ok=false
+// when geometry is unknown.
 func (d *DetailModel) ScrollSummary() (first, last, total int, ok bool) {
 	if d.totalLines == 0 || d.height <= 0 {
 		return 0, 0, 0, false
@@ -180,23 +156,18 @@ func (d *DetailModel) ScrollSummary() (first, last, total int, ok bool) {
 	return d.vScroll + 1, last, d.totalLines, true
 }
 
-// Action returns the pending host action.
 func (d *DetailModel) Action() DetailAction { return d.action }
 
-// ConsumeAction returns and clears the pending action.
 func (d *DetailModel) ConsumeAction() DetailAction {
 	a := d.action
 	d.action = DetailAction{}
 	return a
 }
 
-// Index returns the current message index (for tests).
 func (d *DetailModel) Index() int { return d.index }
 
-// ViewMode returns the active rendering mode (for tests).
 func (d *DetailModel) ViewMode() ValueView { return d.view }
 
-// Current returns the focused message.
 func (d *DetailModel) Current() kafka.Message {
 	if len(d.messages) == 0 {
 		return kafka.Message{}
@@ -204,21 +175,14 @@ func (d *DetailModel) Current() kafka.Message {
 	return d.messages[d.index]
 }
 
-// KeyHints derives the bottom-row entries from the bindings table.
 func (d *DetailModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(d.bindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the same
-// bindings table used by the dispatcher — guaranteed in sync.
 func (d *DetailModel) HelpSections() []help.Section {
 	return help.SectionsFromBindings(d.bindings())
 }
 
-// bindings is the single source of truth for detail-view shortcuts.
-// Every entry is dispatched through [keymap.Dispatch] — there is no
-// parallel switch statement. Adding a key requires exactly one
-// append, so help/hints can never drift from the dispatcher.
 func (d *DetailModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"n"}, Label: "next message", Category: "Browse", Hint: true, Handler: d.actNext},
@@ -234,9 +198,7 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: d.actScrollUp},
 		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: d.actPageDown},
 		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: d.actPageUp},
-		// `gg` is a two-key chord — first press arms gPrimed, second
-		// `g` (still routed through this handler since the dispatcher
-		// iterates the same table) fires scrollTop and disarms.
+		// `gg` is a two-key chord — first press arms, second fires.
 		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Handler: d.actChordG},
 		{Keys: []string{"G", "end"}, Label: "scroll to bottom", Category: "Movement", Handler: d.actScrollBottom},
 		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Handler: d.actScrollTop},
@@ -248,10 +210,9 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"S"}, Label: "save full JSON", Category: "Export", Handler: d.actSaveFull},
 		{Keys: []string{"e"}, Label: "open in $EDITOR", Category: "Export", Handler: d.actEditor},
 	}
-	// `R` stays bound in read-only mode too — actResend → resend()
-	// gates internally and emits a warn toast, so the user gets feedback
-	// instead of a silent no-op. Category / Hint are cleared so the
-	// dead-on-arrival action doesn't appear in help or the hints bar.
+	// `R` stays bound in read-only mode so resend() can warn explicitly
+	// instead of being a silent no-op. Hint/Category cleared so it doesn't
+	// surface in help or the hints bar.
 	resendBinding := keymap.Binding{
 		Keys: []string{"R"}, Label: "resend message",
 		Category: "Produce", Hint: true, Handler: d.actResend,
@@ -298,10 +259,6 @@ func (d *DetailModel) actHScrollRight() tea.Cmd {
 	return nil
 }
 
-// actChordG handles the `gg` two-key chord. The first `g` arms the
-// chord, the second `g` (still routed through this same handler
-// because the dispatcher iterates the bindings table on every key)
-// fires scrollTop and disarms.
 func (d *DetailModel) actChordG() tea.Cmd {
 	if d.gPrimed {
 		d.gPrimed = false
@@ -312,14 +269,12 @@ func (d *DetailModel) actChordG() tea.Cmd {
 	return nil
 }
 
-// Update routes a key message into the detail view.
 func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return d, nil
 	}
-	// any non-`g` key disarms the gg chord — pressing `g` then anything
-	// else should not silently arm the next `g` press.
+	// non-`g` disarms the gg chord.
 	if d.gPrimed && key.String() != "g" {
 		d.gPrimed = false
 	}
@@ -336,8 +291,6 @@ func (d *DetailModel) move(delta int) {
 	d.layout()
 }
 
-// setView switches the value rendering mode and resets the viewport so the
-// new content starts from the top.
 func (d *DetailModel) setView(v ValueView) {
 	if d.view == v {
 		return
@@ -349,17 +302,13 @@ func (d *DetailModel) setView(v ValueView) {
 
 func (d *DetailModel) toggleWrap() {
 	d.wrap = !d.wrap
-	// horizontal offset is meaningless in wrap mode; vertical offset is kept
-	// because clamp will normalise it after the next render.
+	// hScroll is meaningless in wrap mode; vScroll is normalised by clamp.
 	d.hScroll = 0
 	d.layout()
 }
 
-// layout produces the visible-line slice and refreshes the cached geometry
-// (totalLines, maxLineWidth) in lock-step. Called both by [View] and by any
-// state-changing op (resize, message switch, view-mode change, wrap toggle)
-// so a subsequent scroll key sees the same numbers the next frame will
-// render.
+// layout produces visible lines and refreshes cached geometry in lock-step
+// so a subsequent scroll key sees the same numbers the next frame renders.
 func (d *DetailModel) layout() []string {
 	if len(d.messages) == 0 {
 		d.totalLines, d.maxLineWidth = 0, 0
@@ -393,8 +342,6 @@ func (d *DetailModel) hStep() int {
 	if d.width <= 4 {
 		return 1
 	}
-	// scroll roughly a quarter screen — enough to feel responsive without
-	// jumping past short overhangs.
 	return d.width / 4
 }
 
@@ -500,7 +447,6 @@ func (d *DetailModel) openEditor() {
 		d.action.Warn = "editor: " + err.Error()
 		return
 	}
-	// best-effort read-only mode.
 	_ = os.Chmod(tmp.Name(), 0o400)
 	defer os.Remove(tmp.Name())
 	if err := d.pager.Open(tmp.Name()); err != nil {
@@ -520,7 +466,6 @@ func (d *DetailModel) resend() {
 	d.action.PrefillFromMessage = &dup
 }
 
-// View renders the detail body.
 func (d *DetailModel) View() string {
 	if len(d.messages) == 0 {
 		d.layout()
@@ -535,7 +480,6 @@ func (d *DetailModel) View() string {
 
 	visible := lines[start:end]
 	if !d.wrap && d.width > 0 {
-		// horizontal slicing applied per visible line.
 		out := make([]string, len(visible))
 		for i, line := range visible {
 			s := line
@@ -550,9 +494,7 @@ func (d *DetailModel) View() string {
 	return strings.Join(visible, "\n")
 }
 
-// renderFullBody assembles every block (header / key / headers / value) into
-// a single string. ANSI styling is already baked in here so downstream
-// wrap/truncate must be ANSI-aware.
+// ANSI styling is baked in here so downstream wrap/truncate must be ANSI-aware.
 func (d *DetailModel) renderFullBody() string {
 	cur := d.Current()
 	header := d.renderHeader(cur)
@@ -564,9 +506,6 @@ func (d *DetailModel) renderFullBody() string {
 	return strings.Join([]string{header, "", keyBlock, "", headersBlock, "", valueBlock}, "\n")
 }
 
-// layoutLines splits the rendered body into visual lines. With wrap enabled
-// each logical line longer than width is hard-wrapped; with wrap disabled
-// lines are returned as-is and truncation happens at render time.
 func (d *DetailModel) layoutLines(body string) []string {
 	logical := strings.Split(body, "\n")
 	if !d.wrap || d.width <= 0 {
@@ -604,7 +543,6 @@ func (d *DetailModel) renderBlock(title, body string) string {
 	return header + "\n" + d.styles.Command.Render(body)
 }
 
-// headersText renders headers as "k=value\n…", with binary-safe values.
 func headersText(headers []kafka.Header) string {
 	if len(headers) == 0 {
 		return ""
@@ -616,9 +554,8 @@ func headersText(headers []kafka.Header) string {
 	return strings.Join(lines, "\n")
 }
 
-// exportableMessage is a JSON-friendly view of [kafka.Message] used by save
-// / copy-all hotkeys. Binary key/value bytes are base64-encoded; UTF-8 text
-// is preserved as-is for human readability.
+// exportableMessage is JSON-friendly. Binary key/value bytes are base64;
+// UTF-8 text is preserved as-is.
 type exportableMessage struct {
 	Topic     string             `json:"topic"`
 	Partition int32              `json:"partition"`
@@ -630,7 +567,7 @@ type exportableMessage struct {
 }
 
 type exportableBytes struct {
-	Encoding string `json:"encoding"` // "utf8", "json", "base64"
+	Encoding string `json:"encoding"` // "utf8" / "json" / "base64"
 	Text     string `json:"text,omitempty"`
 	Base64   string `json:"base64,omitempty"`
 }
@@ -677,9 +614,7 @@ func encodeBytes(b []byte) *exportableBytes {
 	}
 }
 
-// defaultSaveName builds a deterministic filename for save targets:
-//
-//	<topic>-p<partition>-o<offset><ext>
+// defaultSaveName: <topic>-p<partition>-o<offset>-<kind><ext>.
 func defaultSaveName(msg kafka.Message, kind, ext string) string {
 	if ext == "" {
 		ext = saveExt(msg.Value, kind)
@@ -715,9 +650,7 @@ func defaultWriteFile(path string, data []byte) error {
 	return nil
 }
 
-// DefaultPagerOpener returns a [PagerOpener] that runs `$EDITOR <path>`,
-// falling back to `vi` then `less`. It is unsuitable for unit tests; tests
-// inject a [PagerOpenerFunc].
+// DefaultPagerOpener runs `$EDITOR <path>`, falling back to `vi`.
 func DefaultPagerOpener() PagerOpener {
 	return PagerOpenerFunc(func(path string) error {
 		editor := strings.TrimSpace(os.Getenv("EDITOR"))

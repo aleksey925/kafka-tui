@@ -13,19 +13,12 @@ import (
 type ConfirmResult int
 
 const (
-	// ConfirmPending means the user has not answered yet.
 	ConfirmPending ConfirmResult = iota
-	// ConfirmYes means the user pressed `y`.
 	ConfirmYes
-	// ConfirmNo means the user pressed `n` or esc.
 	ConfirmNo
 )
 
-// Confirm is a centered yes/no modal dialog (specification §7.12).
-//
-// Screens own the data flow: when their action requires confirmation they
-// instantiate Confirm, route key messages, and check the Result on each
-// frame.
+// Confirm is a centered yes/no modal dialog.
 type Confirm struct {
 	Title   string
 	Message string
@@ -36,7 +29,6 @@ type Confirm struct {
 	styles theme.Styles
 }
 
-// NewConfirm constructs a confirm dialog with the given title and message.
 func NewConfirm(title, message string, opts ...ConfirmOption) *Confirm {
 	c := &Confirm{
 		Title:   title,
@@ -51,21 +43,16 @@ func NewConfirm(title, message string, opts ...ConfirmOption) *Confirm {
 	return c
 }
 
-// ConfirmOption configures Confirm.
 type ConfirmOption func(*Confirm)
 
-// WithConfirmStyles overrides the theme styles.
 func WithConfirmStyles(s theme.Styles) ConfirmOption {
 	return func(c *Confirm) { c.styles = s }
 }
 
-// Result returns the latest user answer (or ConfirmPending).
 func (c *Confirm) Result() ConfirmResult { return c.result }
 
-// Reset clears the answer (so the same instance can be reused).
 func (c *Confirm) Reset() { c.result = ConfirmPending }
 
-// Update routes a key message into the confirm dialog.
 func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -80,8 +67,7 @@ func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 	return c, nil
 }
 
-// View renders the confirm dialog. The width parameter controls how wide the
-// modal box is; pass 0 for an automatic sizing based on content.
+// View renders the confirm dialog. Pass width=0 for automatic sizing.
 func (c *Confirm) View(width int) string {
 	hint := c.styles.HintKey.Render(c.YesKey) + c.styles.HintLabel.Render(" yes  ") +
 		c.styles.HintKey.Render(c.NoKey) + c.styles.HintLabel.Render(" no")

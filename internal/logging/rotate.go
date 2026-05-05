@@ -12,10 +12,8 @@ import (
 )
 
 // RotatingWriter writes to a file and rotates it when the byte count would
-// exceed maxBytes. Old files are renamed `<path>.1`, `<path>.2`, etc.; files
-// older than maxFiles are pruned.
-//
-// Concurrency: Write/Close are safe to call from multiple goroutines.
+// exceed maxBytes. Archives are `<path>.1`, `<path>.2`, ...; archives beyond
+// maxFiles are pruned. Write/Close are safe to call from multiple goroutines.
 type RotatingWriter struct {
 	path     string
 	maxBytes int64
@@ -26,8 +24,8 @@ type RotatingWriter struct {
 	size int64
 }
 
-// NewRotatingWriter opens (or creates) path and returns a writer. maxSizeMB
-// must be >0; maxFiles is the number of archives kept (>=1).
+// NewRotatingWriter opens (or creates) path. maxSizeMB must be >0; maxFiles
+// is the number of archives kept (>=1).
 func NewRotatingWriter(path string, maxSizeMB, maxFiles int) (*RotatingWriter, error) {
 	if maxSizeMB <= 0 {
 		return nil, fmt.Errorf("logging: max_size_mb must be > 0 (got %d)", maxSizeMB)
@@ -47,10 +45,9 @@ func NewRotatingWriter(path string, maxSizeMB, maxFiles int) (*RotatingWriter, e
 	return w, nil
 }
 
-// Write implements io.Writer. A single Write that, taken with the existing
-// file size, would exceed maxBytes triggers a rotation before writing.
-// A single payload larger than maxBytes is still written in full to keep
-// individual log records intact.
+// Write rotates before writing when the existing file size plus len(p)
+// would exceed maxBytes. A single payload larger than maxBytes is still
+// written in full to keep individual log records intact.
 func (w *RotatingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -74,7 +71,6 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close flushes and closes the underlying file.
 func (w *RotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -148,8 +144,8 @@ func renameIfExists(src, dst string) error {
 	return nil
 }
 
-// pruneArchives removes any `.N` archives where N > maxFiles. This guards
-// against pre-existing archives created with a higher max_files setting.
+// pruneArchives removes any `.N` archives where N > maxFiles. Guards against
+// pre-existing archives created with a higher max_files setting.
 func pruneArchives(base string, maxFiles int) error {
 	dir, name := splitBase(base)
 	entries, err := os.ReadDir(dir)

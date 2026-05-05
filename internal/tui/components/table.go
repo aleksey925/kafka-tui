@@ -1,10 +1,5 @@
 // Package components provides reusable Bubble Tea building blocks shared by
-// every screen: the navigable Table, modal dialogs (Confirm, Toast, Help),
-// and the input Form.
-//
-// Each component is a pure value type with explicit Update/View methods and a
-// small public API. Components do not own terminal I/O; screens compose them
-// and route key messages.
+// every screen (Table, Form, Confirm, Toasts, Menu, Refresher).
 package components
 
 import (
@@ -21,20 +16,16 @@ import (
 // Column declares a Table column.
 type Column struct {
 	Title string
-	// Width is the rendered width in characters. 0 means "auto" (use the
-	// max of title and longest value). Ignored when Flex is true.
+	// Width is the rendered width. 0 means "auto" (max of title and longest
+	// value). Ignored when Flex is true.
 	Width int
 	// MinWidth is the lower bound for a Flex column. 0 falls back to the
 	// title width.
 	MinWidth int
-	// Flex marks the column as expandable: any width left over after fixed
-	// columns are sized is distributed evenly across all Flex columns.
-	// Requires the table's total width to be set via SetTotalWidth.
-	Flex bool
-	// Align controls horizontal alignment of cell content. Defaults to left.
-	Align lipgloss.Position
-	// Sortable reports whether the column participates in the `s`/`S` sort
-	// rotation. Non-sortable columns are skipped.
+	// Flex distributes any leftover width evenly across Flex columns.
+	// Requires the total width to be set via SetTotalWidth.
+	Flex     bool
+	Align    lipgloss.Position
 	Sortable bool
 }
 
@@ -49,27 +40,22 @@ type Row struct {
 type SortDirection int
 
 const (
-	// SortNone leaves rows in caller-supplied order.
 	SortNone SortDirection = iota
-	// SortAsc sorts ascending on the active column.
 	SortAsc
-	// SortDesc sorts descending on the active column.
 	SortDesc
 )
 
-// Table is a navigable, searchable, sortable, selectable list of rows.
-//
-// It owns *only* the view/selection/sort state; callers feed it data with
-// SetRows. Multi-select is opt-in (Selectable=true).
+// Table is a navigable, searchable, sortable, selectable list of rows. It
+// owns *only* the view/selection/sort state; callers feed it data via SetRows.
 type Table struct {
 	columns []Column
-	rows    []Row // original rows as supplied by caller
+	rows    []Row
 	view    []int // indices into rows after filter+sort
 
 	cursor   int
-	viewport int // index in `view` that begins the visible window
-	height   int // visible rows (0 = fit-all, no scrolling)
-	width    int // total terminal width used for flex distribution; 0 = no flex
+	viewport int
+	height   int // 0 = fit-all, no scrolling
+	width    int // 0 disables flex distribution
 
 	search       string
 	searchActive bool
@@ -87,20 +73,16 @@ type Table struct {
 	styles theme.Styles
 }
 
-// TableOption configures a Table at construction.
 type TableOption func(*Table)
 
-// WithSelectable enables Space-to-multi-select.
 func WithSelectable(on bool) TableOption {
 	return func(t *Table) { t.selectable = on }
 }
 
-// WithStyles overrides the theme styles (mostly for tests).
 func WithStyles(s theme.Styles) TableOption {
 	return func(t *Table) { t.styles = s }
 }
 
-// NewTable constructs a Table with the given columns.
 func NewTable(cols []Column, opts ...TableOption) *Table {
 	t := &Table{
 		columns:  append([]Column(nil), cols...),
@@ -114,14 +96,13 @@ func NewTable(cols []Column, opts ...TableOption) *Table {
 	return t
 }
 
-// SetRows replaces the rows. The cursor is clamped, the view is rebuilt
-// (filter + sort reapplied), and current selection (by ID) is preserved.
+// SetRows replaces the rows. The view is rebuilt and selection (by ID) is
+// preserved.
 func (t *Table) SetRows(rows []Row) {
 	t.rows = append([]Row(nil), rows...)
 	t.rebuildView()
 }
 
-// Rows returns the underlying row slice (defensive copy).
 func (t *Table) Rows() []Row {
 	out := make([]Row, len(t.rows))
 	copy(out, t.rows)
@@ -131,7 +112,7 @@ func (t *Table) Rows() []Row {
 // Cursor returns the current row index in the *view* (post filter/sort).
 func (t *Table) Cursor() int { return t.cursor }
 
-// GoToID moves the cursor to the row with the given ID. Returns true if found.
+// GoToID moves the cursor to the row with the given ID.
 func (t *Table) GoToID(id string) bool {
 	for i, idx := range t.view {
 		if t.rows[idx].ID == id {
@@ -142,8 +123,6 @@ func (t *Table) GoToID(id string) bool {
 	return false
 }
 
-// SelectedRow returns the row currently under the cursor, or false if the
-// view is empty.
 func (t *Table) SelectedRow() (Row, bool) {
 	if len(t.view) == 0 {
 		return Row{}, false
@@ -162,20 +141,17 @@ func (t *Table) SelectedIDs() []string {
 	return ids
 }
 
-// IsSelected reports whether a row ID is currently multi-selected.
 func (t *Table) IsSelected(id string) bool {
 	_, ok := t.selected[id]
 	return ok
 }
 
-// ClearSelection deselects every row.
 func (t *Table) ClearSelection() { t.selected = make(map[string]struct{}) }
 
 // Sort returns the active sort column index (-1 if none) and direction.
 func (t *Table) Sort() (int, SortDirection) { return t.sortCol, t.sortDir }
 
-// SetSort applies a sort programmatically. Pass -1 / SortNone to clear. The
-// cursor is reset to the top so the new ordering is visible.
+// SetSort applies a sort programmatically. Pass -1 / SortNone to clear.
 func (t *Table) SetSort(col int, dir SortDirection) {
 	t.sortCol, t.sortDir = col, dir
 	t.rebuildView()
@@ -183,28 +159,21 @@ func (t *Table) SetSort(col int, dir SortDirection) {
 	t.viewport = 0
 }
 
-// Search returns the current search query (empty if no search active).
 func (t *Table) Search() string { return t.search }
 
-// SearchActive reports whether the `/` search prompt is open.
 func (t *Table) SearchActive() bool { return t.searchActive }
 
 // SetSearch replaces the search query and re-applies the filter without
 // touching the inline prompt state. Used by hosts that render the search
-// prompt themselves (the chrome's k9s-style command bar) and just want
-// the table to filter rows live as the user types.
+// prompt themselves and just want live row filtering.
 func (t *Table) SetSearch(query string) {
 	t.search = query
 	t.searchActive = false
 	t.rebuildView()
 }
 
-// FilteredCount returns the number of rows currently visible after the
-// search filter is applied (equal to TotalCount when no filter is set).
 func (t *Table) FilteredCount() int { return len(t.view) }
 
-// TotalCount returns the number of rows the table holds regardless of
-// the active filter.
 func (t *Table) TotalCount() int { return len(t.rows) }
 
 // SetHeight changes the visible body height. 0 disables scrolling.
@@ -214,28 +183,11 @@ func (t *Table) SetHeight(rows int) {
 }
 
 // SetTotalWidth tells the table how many columns are available for its
-// rendered output. Required for Flex columns to distribute leftover space.
-// 0 disables flex distribution.
+// rendered output. Required for Flex columns. 0 disables flex distribution.
 func (t *Table) SetTotalWidth(cols int) { t.width = cols }
 
-// Update routes a key message into the table. It returns the (possibly
-// updated) table and a command (always nil today; reserved for future).
-//
-// Hotkeys handled:
-//
-//	j / down     — cursor down
-//	k / up       — cursor up
-//	ctrl+d       — half-page down
-//	ctrl+u       — half-page up
-//	g g          — top
-//	G            — bottom
-//	/            — open search
-//	enter / esc  — close search prompt (keep / clear filter)
-//	n / N        — next / previous match
-//	s / S        — cycle sort on current column (asc → desc → none)
-//	space        — toggle multi-select on current row (if selectable)
-//
-// Unrecognized keys are ignored so screens can layer their own.
+// Update routes a key message into the table. Unrecognized keys are ignored
+// so screens can layer their own.
 func (t *Table) Update(msg tea.Msg) (*Table, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -358,12 +310,8 @@ func (t *Table) toggleSelectAtCursor() {
 	}
 }
 
-// cycleSort handles `s` (toggleDir=true) and `S` (toggleDir=false):
-//
-//   - `s` flips direction asc → desc → none on the current sort column. If
-//     no column is yet sorted, it picks the first sortable column (asc).
-//   - `S` advances to the next sortable column (asc), wrapping around. If
-//     no column is yet sorted, behaves the same as `s`.
+// cycleSort: s flips direction asc → desc → none on the current sort column;
+// S advances to the next sortable column (asc), wrapping around.
 func (t *Table) cycleSort(toggleDir bool) {
 	first := firstSortable(t.columns, 0, +1)
 	if first < 0 {
@@ -397,8 +345,6 @@ func (t *Table) cycleSort(toggleDir bool) {
 	t.viewport = 0
 }
 
-// firstSortable returns the first sortable column index starting from `from`,
-// scanning by direction (+1 or -1) and wrapping. Returns -1 if none exists.
 func firstSortable(cols []Column, from, direction int) int {
 	if len(cols) == 0 {
 		return -1
@@ -422,9 +368,9 @@ func (t *Table) jumpMatch(direction int) {
 	t.clampViewport()
 }
 
-// rebuildView reapplies the search filter and sort, then clamps the cursor.
+// rebuildView reapplies the search filter and sort, preserving the focused
+// row id so the cursor stays on it.
 func (t *Table) rebuildView() {
-	// preserve currently focused row id so the cursor stays on it.
 	focusID := ""
 	if len(t.view) > 0 && t.cursor < len(t.view) {
 		if idx := t.view[t.cursor]; idx >= 0 && idx < len(t.rows) {
@@ -497,9 +443,6 @@ func safeVal(r Row, col int) string {
 	return r.Values[col]
 }
 
-// ----- View -----
-
-// View renders the table.
 func (t *Table) View() string {
 	colWidths := t.computeWidths()
 
@@ -518,9 +461,8 @@ func (t *Table) View() string {
 	out := []string{header}
 	out = append(out, body...)
 
-	// inline search line is intentionally not rendered — the host owns
-	// the prompt (k9s-style top bar) and the screen surfaces the filter
-	// + match count in the frame title.
+	// inline search line intentionally not rendered: the host owns the
+	// prompt and surfaces filter + match count in the frame title.
 	if t.sortCol >= 0 && t.sortDir != SortNone {
 		dir := "asc"
 		if t.sortDir == SortDesc {
@@ -580,8 +522,8 @@ func (t *Table) computeWidths() []int {
 		widths[t.sortCol] += 2
 	}
 	if t.width > 0 && len(flexIdxs) > 0 {
-		// row layout: 2-col cursor gutter + optional multi-select prefix
-		// "[ ] " (4 cols) + per-column "  " separators.
+		// row layout: 2-col cursor gutter + optional "[ ] " (4 cols) +
+		// per-column "  " separators.
 		separators := 2 * (len(t.columns) - 1)
 		gutter := 2
 		prefix := 0
@@ -616,8 +558,7 @@ func (t *Table) renderHeader(widths []int) string {
 		}
 		cells[i] = padCell(title, widths[i], c.Align)
 	}
-	// align the header with row content: 2 cols for the cursor arrow gutter,
-	// plus the multi-select prefix when enabled.
+	// align with row content: 2-col cursor gutter + multi-select prefix.
 	gutter := "  "
 	if t.selectable {
 		gutter += "    "
@@ -636,9 +577,9 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		cells[i] = padCell(v, widths[i], c.Align)
 	}
-	// 2-col gutter on the left: a styled arrow on the cursor row, blank
-	// elsewhere. Inversion of the whole row colored cell glyphs (status
-	// dots, swatches) awkwardly, so we use a discrete pointer instead.
+	// 2-col gutter: styled arrow on the cursor row, blank elsewhere. A
+	// discrete pointer is used instead of row inversion which mangles
+	// colored cell glyphs (status dots, swatches).
 	var gutter string
 	if viewIdx == t.cursor {
 		gutter = t.styles.HintKey.Render("▶ ")
@@ -678,7 +619,7 @@ func padCell(s string, width int, align lipgloss.Position) string {
 
 // truncateCell shortens s to fit within width, appending an ellipsis. Styled
 // content (containing ANSI escapes) is returned as-is to avoid corrupting
-// escape sequences — callers are expected to keep styled cells short.
+// escape sequences.
 func truncateCell(s string, width int) string {
 	if width <= 0 {
 		return ""

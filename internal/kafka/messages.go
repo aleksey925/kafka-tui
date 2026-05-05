@@ -19,8 +19,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/config"
 )
 
-// Message is the UI-facing representation of a Kafka record. Headers are
-// flattened so callers don't have to drag in kgo types.
+// Message is the UI-facing representation of a Kafka record.
 type Message struct {
 	Topic     string
 	Partition int32
@@ -31,13 +30,11 @@ type Message struct {
 	Headers   []Header
 }
 
-// Header is a single record header.
 type Header struct {
 	Key   string
 	Value []byte
 }
 
-// ValueFormat is the auto-detected display format for a record value.
 type ValueFormat int
 
 const (
@@ -46,8 +43,8 @@ const (
 	ValueFormatJSON
 )
 
-// DetectValueFormat reports the inferred display format for a record value
-// in the order JSON → UTF-8 → binary used by §7.4 of the spec.
+// DetectValueFormat reports the inferred display format in the order
+// JSON → UTF-8 → binary.
 func DetectValueFormat(v []byte) ValueFormat {
 	if len(v) == 0 {
 		return ValueFormatUTF8
@@ -61,8 +58,6 @@ func DetectValueFormat(v []byte) ValueFormat {
 	return ValueFormatBinary
 }
 
-// hasControlBytes reports whether b contains a byte we would not want to
-// render verbatim in a UTF-8 view (anything below 0x20 except whitespace).
 func hasControlBytes(b []byte) bool {
 	for _, c := range b {
 		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
@@ -72,9 +67,9 @@ func hasControlBytes(b []byte) bool {
 	return false
 }
 
-// ParsePartitionFilter parses a list/range expression like "0-4,7,10-12" into
-// a sorted, deduplicated slice of int32 partition ids. An empty input returns
-// (nil, nil) which the caller should interpret as "all partitions".
+// ParsePartitionFilter parses an expression like "0-4,7,10-12" into a sorted,
+// deduplicated slice of partition ids. Empty input returns (nil, nil),
+// meaning "all partitions".
 func ParsePartitionFilter(s string) ([]int32, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -112,20 +107,13 @@ func ParsePartitionFilter(s string) ([]int32, error) {
 	return out, nil
 }
 
-// maxPartition is the upper bound on Kafka partition ids (the wire protocol
-// uses int32). Used by ParsePartitionFilter to keep the int→int32 narrowing
-// safe.
+// maxPartition is the int32 upper bound used to keep int→int32 narrowing safe.
 const maxPartition = (1 << 31) - 1
 
 var relativeTimeRe = regexp.MustCompile(`^(\d+)\s*([smhd])\s+ago$`)
 
-// ParseTimestamp accepts the formats supported by the messages-screen jump
-// command:
-//   - RFC 3339 / ISO 8601 ("2026-04-27T10:00:00Z", "2026-04-27 10:00:00")
-//   - Relative ("1h ago", "30m ago", "2d ago", "45s ago")
-//   - Date keywords ("yesterday", "today")
-//
-// `now` is injected so tests are deterministic.
+// ParseTimestamp accepts RFC 3339, "<N>(s|m|h|d) ago", "today", "yesterday".
+// `now` is injected so tests stay deterministic.
 func ParseTimestamp(s string, now time.Time) (time.Time, error) {
 	original := strings.TrimSpace(s)
 	lower := strings.ToLower(original)
@@ -168,10 +156,9 @@ func ParseTimestamp(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("kafka: cannot parse timestamp %q", s)
 }
 
-// FetchLastN reads up to n most-recent messages across all partitions of a
-// topic (or the subset given in `partitions`). The returned slice is sorted
-// newest-first by timestamp; the count is approximate when partitions hold
-// fewer messages than the requested per-partition share.
+// FetchLastN reads up to n most-recent messages, sorted newest-first. The
+// count is approximate when partitions hold fewer messages than the requested
+// per-partition share.
 func (c *Client) FetchLastN(ctx context.Context, topic string, n int, partitions []int32) ([]Message, error) {
 	if n <= 0 {
 		return nil, nil
@@ -208,9 +195,8 @@ func (c *Client) FetchLastN(ctx context.Context, topic string, n int, partitions
 	return msgs, nil
 }
 
-// FetchAtOffset reads up to count messages starting at `offset` on the given
-// partition. The returned slice is in ascending offset order. Offsets outside
-// the partition's [low, high) window are clamped silently.
+// FetchAtOffset reads up to count messages starting at offset. Offsets
+// outside [low, high) are clamped silently.
 func (c *Client) FetchAtOffset(ctx context.Context, topic string, partition int32, offset int64, count int) ([]Message, error) {
 	if count <= 0 {
 		return nil, nil
@@ -234,9 +220,9 @@ func (c *Client) FetchAtOffset(ctx context.Context, topic string, partition int3
 	)
 }
 
-// FetchAtTimestamp reads up to `count` messages from each filtered partition
-// starting at the first offset with timestamp >= ts. Partitions without any
-// record at or after ts are skipped.
+// FetchAtTimestamp reads up to count messages per partition starting at the
+// first offset with timestamp >= ts. Partitions without any record at or
+// after ts are skipped.
 func (c *Client) FetchAtTimestamp(ctx context.Context, topic string, ts time.Time, partitions []int32, count int) ([]Message, error) {
 	if count <= 0 {
 		return nil, nil
@@ -270,9 +256,8 @@ func (c *Client) FetchAtTimestamp(ctx context.Context, topic string, ts time.Tim
 	return c.fetchUntilOffsets(ctx, topic, starts, ends)
 }
 
-// FetchEarliest reads up to `n` messages forward starting at the earliest
-// available offset of each requested partition. The result is sorted in
-// ascending (partition, offset) order.
+// FetchEarliest reads up to n messages forward from the earliest available
+// offset of each requested partition.
 func (c *Client) FetchEarliest(ctx context.Context, topic string, n int, partitions []int32) ([]Message, error) {
 	if n <= 0 {
 		return nil, nil
@@ -314,11 +299,9 @@ func (c *Client) FetchEarliest(ctx context.Context, topic string, n int, partiti
 	return msgs, nil
 }
 
-// FetchAtOffsets reads up to `perPartition` records from each (partition,
-// offset) pair via a single transient consumer client. Offsets outside a
-// partition's [low, high) window are clamped silently. The result is sorted
-// in ascending (partition, offset) order. Used by the messages screen for
-// fuzzy multi-partition seek.
+// FetchAtOffsets reads up to perPartition records from each (partition,
+// offset) pair via a single transient consumer client. Offsets outside
+// [low, high) are clamped silently.
 func (c *Client) FetchAtOffsets(ctx context.Context, topic string, offsets map[int32]int64, perPartition int) ([]Message, error) {
 	if perPartition <= 0 || len(offsets) == 0 {
 		return nil, nil
@@ -358,9 +341,7 @@ func (c *Client) FetchAtOffsets(ctx context.Context, topic string, offsets map[i
 }
 
 // WatermarksFor returns low/high offsets per requested partition. An empty
-// `partitions` list returns watermarks for every partition of the topic.
-// Used by the messages screen to clamp single-number offset jumps and to
-// drive page-step bounds.
+// partitions list returns watermarks for every partition of the topic.
 func (c *Client) WatermarksFor(ctx context.Context, topic string, partitions []int32) (map[int32]PartitionWatermarks, error) {
 	wm, err := c.TopicWatermarks(ctx, topic)
 	if err != nil {
@@ -369,9 +350,9 @@ func (c *Client) WatermarksFor(ctx context.Context, topic string, partitions []i
 	return selectPartitions(wm, partitions), nil
 }
 
-// OffsetsForTimestamp returns, per partition, the offset of the first
-// message with timestamp >= ts. Partitions without a matching record (or
-// not in the requested filter when one is given) are absent from the map.
+// OffsetsForTimestamp returns the offset of the first record with
+// timestamp >= ts per partition. Partitions without a matching record are
+// absent from the map.
 func (c *Client) OffsetsForTimestamp(ctx context.Context, topic string, ts time.Time, partitions []int32) (map[int32]int64, error) {
 	listed, err := c.adm.ListOffsetsAfterMilli(ctx, ts.UnixMilli(), topic)
 	if err != nil {
@@ -396,16 +377,14 @@ func (c *Client) OffsetsForTimestamp(ctx context.Context, topic string, ts time.
 	return out, nil
 }
 
-// FetchEarlier loads up to `count` messages older than `baseline` across
-// partitions. `baseline[p]` is the lowest offset already shown for partition p
-// (exclusive upper bound for this fetch). Returned messages are in
-// (partition, offset) ascending order.
+// FetchEarlier loads up to count messages older than baseline. baseline[p]
+// is the lowest offset already shown for partition p (exclusive upper bound).
 func (c *Client) FetchEarlier(ctx context.Context, topic string, baseline map[int32]int64, count int, partitions []int32) ([]Message, error) {
 	return c.fetchWindow(ctx, topic, baseline, count, partitions, fetchDirectionEarlier)
 }
 
-// FetchLater loads up to `count` messages newer than `baseline`. `baseline[p]`
-// is the highest offset already shown for partition p (exclusive lower bound).
+// FetchLater loads up to count messages newer than baseline. baseline[p] is
+// the highest offset already shown for partition p (exclusive lower bound).
 func (c *Client) FetchLater(ctx context.Context, topic string, baseline map[int32]int64, count int, partitions []int32) ([]Message, error) {
 	return c.fetchWindow(ctx, topic, baseline, count, partitions, fetchDirectionLater)
 }
@@ -492,7 +471,6 @@ type FollowSession struct {
 	cl     *kgo.Client
 }
 
-// Close terminates the follow session. Safe to call multiple times.
 func (s *FollowSession) Close() {
 	if s == nil {
 		return
@@ -508,8 +486,7 @@ func (s *FollowSession) Close() {
 }
 
 // Follow opens a consumer positioned at the end of every (filtered) partition
-// of `topic` and streams subsequent records. The returned channels are closed
-// when the session ends.
+// of topic and streams subsequent records.
 func (c *Client) Follow(ctx context.Context, topic string, partitions []int32) (*FollowSession, error) {
 	wm, err := c.TopicWatermarks(ctx, topic)
 	if err != nil {
@@ -558,9 +535,6 @@ func (c *Client) Follow(ctx context.Context, topic string, partitions []int32) (
 	return &FollowSession{Messages: msgCh, Errors: errCh, cancel: cancel, cl: cl}, nil
 }
 
-// fetchUntilOffsets opens a transient consumer client, reads each partition
-// from its starting offset until the corresponding `ends` value is reached,
-// and returns the collected messages in fetch order.
 func (c *Client) fetchUntilOffsets(
 	ctx context.Context,
 	topic string,
@@ -595,9 +569,6 @@ func (c *Client) fetchUntilOffsets(
 	return out, nil
 }
 
-// newConsumerClient builds a fresh kgo.Client that will only consume the
-// partitions in `consume` (mapping partition → starting offset). Used both for
-// bounded fetches and follow-mode subscriptions.
 func newConsumerClient(cluster config.Cluster, label, topic string, consume map[int32]kgo.Offset) (*kgo.Client, error) {
 	opts, _, err := BuildClientOptions(cluster, DialOptions{
 		ClientID: DefaultClientID + "-" + label,

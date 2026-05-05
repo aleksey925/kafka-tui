@@ -7,8 +7,7 @@ import (
 )
 
 // ScreenID identifies the high-level destinations the router knows how to
-// jump to. New screens (added in later tasks) plug their handlers in via
-// Router.Register.
+// jump to.
 type ScreenID string
 
 const (
@@ -28,13 +27,11 @@ type Command struct {
 	Screen ScreenID
 	// Arg is an optional positional argument: e.g. `:cluster <name>`.
 	Arg string
-	// Raw keeps the original input for logging.
 	Raw string
 }
 
-// commandNames lists all commands recognized by ParseCommand, used for
-// tab-completion. Compound commands (e.g. "config sources") appear as one
-// entry so the user can complete the whole phrase in one tab press.
+// commandNames lists all commands recognized by ParseCommand. Compound
+// commands appear as one entry so tab-completion completes the full phrase.
 var commandNames = []string{
 	"clusters",
 	"config sources",
@@ -43,9 +40,8 @@ var commandNames = []string{
 	"topics",
 }
 
-// CompletionSuggestion returns the first command that starts with the given
-// prefix, or "" when nothing matches. The returned string is always the full
-// command name (e.g. "config sources"), never just the suffix.
+// CompletionSuggestion returns the first command starting with prefix, or
+// "" when nothing matches. The returned string is always the full command name.
 func CompletionSuggestion(prefix string) string {
 	prefix = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(prefix), ":"))
 	if prefix == "" {
@@ -60,15 +56,12 @@ func CompletionSuggestion(prefix string) string {
 	return ""
 }
 
-// ErrUnknownCommand is returned by ParseCommand when the input does not match
-// any known screen invocation.
 var ErrUnknownCommand = errors.New("unknown command")
 
-// ErrEmptyCommand is returned when the buffer is empty/whitespace.
 var ErrEmptyCommand = errors.New("empty command")
 
 // ParseCommand interprets `:topics`, `:groups`, `:clusters`, `:cluster <name>`,
-// `:logs`, `:config sources`. The leading `:` may be present or absent.
+// `:logs`, `:config sources`. The leading `:` is optional.
 func ParseCommand(input string) (Command, error) {
 	trimmed := strings.TrimSpace(input)
 	trimmed = strings.TrimPrefix(trimmed, ":")
@@ -116,25 +109,20 @@ func ParseCommand(input string) (Command, error) {
 	}
 }
 
-// Router owns the screen-stack semantics. Screens are not yet implemented in
-// this task — the router is intentionally a slim, observable container so
-// later tasks can plug in real models without restructuring app.go.
+// Router owns the screen-stack semantics.
 type Router struct {
 	stack []ScreenID
 }
 
-// NewRouter returns an empty router (no screens yet on the stack).
 func NewRouter() *Router {
 	return &Router{}
 }
 
-// Push appends id to the top of the stack and becomes the active screen.
 func (r *Router) Push(id ScreenID) {
 	r.stack = append(r.stack, id)
 }
 
-// Replace swaps the active screen for id, keeping stack depth equal. If the
-// stack is empty Replace behaves like Push.
+// Replace swaps the active screen for id. On an empty stack it Pushes.
 func (r *Router) Replace(id ScreenID) {
 	if len(r.stack) == 0 {
 		r.stack = append(r.stack, id)
@@ -143,8 +131,7 @@ func (r *Router) Replace(id ScreenID) {
 	r.stack[len(r.stack)-1] = id
 }
 
-// Pop removes the top screen and returns the new active screen ID (empty
-// when the stack is empty).
+// Pop removes the top screen and returns the new active screen ID.
 func (r *Router) Pop() ScreenID {
 	if len(r.stack) == 0 {
 		return ""
@@ -153,7 +140,6 @@ func (r *Router) Pop() ScreenID {
 	return r.Active()
 }
 
-// Active returns the screen at the top of the stack (empty when empty).
 func (r *Router) Active() ScreenID {
 	if len(r.stack) == 0 {
 		return ""
@@ -161,7 +147,6 @@ func (r *Router) Active() ScreenID {
 	return r.stack[len(r.stack)-1]
 }
 
-// Depth returns the current stack depth (handy for tests and `esc/q` logic).
 func (r *Router) Depth() int {
 	return len(r.stack)
 }

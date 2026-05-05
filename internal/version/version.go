@@ -13,8 +13,7 @@ type BuildInfo struct {
 	Commit  string
 }
 
-// NewBuildInfo creates a BuildInfo with the given version and the commit hash
-// auto-extracted from Go VCS build settings.
+// NewBuildInfo extracts the commit hash from Go VCS build settings.
 func NewBuildInfo(ver string) BuildInfo {
 	return BuildInfo{Version: ver, Commit: vcsRevision()}
 }

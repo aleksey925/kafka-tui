@@ -13,28 +13,21 @@ import (
 type FlashLevel int
 
 const (
-	// FlashInfo: neutral notice.
 	FlashInfo FlashLevel = iota
-	// FlashOK: green confirmation.
 	FlashOK
-	// FlashWarn: yellow warning.
 	FlashWarn
-	// FlashErr: red error (typically sticky on the screen toast queue, but
-	// the bar treats expiry the same way regardless).
 	FlashErr
 )
 
-// Flash carries the data needed to render the global one-line bar at the
-// bottom of the host view. Empty Text yields a blank, fixed-height line so
-// the body geometry never shifts when a toast appears or disappears.
+// Flash is the global one-line bar at the bottom of the host view. Empty
+// Text yields a blank fixed-height line so body geometry stays stable.
 type Flash struct {
 	Text  string
 	Level FlashLevel
 }
 
-// FlashLine renders the bar to a single line. width <= 0 returns the bare
-// body; otherwise the line is right-padded with spaces to width to keep the
-// terminal geometry stable across re-renders.
+// FlashLine renders the bar. width<=0 returns the bare body; otherwise the
+// line is right-padded to width.
 func FlashLine(s theme.Styles, f Flash, width int) string {
 	body := ""
 	if f.Text != "" {

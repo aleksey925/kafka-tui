@@ -9,21 +9,14 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 )
 
-// stateMessagesView adapts the [state.Store] to the
-// [messages.ViewStateRepository] interface so the messages screen can
-// persist seek + partition selection without depending on the state
-// package directly.
-//
-// Read/write errors are logged and degrade to "no persistence" — a
-// failure to restore should never block the user from opening the
-// screen, and a failure to write only loses the next reconnection's
-// memory of where they were.
+// stateMessagesView adapts [state.Store] to [messages.ViewStateRepository].
+// Read/write errors are logged and degrade to "no persistence" — failures
+// must never block the user from opening the screen.
 type stateMessagesView struct {
 	store *state.Store
 	log   *slog.Logger
 }
 
-// NewStateMessagesView wraps store as a [messages.ViewStateRepository].
 func NewStateMessagesView(store *state.Store, log *slog.Logger) messages.ViewStateRepository {
 	if log == nil {
 		log = slog.Default()

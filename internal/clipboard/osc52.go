@@ -27,20 +27,18 @@ const (
 	OSC52MaxBytes = 75_000
 )
 
-// OSC52 emits the OSC 52 escape sequence for the system clipboard.
 type OSC52 struct {
 	mu     sync.Mutex
 	writer io.Writer
 	owned  io.Closer // when non-nil, closed by Close()
 }
 
-// DefaultOSC52 returns an [OSC52] writer that opens /dev/tty lazily on
-// first use, falling back to os.Stderr if the tty is unavailable.
+// DefaultOSC52 opens /dev/tty lazily on first use, falling back to os.Stderr
+// if the tty is unavailable.
 func DefaultOSC52() *OSC52 {
 	return &OSC52{}
 }
 
-// Close releases the lazily-opened tty handle, if any.
 func (o *OSC52) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -56,9 +54,6 @@ func (o *OSC52) Close() error {
 	return nil
 }
 
-// Copy emits the OSC 52 sequence for payload. The context governs the
-// resolution of the writer (lazy /dev/tty open) only — once the underlying
-// writer is acquired, the write itself is unbuffered and synchronous.
 func (o *OSC52) Copy(ctx context.Context, payload string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("clipboard: osc52: %w", err)

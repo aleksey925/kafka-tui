@@ -14,20 +14,16 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// FormMode mirrors the produce form's NORMAL/INSERT split. NORMAL is for
-// navigation (tab / arrows), INSERT is for typing into the focused field.
+// FormMode mirrors the produce form's NORMAL/INSERT split.
 type FormMode int
 
 const (
-	// FormNormal: navigation only — typing into a field is ignored.
 	FormNormal FormMode = iota
-	// FormInsert: typing inserts into the focused field.
 	FormInsert
 )
 
 const keyEsc = "esc"
 
-// CreateForm wraps the form component used for creating a new topic.
 type CreateForm struct {
 	form   *components.Form
 	err    string
@@ -35,7 +31,6 @@ type CreateForm struct {
 	mode   FormMode
 }
 
-// NewCreateForm constructs a fresh create form with default values.
 func NewCreateForm(styles theme.Styles) *CreateForm {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
@@ -56,14 +51,10 @@ func NewCreateForm(styles theme.Styles) *CreateForm {
 	return cf
 }
 
-// Form exposes the underlying form component (for tests).
 func (c *CreateForm) Form() *components.Form { return c.form }
 
-// Mode returns the current edit mode (NORMAL / INSERT).
 func (c *CreateForm) Mode() FormMode { return c.mode }
 
-// Update routes a key message through the NORMAL/INSERT state machine,
-// mirroring the produce form so the editing UX is consistent.
 func (c *CreateForm) Update(msg tea.Msg) (*CreateForm, tea.Cmd) {
 	c.err = ""
 	key, ok := msg.(tea.KeyPressMsg)
@@ -74,14 +65,11 @@ func (c *CreateForm) Update(msg tea.Msg) (*CreateForm, tea.Cmd) {
 	return c, nil
 }
 
-// SetError surfaces an inline error message above the form.
 func (c *CreateForm) SetError(msg string) { c.err = msg }
 
-// Err returns the latest validation error (or empty string).
 func (c *CreateForm) Err() string { return c.err }
 
 // Spec validates the form contents and converts them to a CreateTopicSpec.
-// On validation error it returns a non-nil error that the caller can display.
 func (c *CreateForm) Spec() (kafka.CreateTopicSpec, error) {
 	get := func(key string) string {
 		fld, _ := c.form.Field(key)
@@ -126,7 +114,7 @@ func (c *CreateForm) Spec() (kafka.CreateTopicSpec, error) {
 	}, nil
 }
 
-// View renders the create form. width=0 falls back to natural width.
+// View: width=0 falls back to natural width.
 func (c *CreateForm) View(width int) string {
 	header := c.styles.HelpTitle.Render("New topic")
 	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "create"))
@@ -146,9 +134,6 @@ func (c *CreateForm) View(width int) string {
 	return lipgloss.PlaceHorizontal(width, lipgloss.Center, box)
 }
 
-// formHintLine returns the bottom hint string shown below the form, varying
-// by mode so the user always sees what the next keystroke will do. `verb`
-// is the submit verb ("create" / "clone").
 func formHintLine(mode FormMode, verb string) string {
 	if mode == FormInsert {
 		return "type to edit  tab/enter commit & next  shift+tab back  esc to NORMAL"
@@ -156,10 +141,9 @@ func formHintLine(mode FormMode, verb string) string {
 	return "tab/↓ next  shift+tab/↑ prev  enter edit  ctrl+s " + verb + "  esc cancel"
 }
 
-// updateFormModal is the shared NORMAL/INSERT state machine for the create
-// and clone forms. Returns the (possibly replaced) form and the resulting
-// mode; the form's editing flag and focused-suffix tag are kept in sync as
-// a side effect so callers don't need to mirror the bookkeeping.
+// updateFormModal is the shared NORMAL/INSERT state machine for the
+// create and clone forms; editing flag and focused-suffix are kept in
+// sync as a side effect.
 func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) (*components.Form, FormMode) {
 	if mode == FormInsert {
 		switch key.String() {
@@ -178,11 +162,8 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) 
 		f, _ := form.Update(key)
 		return f, mode
 	}
-	// when a segmented field's popup is open in NORMAL, every navigation
-	// keystroke (enter / arrows / hjkl / tab / esc) belongs to the popup —
-	// the popup is modal until the user explicitly picks a value or
-	// dismisses it. Leaking tab/up to FocusNext/Prev would close it
-	// silently and look like the keys went somewhere unexpected.
+	// segmented popup is modal — nav keys belong to it; otherwise
+	// FocusNext/Prev would close it silently.
 	if form.PopupActive() {
 		switch key.String() {
 		case "enter", "up", "down", "left", "right", "j", "k", "h", "l", "tab", "shift+tab", keyEsc:
@@ -198,9 +179,8 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) 
 		form.FocusPrev()
 		return form, mode
 	case "enter":
-		// dropdown / segmented handle enter natively (cycle / open popup);
-		// other field kinds enter INSERT so the next keystroke writes into
-		// the field.
+		// pickers handle enter natively (cycle / open popup); other
+		// fields enter INSERT.
 		if isPicker(form.FocusedField().Kind) {
 			f, _ := form.Update(key)
 			return f, mode
@@ -208,7 +188,7 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) 
 		applyMode(form, FormInsert)
 		return form, FormInsert
 	}
-	// dropdown / segmented left/right cycling stays interactive in NORMAL.
+	// picker left/right cycling stays interactive in NORMAL.
 	if isPicker(form.FocusedField().Kind) {
 		f, _ := form.Update(key)
 		return f, mode
@@ -216,8 +196,6 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) 
 	return form, mode
 }
 
-// applyMode keeps the form's editing flag and the focused-suffix tag in
-// sync with the modal mode tracked by the wrapper.
 func applyMode(form *components.Form, mode FormMode) {
 	form.SetEditing(mode == FormInsert)
 	if mode == FormInsert {
@@ -231,7 +209,6 @@ func isPicker(k components.FieldKind) bool {
 	return k == components.FieldDropdown || k == components.FieldSegmented
 }
 
-// CloneForm collects the destination name and replication factor for a clone.
 type CloneForm struct {
 	source string
 	form   *components.Form
@@ -240,7 +217,6 @@ type CloneForm struct {
 	mode   FormMode
 }
 
-// NewCloneForm constructs a clone form prefilled with `source-clone` as dst.
 func NewCloneForm(source string, styles theme.Styles) *CloneForm {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
@@ -259,16 +235,12 @@ func NewCloneForm(source string, styles theme.Styles) *CloneForm {
 	return cf
 }
 
-// Mode returns the current edit mode (NORMAL / INSERT).
 func (c *CloneForm) Mode() FormMode { return c.mode }
 
-// Source returns the source topic name.
 func (c *CloneForm) Source() string { return c.source }
 
-// Form exposes the underlying form component (for tests).
 func (c *CloneForm) Form() *components.Form { return c.form }
 
-// Update routes a key message through the NORMAL/INSERT state machine.
 func (c *CloneForm) Update(msg tea.Msg) (*CloneForm, tea.Cmd) {
 	c.err = ""
 	key, ok := msg.(tea.KeyPressMsg)
@@ -279,15 +251,10 @@ func (c *CloneForm) Update(msg tea.Msg) (*CloneForm, tea.Cmd) {
 	return c, nil
 }
 
-// SetError surfaces an inline error.
 func (c *CloneForm) SetError(msg string) { c.err = msg }
 
-// Err returns the current validation error.
 func (c *CloneForm) Err() string { return c.err }
 
-// Submit validates the form and returns (source, destination) plus the
-// clone options. Returns an error when the dst name is empty or duplicates
-// the source.
 func (c *CloneForm) Submit() (src, dst string, err error) {
 	get := func(key string) string {
 		fld, _ := c.form.Field(key)
@@ -309,7 +276,6 @@ func (c *CloneForm) Submit() (src, dst string, err error) {
 	return c.source, dst, nil
 }
 
-// Options returns the kafka.CloneOptions implied by the current form values.
 func (c *CloneForm) Options() kafka.CloneOptions {
 	get := func(key string) string {
 		fld, _ := c.form.Field(key)
@@ -326,7 +292,6 @@ func (c *CloneForm) Options() kafka.CloneOptions {
 	return opts
 }
 
-// View renders the clone form.
 func (c *CloneForm) View(width int) string {
 	header := c.styles.HelpTitle.Render("Clone topic: " + c.source)
 	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "clone"))

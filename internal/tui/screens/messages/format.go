@@ -1,11 +1,4 @@
-// Package messages implements the messages browsing screen and its detail
-// view. The list view (§7.3) renders one row per Kafka record with
-// configurable columns, follow-mode tailing, and vim-style navigation
-// (`g o`, `g t`, `g p`, `[`, `]`). The detail view (§7.4) shows the full
-// record payload in JSON / Raw / HEX format, supports prev/next navigation
-// without leaving the screen, and exposes copy / save / edit-in-$EDITOR /
-// resend hotkeys. All Kafka I/O flows through the [Service] interface so
-// the screen is unit-testable without a broker.
+// Package messages implements the messages browsing screen and detail view.
 package messages
 
 import (
@@ -25,17 +18,11 @@ type ValueView int
 const (
 	// ViewAuto reuses [kafka.DetectValueFormat] to pick JSON, raw, or HEX.
 	ViewAuto ValueView = iota
-	// ViewJSON renders the value as pretty-printed JSON. Falls back to raw
-	// when the bytes are not valid JSON.
 	ViewJSON
-	// ViewRaw renders the value as UTF-8 text. Invalid bytes are replaced
-	// with U+FFFD.
 	ViewRaw
-	// ViewHex renders the value as `hexdump -C`-style output.
 	ViewHex
 )
 
-// String returns a short label for the view (used in the detail header).
 func (v ValueView) String() string {
 	switch v {
 	case ViewJSON:
@@ -49,8 +36,8 @@ func (v ValueView) String() string {
 	}
 }
 
-// AutoView resolves [ViewAuto] into the concrete view that
-// [kafka.DetectValueFormat] would pick. Other inputs are returned unchanged.
+// AutoView resolves [ViewAuto] via [kafka.DetectValueFormat]; other inputs
+// pass through.
 func AutoView(v ValueView, value []byte) ValueView {
 	if v != ViewAuto {
 		return v
@@ -65,8 +52,6 @@ func AutoView(v ValueView, value []byte) ValueView {
 	}
 }
 
-// FormatValue returns the rendered body for a Kafka record value in the
-// requested view. ViewAuto resolves through [AutoView] before formatting.
 func FormatValue(v ValueView, value []byte) string {
 	view := AutoView(v, value)
 	switch view {
@@ -82,10 +67,7 @@ func FormatValue(v ValueView, value []byte) string {
 	}
 }
 
-// PreviewLine renders a one-line value preview for the messages table.
-// JSON inputs are collapsed to a single line (whitespace removed); other
-// inputs are stripped of newlines. The result is truncated to maxWidth
-// runes and suffixed with "..." when truncated.
+// PreviewLine renders a one-line preview, truncated to maxWidth runes.
 func PreviewLine(value []byte, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
@@ -125,10 +107,7 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(runes[:keep]) + ellipsis
 }
 
-// HexDump renders bytes in a `hexdump -C`-style three-column layout: the
-// leftmost column is the offset, the middle column is space-separated hex
-// bytes split into two groups of 8, and the right column is the printable
-// ASCII representation.
+// HexDump renders bytes in `hexdump -C`-style layout.
 func HexDump(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -172,8 +151,7 @@ func prettyJSON(b []byte) (string, bool) {
 	return pretty.String(), true
 }
 
-// rawText returns b decoded as UTF-8, replacing invalid bytes with U+FFFD
-// and stripping ASCII control bytes other than \t, \n, \r.
+// rawText decodes UTF-8, replacing invalid bytes and most controls with U+FFFD.
 func rawText(b []byte) string {
 	if len(b) == 0 {
 		return ""

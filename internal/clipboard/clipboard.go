@@ -1,18 +1,7 @@
-// Package clipboard exports copied text to the user's clipboard.
-//
-// Three transport methods are supported, selected via [Method]:
-//
-//   - "native"  → invoke the platform's native CLI tool (pbcopy / xclip /
-//     wl-copy), populating the local desktop clipboard.
-//   - "osc52"   → emit an OSC 52 escape sequence on the terminal so the
-//     terminal emulator (including SSH-forwarded ones) writes the payload
-//     into the user's clipboard.
-//   - "auto"    → run both transports in parallel and succeed when either
-//     does.
-//   - "off"     → discard the payload (no-op).
-//
-// The package is consumed via the [Clipboard] interface so screen code can
-// pass a clipboard mock in tests.
+// Package clipboard exports copied text via native CLI tools (pbcopy /
+// xclip / wl-copy) and/or OSC 52 escape sequences. Method selects the
+// transport: "native", "osc52", "auto" (run both, succeed if either does),
+// or "off".
 package clipboard
 
 import (
@@ -23,25 +12,17 @@ import (
 	"sync"
 )
 
-// Method selects the transport. Values are matched case-insensitively;
-// unknown values fall back to [MethodAuto] so a typo in config does not
-// disable copy entirely.
 type Method string
 
 const (
-	// MethodAuto runs the native and OSC 52 transports in parallel.
-	MethodAuto Method = "auto"
-	// MethodNative shells out to pbcopy / xclip / wl-copy.
+	MethodAuto   Method = "auto"
 	MethodNative Method = "native"
-	// MethodOSC52 emits an OSC 52 escape sequence.
-	MethodOSC52 Method = "osc52"
-	// MethodOff disables clipboard entirely (Copy is a no-op).
-	MethodOff Method = "off"
+	MethodOSC52  Method = "osc52"
+	MethodOff    Method = "off"
 )
 
 // ParseMethod normalises a user-facing string into a [Method]. Empty input
-// returns [MethodAuto]; unknown input returns ("", error) so callers can
-// surface a config validation error.
+// returns [MethodAuto].
 func ParseMethod(s string) (Method, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "auto":
@@ -57,30 +38,19 @@ func ParseMethod(s string) (Method, error) {
 	}
 }
 
-// Clipboard is the contract consumed by screen code. Implementations must
-// be safe for concurrent use — copy hotkeys may overlap with auto-refresh
-// goroutines.
+// Clipboard implementations must be safe for concurrent use — copy hotkeys
+// may overlap with auto-refresh goroutines.
 type Clipboard interface {
 	Copy(ctx context.Context, payload string) error
 }
 
-// Options configures [New].
 type Options struct {
-	// Method picks the transport. Empty defaults to [MethodAuto].
 	Method Method
-	// Native, when non-nil, overrides the default native transport. Tests
-	// inject a fake here; production code leaves it nil so [DefaultNative]
-	// is constructed lazily.
 	Native Clipboard
-	// OSC52, when non-nil, overrides the default OSC 52 transport.
-	OSC52 Clipboard
+	OSC52  Clipboard
 }
 
 // New constructs a [Clipboard] for the requested method.
-//
-// For [MethodAuto] both transports are run in parallel and the resulting
-// [Clipboard] reports success when either does. For [MethodOff] it returns
-// a no-op. For [MethodNative] / [MethodOSC52] only that transport is used.
 func New(opts Options) Clipboard {
 	method := opts.Method
 	if method == "" {
@@ -109,7 +79,6 @@ func New(opts Options) Clipboard {
 	}
 }
 
-// noopClipboard satisfies [Clipboard] without copying anywhere.
 type noopClipboard struct{}
 
 func (noopClipboard) Copy(_ context.Context, _ string) error { return nil }

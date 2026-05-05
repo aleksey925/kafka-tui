@@ -1,8 +1,3 @@
-// Screen instantiation — given a [ScreenID] and the active bootstrap,
-// build a fresh screen Model wired with its options. Each screen has
-// its own factory because options vary by screen; collectively they
-// keep the host free of knowledge about each screen's option struct.
-
 package tui
 
 import (
@@ -18,17 +13,15 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/topics"
 )
 
-// instantiate constructs the screen for id using the current bootstrap. When
-// boot is nil or required deps (e.g. *kafka.Client for topic screens) are
-// absent, the active screen is left nil and [renderBody] falls back to the
-// placeholder.
+// instantiate constructs the screen for id. When boot is nil or required
+// deps are absent, the active screen is left nil and renderBody falls back
+// to the placeholder.
 func (m *Model) instantiate(id ScreenID) {
 	if m.boot == nil {
 		return
 	}
-	// when re-instantiating after a pop the nav seeds are empty; fall back to
-	// lastTopic so topic-bound screens (messages, produce) recreate against the
-	// correct topic instead of an empty one.
+	// after a pop the nav seeds are empty; fall back to lastTopic so
+	// topic-bound screens recreate against the correct topic.
 	if m.navTopic == "" {
 		m.navTopic = m.lastTopic
 	}
@@ -170,7 +163,7 @@ func (m *Model) newConfigSrc() *configsrc.Model {
 }
 
 // parseRefresh converts the config string ("off", "5s", …) into a duration.
-// "off" / unparseable / zero map to 0 (auto-refresh disabled).
+// "off" / unparseable / zero / negative map to 0 (auto-refresh disabled).
 func parseRefresh(s string) time.Duration {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.EqualFold(s, "off") {

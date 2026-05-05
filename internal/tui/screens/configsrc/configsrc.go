@@ -1,9 +1,5 @@
 // Package configsrc implements the `:config sources` screen — a sortable,
-// searchable table of every explicitly-set config field plus its provenance
-// (which layer/file produced the final value).
-//
-// Provenance metadata is computed by the config loader during merge and
-// surfaced here as two tables: top-level config keys and per-cluster fields.
+// searchable table of every explicitly-set config field plus its provenance.
 package configsrc
 
 import (
@@ -23,19 +19,15 @@ import (
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed esc/q.
 	Back bool
 }
 
 // Options configure a [Model].
 type Options struct {
-	// Sources is the field-origin metadata produced by config.Load. Required.
 	Sources config.Sources
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Styles  theme.Styles
 }
 
-// Model is the config sources viewer screen.
 type Model struct {
 	sources config.Sources
 
@@ -50,7 +42,6 @@ type Model struct {
 	styles theme.Styles
 }
 
-// New constructs a Model.
 func New(opts Options) *Model {
 	styles := opts.Styles
 	if styles.Palette.Foreground == nil {
@@ -78,26 +69,20 @@ func New(opts Options) *Model {
 	return m
 }
 
-// Init implements the screen contract (no async work to dispatch).
 func (m *Model) Init() tea.Cmd { return nil }
 
-// Action returns the pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns and clears the pending action.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// FocusClusters reports whether the per-cluster table currently has focus.
 func (m *Model) FocusClusters() bool { return m.focusClusters }
 
-// Title returns the frame title rendered by the host.
 func (m *Model) Title() string { return "Config Sources" }
 
-// Breadcrumb describes which sub-table is active.
 func (m *Model) Breadcrumb() string {
 	if m.focusClusters {
 		return "clusters"
@@ -105,24 +90,18 @@ func (m *Model) Breadcrumb() string {
 	return "config"
 }
 
-// SetSearch forwards a host-driven filter query to both sub-tables. The
-// screen treats the host's `/` prompt as a single screen-level filter:
-// Tab only switches navigation focus, so an esc cascade can always
-// clear the filter without depending on which table is currently in
-// focus.
+// SetSearch forwards a single screen-level query to both sub-tables;
+// Tab only switches focus, so an esc cascade can clear the filter
+// regardless of which table is currently focused.
 func (m *Model) SetSearch(query string) {
 	m.cfgTable.SetSearch(query)
 	m.clusterTable.SetSearch(query)
 }
 
-// ActiveFilter returns the screen-level search query. Both tables hold
-// the same value (see [SetSearch]), so the config table is queried
-// directly.
 func (m *Model) ActiveFilter() string {
 	return m.cfgTable.Search()
 }
 
-// SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
@@ -132,19 +111,14 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints derives the bottom-row entries from the bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.bindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the same source.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.bindings())
 }
 
-// bindings is the single source of truth for config-sources shortcuts.
-// Sort and search keys are claimed by the underlying table component
-// (advertise-only here so they appear in help and hints alike).
 func (m *Model) bindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"tab"}, Label: "switch focused table", Category: "Config sources", Hint: true, Handler: m.actSwitchTable},
@@ -157,7 +131,6 @@ func (m *Model) bindings() []keymap.Binding {
 func (m *Model) actSwitchTable() tea.Cmd { m.focusClusters = !m.focusClusters; return nil }
 func (m *Model) actBack() tea.Cmd        { m.action.Back = true; return nil }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -189,7 +162,6 @@ func (m *Model) activeTable() *components.Table {
 	return m.cfgTable
 }
 
-// View renders the screen body.
 func (m *Model) View() string {
 	cfgTitle := m.styles.HelpTitle.Render(m.formatTitle("Config fields", !m.focusClusters))
 	clusterTitle := m.styles.HelpTitle.Render(m.formatTitle("Cluster fields", m.focusClusters))

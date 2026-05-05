@@ -8,8 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Cluster color identifiers accepted by clusters.yaml. These are the only
-// values valid for the color swatch in headers and the cluster list.
+// Cluster color identifiers accepted by clusters.yaml.
 const (
 	ClusterRed    = "red"
 	ClusterYellow = "yellow"
@@ -19,7 +18,6 @@ const (
 )
 
 // AllowedClusterColors lists every cluster color the application accepts.
-// It is exposed for validation and tests.
 var AllowedClusterColors = []string{
 	ClusterRed,
 	ClusterYellow,
@@ -47,7 +45,6 @@ type Palette struct {
 	StatusError color.Color
 }
 
-// Default returns the default Claude Code dark palette.
 func Default() Palette {
 	return Palette{
 		Background: lipgloss.Color("#1e1e1e"),
@@ -68,8 +65,8 @@ func Default() Palette {
 	}
 }
 
-// ClusterColor returns the color configured for the cluster swatch. Unknown
-// values fall back to the default foreground.
+// ClusterColor returns the color configured for the cluster swatch.
+// Unknown values fall back to the default foreground.
 func (p Palette) ClusterColor(name string) color.Color {
 	switch name {
 	case ClusterRed:
@@ -110,7 +107,6 @@ type Styles struct {
 	HelpTitle    lipgloss.Style
 }
 
-// New builds the default Styles using the supplied palette.
 func New(p Palette) Styles {
 	return Styles{
 		Palette:      p,
@@ -128,14 +124,12 @@ func New(p Palette) Styles {
 		Command:      lipgloss.NewStyle().Foreground(p.Foreground),
 		CommandHL:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
 		CommandGhost: lipgloss.NewStyle().Foreground(p.Muted),
-		// reverse-video block cursor — terminal-native look, no extra glyph.
-		Cursor:    lipgloss.NewStyle().Foreground(p.Background).Background(p.Accent),
-		Toast:     lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
-		HelpTitle: lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
+		Cursor:       lipgloss.NewStyle().Foreground(p.Background).Background(p.Accent),
+		Toast:        lipgloss.NewStyle().Foreground(p.Foreground).Background(p.Subtle).Padding(0, 1),
+		HelpTitle:    lipgloss.NewStyle().Foreground(p.Accent).Bold(true),
 	}
 }
 
-// DefaultStyles returns Styles built from the default palette.
 func DefaultStyles() Styles {
 	return New(Default())
 }

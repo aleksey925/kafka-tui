@@ -1,12 +1,4 @@
-// Package clusters implements the cluster-list screen — the first screen the
-// TUI shows when more than one cluster is configured.
-//
-// The screen renders a sortable, searchable table of clusters with a colored
-// `●` swatch, `[RO]` and `(cli)` markers, and a connection-status column
-// (`✓ ok` / `✗ failed` / `? unknown` / `◐ checking…`). It owns no Kafka client
-// itself — connectivity probes are dispatched through a pluggable [Pinger] and
-// editing of `clusters.yaml` through a pluggable [Editor], which keeps the
-// screen unit-testable without touching real brokers or the user's editor.
+// Package clusters implements the cluster-list screen.
 package clusters
 
 import (
@@ -33,17 +25,12 @@ import (
 type ConnectionStatus int
 
 const (
-	// StatusUnknown means no probe has been attempted yet.
 	StatusUnknown ConnectionStatus = iota
-	// StatusChecking means a probe is in flight.
 	StatusChecking
-	// StatusOK means the most recent probe succeeded.
 	StatusOK
-	// StatusFailed means the most recent probe failed.
 	StatusFailed
 )
 
-// Icon returns the single-character glyph used in the status column.
 func (s ConnectionStatus) Icon() string {
 	switch s {
 	case StatusChecking:
@@ -57,8 +44,6 @@ func (s ConnectionStatus) Icon() string {
 	}
 }
 
-// statusColor maps a connectivity status to its theme palette color.
-// Used for the leading status dot on the cluster row.
 func statusColor(s theme.Styles, st ConnectionStatus) color.Color {
 	switch st {
 	case StatusOK:
@@ -74,7 +59,6 @@ func statusColor(s theme.Styles, st ConnectionStatus) color.Color {
 	}
 }
 
-// Label returns the icon + word combination used in the status column body.
 func (s ConnectionStatus) Label() string {
 	switch s {
 	case StatusChecking:
@@ -93,27 +77,20 @@ type Pinger interface {
 	Ping(ctx context.Context, c config.Cluster) error
 }
 
-// PingerFunc adapts a function into a [Pinger].
 type PingerFunc func(ctx context.Context, c config.Cluster) error
 
-// Ping calls f.
 func (f PingerFunc) Ping(ctx context.Context, c config.Cluster) error { return f(ctx, c) }
 
-// Editor opens path in the user's `$EDITOR`. Implementations block until the
-// editor exits.
+// Editor opens path in the user's $EDITOR. Implementations block until the editor exits.
 type Editor interface {
 	Edit(path string) error
 }
 
-// EditorFunc adapts a function into an [Editor].
 type EditorFunc func(path string) error
 
-// Edit calls f.
 func (f EditorFunc) Edit(path string) error { return f(path) }
 
-// DefaultEditor returns an [Editor] that runs `$EDITOR <path>` (falling back
-// to `vi`) attached to the current TTY. It is unsuitable for unit tests; tests
-// inject an [EditorFunc].
+// DefaultEditor returns an [Editor] that runs `$EDITOR <path>` (falling back to `vi`).
 func DefaultEditor() Editor {
 	return EditorFunc(func(path string) error {
 		editor := os.Getenv("EDITOR")
@@ -128,51 +105,31 @@ func DefaultEditor() Editor {
 	})
 }
 
-// Action describes the screen's pending intent. Read after every Update; the
-// host (router) reacts and clears it via [Model.ConsumeAction].
+// Action describes the screen's pending intent.
 type Action struct {
-	// Connect names the cluster the user wants to switch to. The host is
-	// expected to push the topics screen.
 	Connect string
-	// Quit signals the user pressed q with no other screen below.
-	Quit bool
-	// Reload asks the host to re-read the config files and feed a fresh
-	// cluster list back via [Model.SetClusters].
-	Reload bool
+	Quit    bool
+	Reload  bool
 }
 
 // Options configure a [Model].
 type Options struct {
-	// Clusters is the (already-resolved) list of clusters. Order is preserved.
-	Clusters []config.Cluster
-	// CLIName, when non-empty, marks the cluster from --brokers; that cluster
-	// will be displayed with a `(cli)` tag in the screen body.
-	CLIName string
-	// GlobalPath / ProjectPath are the absolute paths shown in the edit-target
-	// chooser. Either may be empty (the chooser will hide that option).
+	Clusters                []config.Cluster
+	CLIName                 string
 	GlobalPath, ProjectPath string
-	// Pinger probes connectivity. If nil, status checking is disabled — only
-	// [StatusUnknown] is shown.
-	Pinger Pinger
-	// Editor opens `clusters.yaml`. Defaults to [DefaultEditor].
-	Editor Editor
-	// PingTimeout caps each probe. Defaults to 5s.
-	PingTimeout time.Duration
-	// StartupWarnings are surfaced as warning toasts on first Init.
-	StartupWarnings []string
-	// Now is the injected clock (defaults to time.Now).
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Pinger                  Pinger
+	Editor                  Editor
+	PingTimeout             time.Duration
+	StartupWarnings         []string
+	Now                     func() time.Time
+	Styles                  theme.Styles
 }
 
-// editTarget identifies one of the chooser entries.
 type editTarget struct {
 	Label string
 	Path  string
 }
 
-// Model is the clusters screen.
 type Model struct {
 	clusters []config.Cluster
 	cliName  string
@@ -196,10 +153,9 @@ type Model struct {
 
 	width, height int
 
-	// connectivity probes are strictly user-driven (`t`/`T`) — there is no
-	// auto-refresh ticker on this screen. The refresher is kept solely to
-	// stamp `LastRefresh()` so the chrome's "X ago" indicator (RefreshOnEdit
-	// mode) can show when the last config snapshot landed.
+	// connectivity probes are user-driven; the refresher only stamps
+	// LastRefresh() for the chrome's "X ago" indicator on config-snapshot
+	// arrival.
 	refresher components.Refresher
 
 	startupWarn []string
@@ -207,8 +163,7 @@ type Model struct {
 	styles      theme.Styles
 }
 
-// New builds a Model from Options. Status is initialized to Unknown for every
-// cluster.
+// New builds a Model from Options.
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -243,13 +198,9 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(columnDefs(), components.WithStyles(styles))
 
-	// no auto-refresh on clusters: connectivity probes are strictly
-	// user-driven (`t`/`T`) and config-file edits are picked up by the
-	// host's config.Watcher subscription, not by polling.
 	refresher := components.NewRefresher(0, now)
-	// the initial config load just happened — anchor "X ago" to the
-	// construction time so the chrome shows "0s ago" right after entry
-	// instead of staying blank until the first watcher snapshot.
+	// anchor "X ago" to construction time so the chrome shows "0s ago"
+	// right after entry instead of waiting for the first watcher snapshot.
 	refresher.MarkSuccess()
 	m := &Model{
 		clusters:    clusters,
@@ -271,8 +222,7 @@ func New(opts Options) *Model {
 	return m
 }
 
-// columnDefs returns the table column definitions used by the cluster list.
-// The status column is non-sortable: status is volatile.
+// status column is non-sortable: status is volatile.
 func columnDefs() []components.Column {
 	return []components.Column{
 		{Title: " ", Width: 1},
@@ -283,12 +233,8 @@ func columnDefs() []components.Column {
 	}
 }
 
-// SkipTarget reports the cluster name to bypass the screen for. Two cases
-// trigger a skip:
-//   - exactly one cluster is configured, OR
-//   - a CLI inline cluster was supplied (its name takes priority).
-//
-// The host should call this once before pushing the screen onto the router.
+// SkipTarget reports the cluster name to bypass the screen for: a CLI inline
+// cluster (priority) or the only configured cluster.
 func (m *Model) SkipTarget() (string, bool) {
 	if m.cliName != "" {
 		return m.cliName, true
@@ -299,10 +245,6 @@ func (m *Model) SkipTarget() (string, bool) {
 	return "", false
 }
 
-// Init returns the startup commands: pushing any warning toasts queued at
-// construction and (eventually) probing every cluster's connectivity. The
-// initial probe is dispatched lazily on the first Update so tests that never
-// drive Update don't accidentally fire it.
 func (m *Model) Init() tea.Cmd {
 	for _, w := range m.startupWarn {
 		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
@@ -311,38 +253,26 @@ func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
-// RefreshInterval exposes the configured tick. Always 0 on this screen
-// because connectivity probes are strictly user-driven; kept to satisfy
-// the host's Refreshable interface.
 func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
 
-// SetRefreshPaused is a no-op on this screen (no auto-refresh ticker);
-// kept to satisfy the host's Refreshable interface.
 func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
 
-// Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// Status returns the current status of the named cluster (or [StatusUnknown]).
 func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 
-// SetClusters replaces the cluster list (used by the host after a reload).
-// Connectivity statuses are preserved by name; missing clusters drop out;
-// new ones get [StatusUnknown]. The cursor stays on the same cluster name
-// when possible.
+// SetClusters replaces the cluster list (host calls this after a reload).
+// Statuses are preserved by name; missing clusters drop out; new ones get
+// StatusUnknown. The cursor stays on the same cluster name when possible.
 func (m *Model) SetClusters(list []config.Cluster, cliName string) {
 	m.clusters = append([]config.Cluster(nil), list...)
 	m.cliName = cliName
-	// stamp time of the actual cluster-list refresh so the chrome's
-	// "X ago" indicator (RefreshOnEdit mode) shows when the file watcher
-	// last delivered a snapshot, not when the user last hit `T`.
 	m.refresher.MarkSuccess()
 	keep := make(map[string]ConnectionStatus, len(list))
 	keepErr := make(map[string]string, len(list))
@@ -368,10 +298,8 @@ func (m *Model) SetClusters(list []config.Cluster, cliName string) {
 	}
 }
 
-// Toasts exposes the toast queue (mostly for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
-// LatestFlash returns the freshest live toast from this screen's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {
 	if m.toasts == nil {
 		return components.Toast{}, false
@@ -379,7 +307,6 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Title returns the frame title rendered by the host.
 func (m *Model) Title() string {
 	total := len(m.clusters)
 	if q := m.table.Search(); q != "" {
@@ -388,7 +315,6 @@ func (m *Model) Title() string {
 	return fmt.Sprintf("Clusters[%d]", total)
 }
 
-// Breadcrumb returns the selected cluster (right-aligned in the frame).
 func (m *Model) Breadcrumb() string {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -397,22 +323,15 @@ func (m *Model) Breadcrumb() string {
 	return row.ID
 }
 
-// SetSearch forwards a host-driven filter query to the underlying table.
 func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 
-// ActiveFilter returns the table's current search query.
 func (m *Model) ActiveFilter() string { return m.table.Search() }
 
-// HasOverlay reports whether a modal (the global/project edit chooser) is
-// open. The host uses this to give esc to the chooser before falling
-// back to the filter-clear / pop cascade.
 func (m *Model) HasOverlay() bool { return m.editing }
 
-// SetSize updates width/height (called when the host receives WindowSizeMsg).
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		// reserve a few rows for chrome (header, toast, hints).
 		m.table.SetHeight(maxInt(1, h-6))
 	}
 	if w > 0 {
@@ -420,13 +339,10 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints derives the bottom-row entries from the active bindings
-// table — chooser when its overlay is open, list mode otherwise.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.activeBindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the same source.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.activeBindings())
 }
@@ -438,7 +354,6 @@ func (m *Model) activeBindings() []keymap.Binding {
 	return m.listBindings()
 }
 
-// listBindings is the single source of truth for cluster-list shortcuts.
 func (m *Model) listBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "connect to cluster", Category: "Cluster", Hint: true, Handler: m.connectCurrent},
@@ -454,11 +369,9 @@ func (m *Model) listBindings() []keymap.Binding {
 func (m *Model) actReload() tea.Cmd { m.action.Reload = true; return nil }
 func (m *Model) actQuit() tea.Cmd   { m.action.Quit = true; return nil }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	if !m.stagedInit {
 		m.stagedInit = true
-		// preserve init's side effects (toasts already queued).
 	}
 
 	switch msg := msg.(type) {
@@ -481,13 +394,12 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.editing {
 		return m.handleEditChooserKey(key)
 	}
-	// any keypress dismisses the topmost sticky toast, per §7.11.
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
 
 	if key.String() == "esc" {
-		// no-op on the root screen — esc must not quit the app.
+		// esc on the root screen must not quit the app.
 		return nil
 	}
 	if cmd, ok := keymap.Dispatch(m.listBindings(), key); ok {
@@ -503,9 +415,6 @@ func (m *Model) handleEditChooserKey(key tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// editChooserBindings drives the inline `e` chooser overlay (one row
-// per discovered clusters.yaml). The dispatcher iterates this same
-// slice — adding a chooser key requires one append.
 func (m *Model) editChooserBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Edit chooser", Hint: true, Handler: m.actChooserCancel},
@@ -538,9 +447,6 @@ func (m *Model) actChooserPick() tea.Cmd {
 	return m.runEditor(path)
 }
 
-// openEditChooser is invoked on the `e` hotkey. With multiple targets it
-// brings up the global/project chooser; with a single target it dispatches
-// the editor immediately.
 func (m *Model) openEditChooser() tea.Cmd {
 	if len(m.editChoices) == 0 {
 		m.toasts.Push(components.ToastWarning, "no clusters.yaml location is configured")
@@ -554,7 +460,6 @@ func (m *Model) openEditChooser() tea.Cmd {
 	return nil
 }
 
-// connectCurrent handles `enter`: probe + connect.
 func (m *Model) connectCurrent() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -566,7 +471,6 @@ func (m *Model) connectCurrent() tea.Cmd {
 		return nil
 	}
 	if m.pinger == nil {
-		// no pinger, optimistic connect.
 		m.action.Connect = name
 		m.statuses[name] = StatusOK
 		m.refreshTable()
@@ -608,8 +512,6 @@ func (m *Model) testAll() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// LastRefresh returns the wall-clock time of the most recent testAll
-// dispatch (manual `T` or an auto-refresh tick).
 func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
 
 func (m *Model) findCluster(name string) *config.Cluster {
@@ -652,7 +554,6 @@ func (m *Model) handleEditCompleted(msg EditCompletedMsg) {
 	m.toasts.Push(components.ToastInfo, "saved "+msg.Path+" — reload pending")
 }
 
-// refreshTable rebuilds the underlying table rows from m.clusters.
 func (m *Model) refreshTable() {
 	rows := make([]components.Row, 0, len(m.clusters))
 	for _, c := range m.clusters {
@@ -665,9 +566,7 @@ func (m *Model) refreshTable() {
 }
 
 func (m *Model) rowValues(c config.Cluster) []string {
-	// the leading dot reflects connectivity status (green/yellow/red/gray),
-	// not the user-configured cluster color — the dot was previously
-	// confusing because users read it as a status light.
+	// leading dot reflects connectivity status, not the cluster color.
 	statusDot := lipgloss.NewStyle().
 		Foreground(statusColor(m.styles, m.statuses[c.Name])).
 		Render("●")
@@ -688,8 +587,6 @@ func (m *Model) rowValues(c config.Cluster) []string {
 	}
 }
 
-// View renders the screen body. Width / height should reflect the area the
-// screen is allowed to draw into.
 func (m *Model) View() string {
 	parts := []string{m.table.View()}
 	if m.editing {
@@ -698,11 +595,8 @@ func (m *Model) View() string {
 	return strings.Join(parts, "\n")
 }
 
-// EditingChooser reports whether the global/project chooser modal is open
-// (used by tests).
 func (m *Model) EditingChooser() bool { return m.editing }
 
-// EditChoices exposes the chooser entries (used by tests).
 func (m *Model) EditChoices() []string {
 	out := make([]string, 0, len(m.editChoices))
 	for _, c := range m.editChoices {
@@ -711,7 +605,6 @@ func (m *Model) EditChoices() []string {
 	return out
 }
 
-// EditCursor returns the index of the currently-highlighted chooser entry.
 func (m *Model) EditCursor() int { return m.editIdx }
 
 func (m *Model) renderEditChooser() string {
@@ -742,14 +635,12 @@ const (
 	intentConnect
 )
 
-// PingResultMsg is delivered when an asynchronous probe finishes.
 type PingResultMsg struct {
 	Name   string
 	Err    error
 	Intent pingIntent
 }
 
-// EditCompletedMsg is delivered when the editor process exits.
 type EditCompletedMsg struct {
 	Path string
 	Err  error

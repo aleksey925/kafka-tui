@@ -13,30 +13,20 @@ type FrameOpts struct {
 	// Width and Height are the outer dimensions (including the border). The
 	// inner area is Width-2 by Height-2.
 	Width, Height int
-	// Title is centered inside the top border (k9s-style single title). Empty
-	// hides the slot.
-	Title string
-	// Focused renders the border with the focus color rather than the muted
-	// default.
+	// Title is centered inside the top border. Empty hides the slot.
+	Title   string
 	Focused bool
 }
 
-// FrameSidePadding is the number of blank columns inserted between each
-// vertical border (`│`) and the body content, on each side. Hosts sizing
-// screens for the inner area must subtract `2*FrameSidePadding + 2` from
-// the terminal width to account for borders + padding. Matches k9s'
-// `SetBorderPadding(0,0,1,1)`. Any visual gap between the frame border
-// and the terminal edge is the host's responsibility, not this package.
+// FrameSidePadding is the number of blank columns between each vertical
+// border (`│`) and the body content. Hosts sizing screens for the inner
+// area must subtract `2*FrameSidePadding + 2` from the terminal width to
+// account for borders + padding.
 const FrameSidePadding = 1
 
 // Frame wraps body in a rounded box with the title embedded in the top
-// border. Body is split into lines and padded/truncated to fit the inner
-// rectangle (terminal-width minus borders minus side padding).
-//
-// Geometry: top + (Height-2) body lines + bottom. Each body line is
-// '│' + spaces(FrameSidePadding) + content + spaces(FrameSidePadding) +
-// '│'. Lines exceeding the inner width are left as-is (caller is expected
-// to size the body to fit).
+// border. Body lines exceeding the inner width are left as-is (caller is
+// expected to size the body to fit).
 func Frame(s theme.Styles, opts FrameOpts, body string) string {
 	if opts.Width < 4+2*FrameSidePadding || opts.Height < 3 {
 		return body
@@ -77,10 +67,8 @@ func frameBorderStyle(s theme.Styles, focused bool) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(s.Palette.Muted)
 }
 
-// frameTopLine builds the inner part of the top border line (between the
-// two corner runes), centering the title inside continuous dashes:
-// "──── <title> ────". When the title doesn't fit, it's dropped and the
-// border collapses to a plain dash run.
+// frameTopLine builds the inner part of the top border line, centering the
+// title inside continuous dashes. The title is dropped when it doesn't fit.
 func frameTopLine(s theme.Styles, title string, inner int) string {
 	border := lipgloss.NewStyle().Foreground(s.Palette.Muted)
 	if title == "" {
@@ -98,9 +86,9 @@ func frameTopLine(s theme.Styles, title string, inner int) string {
 		border.Render(strings.Repeat("─", right))
 }
 
-// padOrTruncate fits content into width: pads with spaces when shorter,
-// returns as-is when wider (truncating styled output safely is non-trivial
-// and screens are responsible for sizing themselves).
+// padOrTruncate pads with spaces when shorter; wider content is returned
+// as-is (truncating styled output safely is non-trivial — screens are
+// responsible for sizing themselves).
 func padOrTruncate(content string, width int) string {
 	w := lipgloss.Width(content)
 	if w >= width {

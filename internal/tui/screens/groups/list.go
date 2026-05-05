@@ -1,16 +1,5 @@
 // Package groups implements the consumer-groups screen — list, detail view,
-// and the 4-step reset-offsets flow (§7.6 — §7.8).
-//
-// The screen owns three sub-modes that share a single [Model]:
-//
-//   - ModeList shows the groups table (optionally filtered by topic).
-//   - ModeDetail renders the focused group's members and per-partition
-//     committed/end/lag rows.
-//   - ModeReset hosts the 4-step reset flow (scope → strategy → params →
-//     preview), with an express path that skips the preview.
-//
-// The screen owns no Kafka client itself: every read/admin call flows through
-// a pluggable [Service] so tests can drive the model with a fake.
+// and the 4-step reset-offsets flow.
 package groups
 
 import (
@@ -45,49 +34,29 @@ type Service interface {
 
 // Action describes the screen's pending intent for the host (router).
 type Action struct {
-	// Back signals the user pressed esc/q on the list view.
-	Back bool
-	// Topic, when non-empty, requests navigation to the messages screen for
-	// the named topic (raised by `t` in the detail view when the group has
-	// exactly one subscribed topic).
-	Topic string
-	// TopicsForGroup, when non-empty, requests a topics list filtered to the
-	// group's subscribed topics (raised by `t` in detail view with multiple).
+	Back           bool
+	Topic          string
 	TopicsForGroup []string
 }
 
-// Mode is the current sub-mode.
 type Mode int
 
 const (
-	// ModeList: groups list (default).
 	ModeList Mode = iota
-	// ModeDetail: members + per-partition lag for one group.
 	ModeDetail
-	// ModeReset: the 4-step reset-offsets flow.
 	ModeReset
 )
 
-// Options configure a [Model].
 type Options struct {
-	// Service is the Kafka admin abstraction. Required.
-	Service Service
-	// ReadOnly disables R/shift+r/D and surfaces warnings.
-	ReadOnly bool
-	// FilterTopic, when non-empty, scopes the list to groups subscribed to
-	// (or with commits for) that topic. The header changes accordingly.
-	FilterTopic string
-	// ListRefreshInterval, when > 0, drives auto-refresh of the list.
-	ListRefreshInterval time.Duration
-	// DetailRefreshInterval, when > 0, drives auto-refresh of the detail view.
+	Service               Service
+	ReadOnly              bool
+	FilterTopic           string
+	ListRefreshInterval   time.Duration
 	DetailRefreshInterval time.Duration
-	// Now is the injected clock (defaults to time.Now).
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Now                   func() time.Time
+	Styles                theme.Styles
 }
 
-// Model is the consumer-groups screen.
 type Model struct {
 	svc      Service
 	readOnly bool
@@ -112,9 +81,8 @@ type Model struct {
 
 	width, height int
 	loading       bool
-	// manualRefresh is set when the user pressed `r` and is consumed by
-	// handleGroupsLoaded to push a one-shot success toast (auto-refresh
-	// ticks stay silent).
+	// manualRefresh distinguishes user-initiated `r` from auto ticks so the
+	// success toast only fires for the former.
 	manualRefresh bool
 
 	action Action
@@ -122,14 +90,11 @@ type Model struct {
 	styles theme.Styles
 }
 
-// pendingOp tracks a destructive action awaiting confirmation. An empty
-// group means no operation is pending; only the delete flow uses this
-// today, so a single field is enough.
+// pendingOp tracks a destructive action awaiting confirmation.
 type pendingOp struct {
 	group string
 }
 
-// New constructs a Model.
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -155,9 +120,6 @@ func New(opts Options) *Model {
 	}
 }
 
-// listColumns returns the table column definitions for the groups list (§7.6).
-// The total_lag column is non-sortable while it is partially populated; rows
-// without lag fetched yet show "—".
 func listColumns() []components.Column {
 	return []components.Column{
 		{Title: "Group", Flex: true, MinWidth: 24, Sortable: true},
@@ -169,38 +131,30 @@ func listColumns() []components.Column {
 }
 
 // Init dispatches the initial groups load and schedules the first
-// auto-refresh tick (when configured) — the recurring chain only sustains
-// itself once started.
+// auto-refresh tick — the recurring chain only sustains itself once started.
 func (m *Model) Init() tea.Cmd {
 	m.loading = true
 	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic), m.AutoRefreshTick())
 }
 
-// Action returns the current pending action.
 func (m *Model) Action() Action { return m.action }
 
-// ConsumeAction returns the pending action and clears it.
 func (m *Model) ConsumeAction() Action {
 	a := m.action
 	m.action = Action{}
 	return a
 }
 
-// CurrentMode returns the current sub-mode (for tests).
 func (m *Model) CurrentMode() Mode { return m.mode }
 
-// WantsRawInput reports true while the reset flow is on the params step
-// (timestamp / shift / specific offset), where the user is editing free-form
-// text and shouldn't have keys captured by global shortcuts.
+// WantsRawInput is true on the reset params step where the user types
+// free-form text.
 func (m *Model) WantsRawInput() bool {
 	return m.mode == ModeReset && m.reset != nil && m.reset.Step() == StepParams
 }
 
-// Toasts exposes the toast queue (for tests).
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
-// Title returns the frame title rendered by the host. In detail/reset modes
-// the title reflects the sub-screen.
 func (m *Model) Title() string {
 	switch m.mode {
 	case ModeDetail:
@@ -212,7 +166,6 @@ func (m *Model) Title() string {
 			return "Reset offsets · " + m.reset.Group()
 		}
 	case ModeList:
-		// fall through to the default list title below.
 	}
 	total := len(m.groups)
 	body := fmt.Sprintf("Consumer Groups [%d]", total)
@@ -232,7 +185,6 @@ func (m *Model) Title() string {
 	return body
 }
 
-// Breadcrumb returns the selected row identifier (or sub-screen state).
 func (m *Model) Breadcrumb() string {
 	if m.mode != ModeList {
 		return ""
@@ -244,9 +196,7 @@ func (m *Model) Breadcrumb() string {
 	return row.ID
 }
 
-// LatestFlash returns the freshest live toast from the active sub-mode's
-// queue. In detail mode the host should see detail toasts; otherwise list
-// toasts win.
+// LatestFlash returns the freshest live toast from the active sub-mode's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {
 	if m.mode == ModeDetail && m.detail != nil {
 		if t, ok := m.detail.LatestFlash(); ok {
@@ -259,30 +209,22 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Detail returns the active detail view (or nil) for tests.
 func (m *Model) Detail() *DetailModel { return m.detail }
 
-// Reset returns the active reset model (or nil) for tests.
 func (m *Model) Reset() *ResetModel { return m.reset }
 
-// Groups returns the loaded groups (defensive copy) for tests.
 func (m *Model) Groups() []kafka.GroupListInfo {
 	out := make([]kafka.GroupListInfo, len(m.groups))
 	copy(out, m.groups)
 	return out
 }
 
-// FilterTopic returns the active topic filter (empty string if unfiltered).
 func (m *Model) FilterTopic() string { return m.filterTopic }
 
-// ConfirmOpen reports whether a confirm dialog is currently visible (tests).
 func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
-// PendingGroup returns the group currently awaiting confirmation (tests).
 func (m *Model) PendingGroup() string { return m.pending.group }
 
-// SetSearch forwards a host-driven filter query to the active sub-screen's
-// table (list or detail).
 func (m *Model) SetSearch(query string) {
 	switch m.mode {
 	case ModeDetail:
@@ -294,7 +236,6 @@ func (m *Model) SetSearch(query string) {
 	}
 }
 
-// ActiveFilter returns the search query active on the visible sub-screen.
 func (m *Model) ActiveFilter() string {
 	if m.mode == ModeDetail && m.detail != nil {
 		return m.detail.ActiveFilter()
@@ -302,16 +243,12 @@ func (m *Model) ActiveFilter() string {
 	return m.table.Search()
 }
 
-// HasOverlay reports whether a modal (delete confirm, the multi-step
-// reset-offsets flow, or the detail view) sits on top of the list. The
-// host yields esc to the screen for any of these — without ModeDetail
-// being included here the q/esc fallback would also pop the groups
-// screen on detail close, so a single esc would skip the list view.
+// HasOverlay must include ModeDetail or a single esc would pop both the
+// detail view and the list, skipping the list entirely.
 func (m *Model) HasOverlay() bool {
 	return m.confirm != nil || m.mode == ModeReset || m.mode == ModeDetail
 }
 
-// SetSize updates width/height. Reserves chrome rows.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
@@ -328,14 +265,10 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
-// KeyHints derives the bottom-row entries from the active mode's
-// bindings table.
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.activeBindings())
 }
 
-// HelpSections derives the `?`-overlay sections from the same source
-// as the dispatcher.
 func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.activeBindings())
 }
@@ -356,7 +289,6 @@ func (m *Model) activeBindings() []keymap.Binding {
 	return m.listBindings()
 }
 
-// listBindings is the single source of truth for the groups list mode.
 func (m *Model) listBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "open group detail", Category: "Group", Hint: true, Handler: m.openDetail},
@@ -395,7 +327,6 @@ func (m *Model) actListBack() tea.Cmd {
 	return nil
 }
 
-// Update routes messages.
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -447,7 +378,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	case ModeReset:
 		return m.handleResetKey(key)
 	case ModeList:
-		// fall through to list-mode handling below.
 	}
 	if m.confirm != nil {
 		return m.handleConfirmKey(key)
@@ -487,8 +417,7 @@ func (m *Model) openDetail() tea.Cmd {
 	d.SetSize(m.width, m.height)
 	m.detail = d
 	m.mode = ModeDetail
-	// also kick off the detail-refresh tick chain — it only sustains
-	// itself once started.
+	// kick off the detail-refresh tick chain — it only sustains itself once started.
 	return tea.Batch(d.Init(), m.DetailRefreshTick())
 }
 
@@ -529,8 +458,6 @@ func (m *Model) handleResetKey(key tea.KeyPressMsg) tea.Cmd {
 	return cmd
 }
 
-// handleResetAction interprets the reset model's pending action and returns
-// the (possibly batched) tea.Cmd that the caller should dispatch.
 func (m *Model) handleResetAction(a ResetAction, prev tea.Cmd) tea.Cmd {
 	switch {
 	case a.Cancel:
@@ -685,9 +612,6 @@ func (m *Model) handleDetailRefreshTick() tea.Cmd {
 	return tea.Batch(m.detail.RefreshCmd(), next)
 }
 
-// RefreshInterval returns the effective auto-refresh tick for the active
-// sub-mode (list or detail). The host uses it to drive the chrome's
-// Refresh: indicator and the ctrl+r toggle.
 func (m *Model) RefreshInterval() time.Duration {
 	if m.mode == ModeDetail {
 		return m.detailRefresher.Interval()
@@ -695,18 +619,11 @@ func (m *Model) RefreshInterval() time.Duration {
 	return m.listRefresher.Interval()
 }
 
-// SetRefreshPaused toggles auto-refresh on both list and detail tickers
-// without stopping them — flipping back to false resumes the regular
-// cadence on whichever sub-mode is active.
 func (m *Model) SetRefreshPaused(paused bool) {
 	m.listRefresher.SetPaused(paused)
 	m.detailRefresher.SetPaused(paused)
 }
 
-// LastRefresh returns the wall-clock time of the most recent successful
-// load for the active sub-mode — detail when the user is inspecting one
-// group, list otherwise. Mirrors RefreshInterval so the chrome's "auto Xs"
-// and "Y ago" stay in sync with each other.
 func (m *Model) LastRefresh() time.Time {
 	if m.mode == ModeDetail && m.detail != nil {
 		return m.detail.LastRefresh()
@@ -714,12 +631,8 @@ func (m *Model) LastRefresh() time.Time {
 	return m.listRefresher.LastRefresh()
 }
 
-// AutoRefreshTick returns a [tea.Cmd] that emits a tick for the list refresh
-// interval. Hosts opt-in by calling this from Init.
 func (m *Model) AutoRefreshTick() tea.Cmd { return m.listRefresher.Tick(ListRefreshTickMsg{}) }
 
-// DetailRefreshTick returns a [tea.Cmd] that emits a tick for the detail-view
-// refresh interval.
 func (m *Model) DetailRefreshTick() tea.Cmd { return m.detailRefresher.Tick(DetailRefreshTickMsg{}) }
 
 func (m *Model) refreshCmd() tea.Cmd {
@@ -727,7 +640,6 @@ func (m *Model) refreshCmd() tea.Cmd {
 	return loadGroupsCmd(m.svc, m.filterTopic)
 }
 
-// refreshTable rebuilds the underlying table rows from m.groups.
 func (m *Model) refreshTable() {
 	rows := make([]components.Row, 0, len(m.groups))
 	for _, g := range m.groups {
@@ -756,8 +668,6 @@ func (m *Model) refreshTable() {
 	m.table.SetRows(rows)
 }
 
-// groupStateColor maps a Kafka group state to a palette color so the State
-// cell visually communicates health at a glance.
 func groupStateColor(s theme.Styles, state string) color.Color {
 	switch strings.ToLower(state) {
 	case "stable":
@@ -773,9 +683,8 @@ func groupStateColor(s theme.Styles, state string) color.Color {
 	}
 }
 
-// FetchLagsForVisible loads the cached lag for every currently visible group.
-// The list screen calls this once after the initial groups load and on each
-// refresh tick — lags are expensive so they're surfaced lazily and cached.
+// FetchLagsForVisible loads cached lag for every visible group; lags are
+// expensive so they're surfaced lazily and cached.
 func (m *Model) FetchLagsForVisible() tea.Cmd {
 	if len(m.groups) == 0 {
 		return nil
@@ -787,7 +696,6 @@ func (m *Model) FetchLagsForVisible() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// View renders the screen body.
 func (m *Model) View() string {
 	switch m.mode {
 	case ModeDetail:
@@ -795,7 +703,6 @@ func (m *Model) View() string {
 	case ModeReset:
 		return m.reset.View()
 	case ModeList:
-		// fall through to default list rendering below.
 	}
 	parts := []string{m.table.View()}
 	if m.confirm != nil {
@@ -806,13 +713,11 @@ func (m *Model) View() string {
 
 // ----- Messages -----
 
-// GroupsLoadedMsg replaces the current groups list with a fresh batch.
 type GroupsLoadedMsg struct {
 	Groups []kafka.GroupListInfo
 	Err    error
 }
 
-// GroupLagsLoadedMsg surfaces the lazy-loaded total lag for a single group.
 type GroupLagsLoadedMsg struct {
 	Group       string
 	TotalLag    int64
@@ -820,16 +725,13 @@ type GroupLagsLoadedMsg struct {
 	Err         error
 }
 
-// GroupDeletedMsg reports the result of a delete-group operation.
 type GroupDeletedMsg struct {
 	Group string
 	Err   error
 }
 
-// ListRefreshTickMsg is the periodic auto-refresh tick for the list view.
 type ListRefreshTickMsg struct{}
 
-// DetailRefreshTickMsg is the periodic auto-refresh tick for the detail view.
 type DetailRefreshTickMsg struct{}
 
 func loadGroupsCmd(svc Service, filterTopic string) tea.Cmd {
@@ -884,7 +786,6 @@ func deleteCmd(svc Service, group string) tea.Cmd {
 	}
 }
 
-// formatThousands renders an integer with thousands separators (1,234,567).
 func formatThousands(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	neg := false

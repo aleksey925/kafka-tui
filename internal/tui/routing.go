@@ -1,8 +1,3 @@
-// Routing — the host translates the active screen's [Action] into
-// router transitions (push / pop / replace) and lifecycle ops, plus
-// the closeActive hook that releases background resources before a
-// screen is dropped.
-
 package tui
 
 import (
@@ -19,8 +14,8 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/topics"
 )
 
-// routeActiveAction reads the active screen's pending Action and reacts to
-// it (push/pop/replace/connect/quit). Returns any tea.Cmd produced.
+// routeActiveAction reads the active screen's pending Action and reacts
+// to it (push/pop/replace/connect/quit).
 func (m *Model) routeActiveAction() tea.Cmd {
 	switch s := m.active.(type) {
 	case *clusters.Model:
@@ -114,10 +109,10 @@ func (m *Model) routeProduceAction(s *produce.Model) tea.Cmd {
 	return nil
 }
 
-// on send & close the produce screen pushes a success toast right before
-// signaling Back; without forwarding it to the underlying screen's queue the
-// user would never see the confirmation. Failed sends keep the form open, so
-// their toast surfaces locally.
+// pendingProduceToast forwards the produce screen's success toast to the
+// underlying screen on send-and-close; without this the user would never
+// see the confirmation. Failed sends keep the form open, so their toast
+// surfaces locally.
 func pendingProduceToast(s *produce.Model, a produce.Action) *components.Toast {
 	if a.Sent == nil {
 		return nil
@@ -173,8 +168,8 @@ func (m *Model) routeTopicConfigsAction(s *topics.ConfigsModel) tea.Cmd {
 	return nil
 }
 
-// popOrReplaceToClusters pops the topics screen to expose the clusters list
-// underneath; if there's nothing below, it replaces with the clusters screen.
+// popOrReplaceToClusters pops to expose the clusters list, or replaces
+// when there's nothing below.
 func (m *Model) popOrReplaceToClusters() tea.Cmd {
 	if m.router.Depth() > 1 {
 		m.popScreen()
@@ -183,9 +178,8 @@ func (m *Model) popOrReplaceToClusters() tea.Cmd {
 	return m.replaceScreen(ScreenClusters, "")
 }
 
-// closeActive releases any background resources held by the current
-// active screen (clone goroutine, follow session, etc.) and clears the
-// pointer so a fresh instance can be wired in.
+// closeActive releases background resources held by the active screen
+// and clears the pointer.
 func (m *Model) closeActive() {
 	if m.active != nil {
 		closeScreen(m.active)
@@ -194,9 +188,8 @@ func (m *Model) closeActive() {
 	m.flash = layout.Flash{}
 }
 
-// pushScreen pushes id onto the router stack and constructs the screen
-// instance. Used at startup. Discards the resulting Init cmd because the
-// caller is expected to invoke [Init] separately.
+// pushScreen pushes id and instantiates the screen. The caller is expected
+// to invoke Init separately (used at startup).
 func (m *Model) pushScreen(id ScreenID) {
 	m.closeActive()
 	m.router.Push(id)
@@ -205,8 +198,7 @@ func (m *Model) pushScreen(id ScreenID) {
 	m.syncRefreshStatus()
 }
 
-// pushScreenCmd is the runtime variant: pushes a screen, instantiates it, and
-// returns its Init cmd to be batched with the host's reply.
+// pushScreenCmd is the runtime variant that returns the screen's Init cmd.
 func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
 	m.closeActive()
 	m.router.Push(id)
@@ -216,8 +208,6 @@ func (m *Model) pushScreenCmd(id ScreenID) tea.Cmd {
 	return m.activeInit()
 }
 
-// replaceScreen swaps the active screen for a new id, freeing the previous
-// instance.
 func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 	if id == ScreenClusters && arg != "" {
 		// `:cluster <name>` connects to a known cluster directly.
@@ -231,10 +221,9 @@ func (m *Model) replaceScreen(id ScreenID, arg string) tea.Cmd {
 	return m.activeInit()
 }
 
-// popScreen pops the router stack and frees the previously active screen.
-// The new active screen (one level up) is re-instantiated from the bootstrap
-// data, since we drop instances when leaving them to release Kafka follow
-// sessions, table state, etc.
+// popScreen pops and re-instantiates the underlying screen. We drop
+// instances when leaving them to release Kafka follow sessions, table
+// state, etc.
 func (m *Model) popScreen() {
 	m.closeActive()
 	m.router.Pop()

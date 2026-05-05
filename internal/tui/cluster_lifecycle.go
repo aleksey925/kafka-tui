@@ -1,7 +1,3 @@
-// Cluster lifecycle — dialing the active *kafka.Client when the user
-// connects to a cluster, swapping it out on cluster switch, and
-// updating the header chrome to reflect the live identity.
-
 package tui
 
 import (
@@ -15,8 +11,6 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 )
 
-// updateHeaderForActive refreshes the header chrome when the active cluster
-// changes (typically after [connectCluster]).
 func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool) {
 	m.activeClu = name
 	m.clusterClr = color
@@ -42,8 +36,6 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	}
 	client, err := m.boot.Dialer.Dial(*clu)
 	if err != nil {
-		// surface dial errors via the clusters screen toast queue when we
-		// can; otherwise log and stay on the clusters screen.
 		if cs, ok := m.active.(*clusters.Model); ok {
 			cs.Toasts().Push(components.ToastError, fmt.Sprintf("connect %q failed: %v", name, err))
 		}
@@ -57,7 +49,6 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	return m.replaceScreen(ScreenTopics, "")
 }
 
-// findCluster returns a pointer to the cluster with the given name, or nil.
 func findCluster(list []config.Cluster, name string) *config.Cluster {
 	for i := range list {
 		if list[i].Name == name {

@@ -7,15 +7,13 @@ import (
 )
 
 // migration is a single forward-only schema step. Steps are applied in order
-// and each one bumps `schema_version.version`. We never rewrite an applied
-// migration: append a new entry instead.
+// and each one bumps `schema_version.version`. Never rewrite an applied
+// migration — append a new entry instead.
 type migration struct {
 	version int
 	stmts   []string
 }
 
-// migrations is the ordered list of schema steps. Adding a new step means
-// appending another entry with the next version number.
 var migrations = []migration{
 	{
 		version: 1,
@@ -56,9 +54,9 @@ var migrations = []migration{
 	},
 }
 
-// applyMigrations runs every migration whose version is greater than the
-// currently recorded one. The first migration bootstraps `schema_version`
-// itself, so the first read may return zero with no error.
+// applyMigrations runs every migration newer than the recorded version. The
+// first migration bootstraps `schema_version` itself, so the first read may
+// return zero with no error.
 func applyMigrations(ctx context.Context, db *sql.DB) error {
 	current, err := currentSchemaVersion(ctx, db)
 	if err != nil {
@@ -76,7 +74,7 @@ func applyMigrations(ctx context.Context, db *sql.DB) error {
 }
 
 // applyMigration runs one migration inside a transaction so a partial failure
-// does not leave the schema mid-step.
+// cannot leave the schema mid-step.
 func applyMigration(ctx context.Context, db *sql.DB, mig migration) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -101,7 +99,7 @@ func applyMigration(ctx context.Context, db *sql.DB, mig migration) error {
 	return nil
 }
 
-// currentSchemaVersion returns the highest version recorded, or 0 if the
+// currentSchemaVersion returns the highest recorded version, or 0 if the
 // schema_version table does not yet exist.
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var exists int

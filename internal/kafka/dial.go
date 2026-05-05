@@ -1,6 +1,5 @@
-// Package kafka assembles franz-go connection options from a
-// [config.Cluster], wires SASL / TLS auto-detection, and exposes thin admin
-// helpers used by the TUI.
+// Package kafka wraps franz-go with SASL/TLS auto-detection and the admin
+// helpers the TUI needs.
 package kafka
 
 import (
@@ -21,8 +20,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/config"
 )
 
-// Protocol represents the Kafka security protocol auto-detected from a
-// cluster's TLS / SASL configuration.
+// Protocol is the security protocol implied by a cluster's TLS/SASL config.
 type Protocol string
 
 const (
@@ -31,11 +29,7 @@ const (
 	ProtocolSASLPlaintext Protocol = "SASL_PLAINTEXT"
 	ProtocolSASLSSL       Protocol = "SASL_SSL"
 
-	// DefaultClientID is set on every kgo client created by Dial unless the
-	// caller overrides it through DialOptions.
-	DefaultClientID = "kafka-tui"
-
-	// DefaultPingTimeout caps the broker metadata round-trip used by Ping.
+	DefaultClientID    = "kafka-tui"
 	DefaultPingTimeout = 5 * time.Second
 )
 
@@ -48,22 +42,13 @@ const (
 
 // DialOptions tweak Dial behavior. The zero value is fine for production.
 type DialOptions struct {
-	// ClientID overrides DefaultClientID.
-	ClientID string
-	// ExtraOpts are appended verbatim to the kgo client options. Used by
-	// tests to inject hooks, custom dialers, etc.
+	ClientID  string
 	ExtraOpts []kgo.Opt
 }
 
 // DetectProtocol returns the security protocol implied by the cluster's
-// TLS / SASL configuration:
-//
-//   - tls + sasl  → SASL_SSL
-//   - tls only    → SSL
-//   - sasl only   → SASL_PLAINTEXT
-//   - neither     → PLAINTEXT
-//
-// An empty TLS section (`tls: {}`) is treated as TLS-with-system-CAs.
+// TLS / SASL configuration. An empty TLS section (`tls: {}`) is treated as
+// TLS-with-system-CAs.
 func DetectProtocol(c config.Cluster) Protocol {
 	hasTLS := c.TLS != nil
 	hasSASL := c.SASL != nil
@@ -80,8 +65,7 @@ func DetectProtocol(c config.Cluster) Protocol {
 }
 
 // BuildClientOptions assembles the kgo.Opt slice for a cluster without
-// actually opening any connections. Splitting the option assembly out makes
-// the SASL/TLS branches unit-testable.
+// opening any connections.
 func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protocol, error) {
 	if len(c.Brokers) == 0 {
 		return nil, "", fmt.Errorf("kafka: cluster %q has no brokers", c.Name)
@@ -118,8 +102,7 @@ func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protoco
 }
 
 // buildTLSConfig converts a [config.TLSConfig] into a *tls.Config. An empty
-// TLS section (no fields set) returns a config that uses the system root CAs
-// without a client certificate.
+// TLS section returns a config that uses the system root CAs.
 func buildTLSConfig(t *config.TLSConfig) (*tls.Config, error) {
 	cfg := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
@@ -162,8 +145,6 @@ func buildTLSConfig(t *config.TLSConfig) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// readMaterial returns the inline value if non-empty, otherwise the file
-// contents at path, or nil if both are empty.
 func readMaterial(label, inline, path string) ([]byte, error) {
 	if inline != "" {
 		return []byte(inline), nil
@@ -178,8 +159,6 @@ func readMaterial(label, inline, path string) ([]byte, error) {
 	return data, nil
 }
 
-// buildSASLMechanism converts a [config.SASLConfig] into a franz-go SASL
-// mechanism. The mechanism name is matched case-insensitively.
 func buildSASLMechanism(s *config.SASLConfig) (sasl.Mechanism, error) {
 	mech := strings.ToUpper(strings.TrimSpace(s.Mechanism))
 	if mech == "" {
@@ -201,13 +180,8 @@ func buildSASLMechanism(s *config.SASLConfig) (sasl.Mechanism, error) {
 	}
 }
 
-// Dial opens a Kafka client connected to the given cluster.
-//
-// The returned Client owns both a [kgo.Client] (for produce / consume) and a
-// [kadm.Client] (for admin operations). Close it when done.
-//
-// Dial does not block on broker connectivity — call Ping if the caller wants
-// to surface unreachable clusters early.
+// Dial opens a Kafka client connected to the given cluster. Dial does not
+// block on broker connectivity — call Ping to surface unreachable clusters.
 func Dial(c config.Cluster, dopts DialOptions) (*Client, error) {
 	opts, proto, err := BuildClientOptions(c, dopts)
 	if err != nil {
@@ -220,8 +194,7 @@ func Dial(c config.Cluster, dopts DialOptions) (*Client, error) {
 	return newClient(kc, c, proto), nil
 }
 
-// Ping verifies basic connectivity by issuing a bounded broker-metadata
-// request. Used for the `t` / `T` hotkeys on the clusters screen.
+// Ping issues a bounded broker-metadata request to verify connectivity.
 func (c *Client) Ping(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = DefaultPingTimeout

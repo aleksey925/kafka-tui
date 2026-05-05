@@ -18,23 +18,17 @@ import (
 type RefreshMode int
 
 const (
-	// RefreshOff: the active screen does not auto-refresh.
 	RefreshOff RefreshMode = iota
-	// RefreshAuto: the active screen polls on a fixed interval.
 	RefreshAuto
 	// RefreshManual: the user disabled auto-refresh for this screen.
 	RefreshManual
 	// RefreshPaused: a modal/search is open and refresh is temporarily paused.
 	RefreshPaused
 	// RefreshOnEdit: the screen reloads itself in response to filesystem
-	// events (no periodic poll). Used by the clusters screen which wires
-	// into config.Watcher.
+	// events (no periodic poll).
 	RefreshOnEdit
-	// RefreshNotApplicable: the screen is conceptually static (e.g. a
-	// single-message detail view, a form, a one-shot snapshot) — refresh
-	// just doesn't apply. Rendered as a dash so the user understands the
-	// row exists but isn't relevant here, vs RefreshOff which means
-	// "supported but turned off".
+	// RefreshNotApplicable: the screen is conceptually static; rendered as
+	// a dash to distinguish from RefreshOff ("supported but turned off").
 	RefreshNotApplicable
 )
 
@@ -47,8 +41,7 @@ type HeaderInfo struct {
 	// Context names the configuration source: "cli" when launched with
 	// --brokers, otherwise the source of clusters.yaml ("global" / "project").
 	Context string
-	// Filter, when non-empty, surfaces the active screen-level filter
-	// (e.g. the open `/` search buffer) in the cluster info pane.
+	// Filter, when non-empty, surfaces the active screen-level filter.
 	Filter string
 }
 
@@ -60,24 +53,22 @@ type StatusInfo struct {
 	Now         time.Time // injected for deterministic rendering
 }
 
-// KeyHint is one entry in the bottom hints bar (e.g. `?` → `help`).
+// KeyHint is one entry in the bottom hints bar.
 type KeyHint struct {
 	Key   string
 	Label string
 }
 
-// CommandBar is the optional prompt that appears when the user types `:` or
-// `/`. Visible only when Active is true.
+// CommandBar is the prompt shown when the user types `:` or `/`.
 type CommandBar struct {
 	Active     bool
 	Prefix     rune // ':' or '/'
 	Buffer     string
 	Suggestion string // ghost text shown after the buffer (tab to accept)
-	Error      string // shown beneath the prompt when set
+	Error      string
 }
 
-// HeaderRows is the fixed height of the multi-pane header block. Hosts
-// reserve this many rows above the body frame.
+// HeaderRows is the fixed height of the multi-pane header block.
 const HeaderRows = 5
 
 // Build is the binary's identity surfaced in the header's right pane.
@@ -86,17 +77,10 @@ type Build struct {
 	Commit  string
 }
 
-// Header renders the k9s-style three-pane header:
-//
-//	┌──────────────────┬──────────────────────────────┬──────────────┐
-//	│ ClusterInfo k:v  │  Menu <key>  Description     │  kafka-tui   │
-//	│                  │                              │  v0.4.2      │
-//	└──────────────────┴──────────────────────────────┴──────────────┘
-//
-// The block is exactly [HeaderRows] tall so the body geometry stays stable.
+// Header renders the three-pane header (cluster info | menu | brand). The
+// block is exactly [HeaderRows] tall so body geometry stays stable.
 func Header(s theme.Styles, info HeaderInfo, status StatusInfo, hints []KeyHint, build Build, width int) string {
 	if width < 40 {
-		// fallback for very narrow terminals: a single compact line.
 		return compactHeader(s, info)
 	}
 	rightW := 22
@@ -205,8 +189,6 @@ func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
 			{Key: "q", Label: "quit"},
 		}
 	}
-	// pack into 2 columns (≤ 12 hints = 6 rows). For small terminals the
-	// second column wraps to a single column.
 	cols := 2
 	if width < 40 {
 		cols = 1
@@ -221,9 +203,8 @@ func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
 	for r := range HeaderRows {
 		var line strings.Builder
 		for c := range cols {
-			// only emit a cell if it falls inside its own column slot —
-			// otherwise the row leaks the next column's content (a hint
-			// shown twice). Empty rows beyond rowsN stay blank padding.
+			// only emit a cell when it falls inside its own column slot,
+			// otherwise the row leaks the next column's content.
 			idx := c*rowsN + r
 			if r < rowsN && idx < len(cells) {
 				line.WriteString(cells[idx])
@@ -282,10 +263,8 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-w)
 }
 
-// HintsFromBindings projects [keymap.Binding] entries flagged
-// Hint=true into the bottom-bar [KeyHint] form, preserving slice
-// order. Lives in layout so the dependency arrow points
-// layout → keymap, never the reverse.
+// HintsFromBindings projects [keymap.Binding] entries flagged Hint=true
+// into the bottom-bar [KeyHint] form, preserving slice order.
 func HintsFromBindings(bindings []keymap.Binding) []KeyHint {
 	out := make([]KeyHint, 0, len(bindings))
 	for _, b := range bindings {
@@ -297,7 +276,7 @@ func HintsFromBindings(bindings []keymap.Binding) []KeyHint {
 	return out
 }
 
-// KeyHints renders the bottom row of `key label` pairs joined by spaces.
+// KeyHints renders the bottom row of `key label` pairs.
 func KeyHints(s theme.Styles, hints []KeyHint) string {
 	if len(hints) == 0 {
 		return ""
@@ -315,14 +294,12 @@ func KeyHints(s theme.Styles, hints []KeyHint) string {
 }
 
 // CommandRows is the height a rendered command/search prompt occupies when
-// active (top border + body + bottom border). Hosts always reserve this many
-// rows so the body geometry stays stable when the prompt opens.
+// active (top border + body + bottom border).
 const CommandRows = 3
 
-// CommandLine renders the command bar prompt as a focused, bordered single-
-// row box, or returns an empty string when the bar is inactive. Hosts must
-// account for the `CommandRows` height only when [CommandBar.Active] is
-// true so the body uses the full screen otherwise.
+// CommandLine renders the command bar prompt as a bordered single-row box,
+// or returns "" when inactive. Hosts reserve [CommandRows] only when
+// [CommandBar.Active] is true.
 func CommandLine(s theme.Styles, c CommandBar, width int) string {
 	if !c.Active {
 		return ""
@@ -344,15 +321,12 @@ func CommandLine(s theme.Styles, c CommandBar, width int) string {
 		BorderForeground(s.Palette.Accent).
 		Padding(0, 1)
 	if width > 4 {
-		// account for the box's two side borders + 2 cols of padding when
-		// sizing the inner content so it spans the terminal width.
+		// subtract two side borders + 2 cols of padding from inner width.
 		box = box.Width(width - 2)
 	}
 	return box.Render(body)
 }
 
-// formatDuration prints durations like "5s", "30s", "2m" — short and readable.
-// Designed for human-friendly UI strings, not log timestamps.
 func formatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "0s"

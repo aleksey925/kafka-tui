@@ -10,7 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Layer identifies where a config value came from.
 type Layer string
 
 const (
@@ -20,22 +19,17 @@ const (
 )
 
 const (
-	// DirName is the directory name searched for in the project hierarchy.
-	DirName = ".kafka-tui"
-	// ConfigFileName is the name of the main settings file.
-	ConfigFileName = "config.yaml"
-	// ClustersFileName is the name of the clusters list file.
+	DirName          = ".kafka-tui"
+	ConfigFileName   = "config.yaml"
 	ClustersFileName = "clusters.yaml"
 )
 
-// Source records the origin of a single field.
 type Source struct {
 	Path  string
 	Layer Layer
 }
 
 // Sources tracks the origin of every explicitly-set field after merging.
-//
 // Config keys are dotted paths like "logging.level". Cluster keys use the
 // cluster name as the outer map key and dotted paths inside a cluster
 // (e.g. "brokers", "sasl.username", "tls.ca_file").
@@ -44,12 +38,11 @@ type Sources struct {
 	Clusters map[string]map[string]Source
 }
 
-// LoaderOptions controls Load.
 type LoaderOptions struct {
-	HomeDir        string // overrides $HOME for test isolation
-	StartDir       string // override starting directory for project lookup
-	ConfigPath     string // value of --config
-	CLIClusterName string // name of an inline CLI cluster (for collision detection)
+	HomeDir        string
+	StartDir       string
+	ConfigPath     string
+	CLIClusterName string
 
 	// Vault, when non-nil, runs the second phase of placeholder resolution and
 	// fails the load if any ${vault:...} value cannot be looked up. When nil,
@@ -58,7 +51,6 @@ type LoaderOptions struct {
 	Vault VaultResolver
 }
 
-// Loaded is the result of Load.
 type Loaded struct {
 	Config   Config
 	Clusters []Cluster
@@ -209,7 +201,7 @@ func hierarchyFiles(opts LoaderOptions, name string) []fileSlot {
 }
 
 // findProjectDir walks from startDir up the parent chain looking for a
-// directory named DirName. Returns the absolute path of that directory.
+// directory named DirName.
 func findProjectDir(startDir string) (string, bool) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {

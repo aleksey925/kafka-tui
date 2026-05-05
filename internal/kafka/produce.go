@@ -11,7 +11,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// Compression names exposed in the produce form, matching the spec wording.
 type Compression string
 
 const (
@@ -22,8 +21,7 @@ const (
 	CompressionZstd   Compression = "zstd"
 )
 
-// AllCompressions lists the compression options in the order shown in the
-// produce form dropdown.
+// AllCompressions lists the compression options in dropdown order.
 var AllCompressions = []Compression{
 	CompressionNone,
 	CompressionGzip,
@@ -32,11 +30,10 @@ var AllCompressions = []Compression{
 	CompressionZstd,
 }
 
-// PartitionAuto requests round-robin / sticky partitioner selection. Any
-// non-negative value picks an explicit partition.
+// PartitionAuto requests sticky partitioner selection. A non-negative value
+// picks an explicit partition.
 const PartitionAuto = int32(-1)
 
-// ProduceSpec is the input collected by the produce form §7.5.
 type ProduceSpec struct {
 	Topic       string
 	Partition   int32 // PartitionAuto for round-robin
@@ -46,8 +43,6 @@ type ProduceSpec struct {
 	Compression Compression
 }
 
-// ProduceResult mirrors the §7.5 toast text "Sent to <topic> P<n>:<offset>
-// (<ms>ms)".
 type ProduceResult struct {
 	Topic     string
 	Partition int32
@@ -55,13 +50,12 @@ type ProduceResult struct {
 	Duration  time.Duration
 }
 
-// Produce sends a single record using a transient producer client whose
-// compression / partitioner options match the spec.
+// Produce sends a single record using a transient producer client.
 //
 // We open a fresh kgo.Client each call rather than reusing the long-lived one
-// for two reasons: (a) compression preference is a client-level option, not
-// per-record; (b) the partitioner choice (manual vs. sticky) depends on
-// whether the user picked auto or manual partition.
+// because (a) compression is a client-level option, not per-record; and
+// (b) the partitioner choice (manual vs. sticky) depends on whether the user
+// picked auto or manual partition.
 func (c *Client) Produce(ctx context.Context, spec ProduceSpec) (ProduceResult, error) {
 	if spec.Topic == "" {
 		return ProduceResult{}, errors.New("kafka: produce: topic is empty")
@@ -115,8 +109,8 @@ func (c *Client) Produce(ctx context.Context, spec ProduceSpec) (ProduceResult, 
 	}, nil
 }
 
-// ParseCompression validates and normalizes a user-provided compression name.
-// An empty string maps to CompressionNone.
+// ParseCompression normalizes a user-provided compression name. Empty maps
+// to CompressionNone.
 func ParseCompression(s string) (Compression, error) {
 	norm := Compression(strings.ToLower(strings.TrimSpace(s)))
 	if norm == "" {

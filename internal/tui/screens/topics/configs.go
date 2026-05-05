@@ -15,27 +15,20 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
-// ConfigsAction is the host-facing intent of the configs screen. Today the
-// only outbound transition is "back to topics list" via esc/q.
+// ConfigsAction is the host-facing intent of the configs screen.
 type ConfigsAction struct {
 	Back bool
 }
 
 // ConfigsOptions configures a [ConfigsModel].
 type ConfigsOptions struct {
-	// Service is the Kafka admin abstraction. Required.
 	Service Service
-	// Topic is the topic name to inspect. Required.
-	Topic string
-	// Now is the injected clock (defaults to time.Now).
-	Now func() time.Time
-	// Styles overrides the theme palette (mostly for tests).
-	Styles theme.Styles
+	Topic   string
+	Now     func() time.Time
+	Styles  theme.Styles
 }
 
-// ConfigsModel is the topic configs viewer screen. It shows two tables:
-// the resolved topic-level configs (key/value/source) and the partition
-// metadata (partition/leader/replicas/isr).
+// ConfigsModel is the topic configs viewer screen.
 type ConfigsModel struct {
 	svc   Service
 	topic string
@@ -50,8 +43,6 @@ type ConfigsModel struct {
 	loadErr       string
 	width, height int
 	focusParts    bool
-	// manualRefresh is set when the user pressed `r` and is consumed by
-	// handleLoaded to push a one-shot success toast.
 	manualRefresh bool
 
 	action ConfigsAction
@@ -59,7 +50,6 @@ type ConfigsModel struct {
 	styles theme.Styles
 }
 
-// NewConfigsModel constructs a configs viewer for the given topic.
 func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 	now := opts.Now
 	if now == nil {
@@ -91,29 +81,23 @@ func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 	}
 }
 
-// Init dispatches the initial load.
 func (m *ConfigsModel) Init() tea.Cmd {
 	m.loading = true
 	return loadConfigsCmd(m.svc, m.topic)
 }
 
-// Topic returns the topic this screen is bound to.
 func (m *ConfigsModel) Topic() string { return m.topic }
 
-// Action returns the pending host action.
 func (m *ConfigsModel) Action() ConfigsAction { return m.action }
 
-// ConsumeAction returns and clears the pending action.
 func (m *ConfigsModel) ConsumeAction() ConfigsAction {
 	a := m.action
 	m.action = ConfigsAction{}
 	return a
 }
 
-// Toasts exposes the toast queue.
 func (m *ConfigsModel) Toasts() *components.Toasts { return m.toasts }
 
-// LatestFlash returns the freshest live toast from this screen's queue.
 func (m *ConfigsModel) LatestFlash() (components.Toast, bool) {
 	if m.toasts == nil {
 		return components.Toast{}, false
@@ -121,12 +105,10 @@ func (m *ConfigsModel) LatestFlash() (components.Toast, bool) {
 	return m.toasts.Latest()
 }
 
-// Title returns the frame title rendered by the host.
 func (m *ConfigsModel) Title() string {
 	return "Topic Configs · " + m.topic
 }
 
-// Breadcrumb returns the active sub-table indicator.
 func (m *ConfigsModel) Breadcrumb() string {
 	if m.focusParts {
 		return "partitions"
@@ -134,48 +116,37 @@ func (m *ConfigsModel) Breadcrumb() string {
 	return "configs"
 }
 
-// Configs returns the current loaded config rows (for tests).
 func (m *ConfigsModel) Configs() []kafka.TopicConfig {
 	return append([]kafka.TopicConfig(nil), m.configs...)
 }
 
-// Partitions returns the current loaded partition rows (for tests).
 func (m *ConfigsModel) Partitions() []kafka.PartitionDetail {
 	return append([]kafka.PartitionDetail(nil), m.parts...)
 }
 
-// FocusPartitions reports whether the partition table currently has focus.
 func (m *ConfigsModel) FocusPartitions() bool { return m.focusParts }
 
-// SetSearch forwards a host-driven filter query to both sub-tables. The
-// configs screen treats the host's `/` prompt as a single screen-level
-// filter applied to whichever sub-table the user is browsing — Tab
-// switches focus, not the filter — so an esc cascade can always clear
-// it without surprising the user.
+// SetSearch forwards a host-driven filter query to both sub-tables — Tab
+// switches focus, not the filter — so an esc cascade always clears it
+// without surprising the user.
 func (m *ConfigsModel) SetSearch(query string) {
 	m.cfgTable.SetSearch(query)
 	m.partTbl.SetSearch(query)
 }
 
-// ActiveFilter returns the screen-level search query. Both tables hold
-// the same value (see [SetSearch]), so the configs table is queried
-// directly.
 func (m *ConfigsModel) ActiveFilter() string {
 	return m.cfgTable.Search()
 }
 
-// SetSize updates width/height.
 func (m *ConfigsModel) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		// half each, leaving chrome for header and key hints
 		half := maxInt(3, (h-9)/2)
 		m.cfgTable.SetHeight(half)
 		m.partTbl.SetHeight(half)
 	}
 }
 
-// KeyHints returns the screen-specific hints.
 func (m *ConfigsModel) KeyHints() []layout.KeyHint {
 	return []layout.KeyHint{
 		{Key: "tab", Label: "switch table"},
@@ -185,7 +156,6 @@ func (m *ConfigsModel) KeyHints() []layout.KeyHint {
 	}
 }
 
-// Update routes messages.
 func (m *ConfigsModel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -292,7 +262,6 @@ func replicasFmt(rs []int32) string {
 	return strings.Join(out, ",")
 }
 
-// View renders the screen body.
 func (m *ConfigsModel) View() string {
 	cfgTitle := m.styles.HelpTitle.Render(m.formatTitle("Topic configs"))
 	partTitle := m.styles.HelpTitle.Render(m.formatTitle("Partitions"))
@@ -319,8 +288,6 @@ func (m *ConfigsModel) formatTitle(prefix string) string {
 	return prefix
 }
 
-// ConfigsLoadedMsg is dispatched when the topic-level configs and partition
-// metadata have been fetched.
 type ConfigsLoadedMsg struct {
 	Configs    []kafka.TopicConfig
 	Partitions []kafka.PartitionDetail
