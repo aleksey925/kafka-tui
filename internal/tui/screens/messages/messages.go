@@ -559,7 +559,10 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "/", Label: "search"},
 	}
 	if !m.readOnly {
-		hints = append(hints, layout.KeyHint{Key: "p", Label: "produce"})
+		hints = append(hints,
+			layout.KeyHint{Key: "p", Label: "produce"},
+			layout.KeyHint{Key: "r", Label: "resend"},
+		)
 	}
 	hints = append(hints, layout.KeyHint{Key: "esc/q", Label: "back"})
 	return hints

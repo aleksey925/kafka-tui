@@ -1124,13 +1124,15 @@ func TestKeyHints_ContainsExpectedLabels(t *testing.T) {
 	assert.Contains(t, got, "prev/next page")
 	assert.Contains(t, got, "search")
 	assert.Contains(t, got, "produce")
+	assert.Contains(t, got, "resend")
 }
 
 func TestKeyHints_ReadOnlyOmitsProduce(t *testing.T) {
 	svc := newFakeService()
 	m := messages.New(messages.Options{Service: svc, Topic: "orders", ReadOnly: true})
-	labels := keyHintLabels(m.KeyHints())
-	assert.NotContains(t, strings.Join(labels, ","), "produce")
+	joined := strings.Join(keyHintLabels(m.KeyHints()), ",")
+	assert.NotContains(t, joined, "produce")
+	assert.NotContains(t, joined, "resend")
 }
 
 // ----- helpers -----
