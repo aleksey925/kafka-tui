@@ -4,9 +4,10 @@
 // bottom.
 //
 // Screens contribute their own sections (navigation, filtering, actions,
-// etc.) via the HelpProvider interface; the host always appends a
-// fixed General category covering global shortcuts (`:`, `/`, `?`,
-// `ctrl+r`, `ctrl+c`, `q`, `esc`).
+// etc.) via the HelpProvider interface; the host then appends the
+// fixed global categories returned by [GeneralSections] (General,
+// Navigation, Commands) so every screen surfaces the same baseline
+// shortcuts at the bottom of the grid.
 package help
 
 import (
@@ -36,9 +37,11 @@ type Options struct {
 	Width  int
 	Height int
 
-	// Screen names the active screen — surfaced in the title so the user
-	// understands the context-specific block belongs to "Topics" / "Messages"
-	// / etc. Empty falls back to "Help".
+	// Screen names the active screen — when set, an internal title row
+	// "Help · <Screen>" is rendered above the grid. Hosts that already
+	// surface the title elsewhere (e.g. inside a [layout.Frame] border)
+	// should leave this empty; in that case the title row is skipped
+	// entirely and the grid sits at the top of the output.
 	Screen string
 
 	// Sections is the merged list to render — the caller is responsible
@@ -54,8 +57,10 @@ type Options struct {
 }
 
 // Render produces the final overlay string. The grid is laid out in
-// 1, 2, or 3 columns depending on Width — sections never split across
-// columns.
+// 1..maxColumns columns depending on Width — sections never split
+// across columns. The output is padded vertically to opts.Height so
+// the footer pins to the bottom of the terminal (k9s-style: the help
+// view fills the full screen rather than hugging its content).
 func Render(opts Options) string {
 	styles := opts.Styles
 	width := opts.Width
@@ -63,35 +68,63 @@ func Render(opts Options) string {
 		width = 80
 	}
 
-	title := styles.HelpTitle.Render("Help")
-	if opts.Screen != "" {
-		title += "  " + styles.StatusInfo.Render("· "+opts.Screen)
-	}
 	hint := styles.StatusInfo.Render("press ? · esc · q to close")
 
 	grid := layoutGrid(opts.Sections, width, styles)
 
-	parts := []string{title, "", grid}
+	footer := ""
 	if opts.Footer != "" || hint != "" {
-		parts = append(parts, "")
-		footer := hint
+		footer = hint
 		if opts.Footer != "" {
 			version := styles.StatusInfo.Render(opts.Footer)
 			pad := max(1, width-lipgloss.Width(hint)-lipgloss.Width(version))
 			footer = hint + strings.Repeat(" ", pad) + version
 		}
-		parts = append(parts, footer)
 	}
-	return strings.Join(parts, "\n")
+
+	// the optional internal title is for callers that don't wrap the
+	// overlay in a frame with its own title slot — when present it
+	// renders above the grid with one blank separator line.
+	body := grid
+	if opts.Screen != "" {
+		title := styles.HelpTitle.Render("Help") +
+			"  " + styles.StatusInfo.Render("· "+opts.Screen)
+		body = title + "\n\n" + grid
+	}
+	if footer == "" {
+		return body
+	}
+	bodyLines := strings.Count(body, "\n") + 1
+	footerLines := strings.Count(footer, "\n") + 1
+	// pad with blank lines so the footer sits on the bottom row when
+	// Height is known. Inserting N '\n' chars between body and footer
+	// adds (N - 1) empty lines, so for total = Height we need
+	// N = Height - bodyLines - footerLines + 1. Falls back to a single
+	// blank separator (N=2) when Height is unknown.
+	gap := 2
+	if opts.Height > 0 {
+		gap = max(2, opts.Height-bodyLines-footerLines+1)
+	}
+	return body + strings.Repeat("\n", gap) + footer
 }
 
-// columnGap is the number of blank columns between adjacent section
-// columns in the grid.
-const columnGap = 4
+// minColumnGap is the smallest gap between adjacent section columns;
+// any leftover horizontal space beyond this minimum is distributed
+// evenly between columns to mimic k9s' stretchy spacer cell.
+const minColumnGap = 4
 
-// layoutGrid arranges sections into 1/2/3 columns. The renderer first
-// computes each section's intrinsic width, then greedily packs sections
-// top-to-bottom by column, balancing total height.
+// maxColumns caps the grid width; with our typical screen-side
+// contribution (3–5 categories) plus 3 host categories, more than 4
+// columns produces a wide, sparse grid that's harder to scan.
+const maxColumns = 4
+
+// layoutGrid arranges sections into a grid. The renderer computes each
+// section's intrinsic width, picks the largest column count that fits
+// (using the actual per-column max widths, not a uniform max), then
+// distributes sections in declaration order — newspaper-style: the
+// first ⌈n/cols⌉ sections fill column 0 top-to-bottom, the next chunk
+// fills column 1, and so on. Section heights within a column are
+// equalized so the grid lines up vertically.
 func layoutGrid(sections []Section, width int, styles theme.Styles) string {
 	if len(sections) == 0 {
 		return ""
@@ -105,57 +138,158 @@ func layoutGrid(sections []Section, width int, styles theme.Styles) string {
 		heights[i] = strings.Count(rendered[i], "\n") + 1
 	}
 
-	cols := pickColumnCount(widths, width)
-	groups := packIntoColumns(rendered, heights, cols)
-
-	columns := make([]string, len(groups))
-	for c, group := range groups {
-		columns[c] = strings.Join(group, "\n\n")
-	}
-	gap := strings.Repeat(" ", columnGap)
-	return joinHorizontalWithGap(columns, gap)
-}
-
-// pickColumnCount returns the largest column count that still fits the
-// widest section into the available width (with gaps), capped at 3.
-func pickColumnCount(widths []int, total int) int {
-	maxW := 0
-	for _, w := range widths {
-		if w > maxW {
-			maxW = w
-		}
-	}
-	if maxW == 0 {
-		return 1
-	}
-	for cols := 3; cols >= 1; cols-- {
-		need := cols*maxW + (cols-1)*columnGap
-		if need <= total {
-			return cols
-		}
-	}
-	return 1
-}
-
-// packIntoColumns distributes sections into `cols` columns by appending
-// each section to the currently shortest column. This keeps the overall
-// grid balanced without splitting sections.
-func packIntoColumns(rendered []string, heights []int, cols int) [][]string {
-	groups := make([][]string, cols)
-	totals := make([]int, cols)
-	for i, body := range rendered {
-		// pick the shortest column; ties go to the leftmost.
-		pick := 0
-		for c := 1; c < cols; c++ {
-			if totals[c] < totals[pick] {
-				pick = c
+	cols, groupsIdx := pickLayout(widths, width)
+	colWidths := make([]int, cols)
+	for c, idxs := range groupsIdx {
+		w := 0
+		for _, i := range idxs {
+			if widths[i] > w {
+				w = widths[i]
 			}
 		}
-		groups[pick] = append(groups[pick], body)
-		// +2 accounts for the blank separator line between sections.
-		totals[pick] += heights[i] + 2
+		colWidths[c] = w
+	}
+
+	rendered = padSectionsByRow(rendered, heights, groupsIdx)
+
+	columns := make([]string, cols)
+	for c, idxs := range groupsIdx {
+		bodies := make([]string, len(idxs))
+		for i, idx := range idxs {
+			bodies[i] = rendered[idx]
+		}
+		columns[c] = strings.Join(bodies, "\n\n")
+	}
+
+	return joinColumnsFlex(columns, colWidths, width)
+}
+
+// padSectionsByRow equalizes section heights row-by-row across columns:
+// the i-th section in every column is padded with blank lines up to the
+// tallest section at that row position. This keeps section boundaries
+// (and therefore subsequent section captions) on the same y-coordinate
+// across the grid — k9s' "all sections same height" effect generalized
+// to a multi-row grid.
+func padSectionsByRow(rendered []string, heights []int, groups [][]int) []string {
+	if len(groups) == 0 {
+		return rendered
+	}
+	maxRow := 0
+	for _, idxs := range groups {
+		if len(idxs) > maxRow {
+			maxRow = len(idxs)
+		}
+	}
+	out := make([]string, len(rendered))
+	copy(out, rendered)
+	for row := range maxRow {
+		target := 0
+		for _, idxs := range groups {
+			if row < len(idxs) && heights[idxs[row]] > target {
+				target = heights[idxs[row]]
+			}
+		}
+		for _, idxs := range groups {
+			if row >= len(idxs) {
+				continue
+			}
+			i := idxs[row]
+			if pad := target - heights[i]; pad > 0 {
+				out[i] += strings.Repeat("\n", pad)
+			}
+		}
+	}
+	return out
+}
+
+// pickLayout picks the column count and the index grouping in one
+// pass: it tries cols from maxColumns down to 1 and keeps the first
+// configuration whose per-column max widths sum (plus minimum gaps)
+// fits within `total`. Sections are chunked in declaration order.
+func pickLayout(widths []int, total int) (int, [][]int) {
+	n := len(widths)
+	for cols := maxColumns; cols >= 2; cols-- {
+		if cols > n {
+			continue
+		}
+		groups := chunkIndices(n, cols)
+		need := (cols - 1) * minColumnGap
+		for _, idxs := range groups {
+			w := 0
+			for _, i := range idxs {
+				if widths[i] > w {
+					w = widths[i]
+				}
+			}
+			need += w
+		}
+		if need <= total {
+			return cols, groups
+		}
+	}
+	return 1, [][]int{intRange(n)}
+}
+
+// chunkIndices splits [0,n) into `cols` consecutive index groups whose
+// sizes differ by at most 1. Earlier groups absorb the remainder so the
+// left-most columns are the densest — matches how readers scan
+// top-to-bottom, left-to-right.
+func chunkIndices(n, cols int) [][]int {
+	groups := make([][]int, cols)
+	base := n / cols
+	extra := n % cols
+	pos := 0
+	for c := range cols {
+		size := base
+		if c < extra {
+			size++
+		}
+		idxs := make([]int, size)
+		for i := range size {
+			idxs[i] = pos + i
+		}
+		groups[c] = idxs
+		pos += size
 	}
 	return groups
+}
+
+func intRange(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+// joinColumnsFlex joins rendered column bodies horizontally, distributing
+// leftover horizontal space as equal gaps between columns. This mimics
+// k9s' stretchy spacer cell (`SetExpansion(1)`): sections keep their
+// intrinsic width, and unused width pushes the columns apart instead of
+// piling up on the right.
+func joinColumnsFlex(columns []string, colWidths []int, total int) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	if len(columns) == 1 {
+		return columns[0]
+	}
+	used := 0
+	for _, w := range colWidths {
+		used += w
+	}
+	gaps := len(columns) - 1
+	leftover := total - used
+	gapW := max(minColumnGap, leftover/gaps)
+	gap := strings.Repeat(" ", gapW)
+	parts := make([]string, 0, 2*len(columns)-1)
+	for i, col := range columns {
+		if i > 0 {
+			parts = append(parts, gap)
+		}
+		parts = append(parts, col)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
 // renderSection draws one captioned key/label table. Keys are
@@ -192,27 +326,6 @@ func formatKey(k string) string {
 	return "<" + k + ">"
 }
 
-// joinHorizontalWithGap is a thin wrapper around lipgloss.JoinHorizontal
-// that injects a fixed-width gap string between adjacent columns. We
-// keep the helper local so the package depends on lipgloss only for
-// width measurement.
-func joinHorizontalWithGap(columns []string, gap string) string {
-	if len(columns) == 0 {
-		return ""
-	}
-	if len(columns) == 1 {
-		return columns[0]
-	}
-	parts := make([]string, 0, 2*len(columns)-1)
-	for i, col := range columns {
-		if i > 0 {
-			parts = append(parts, gap)
-		}
-		parts = append(parts, col)
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-}
-
 // SectionsFromBindings groups [keymap.Binding] entries by Category
 // (in first-seen order) and returns one [Section] per non-empty
 // category. Bindings without a Category are skipped — they are
@@ -241,8 +354,8 @@ func SectionsFromBindings(bindings []keymap.Binding) []Section {
 }
 
 // GeneralSections returns the global, screen-agnostic categories
-// appended after every screen's contribution: command bar, search,
-// auto-refresh, and quit/help/exit shortcuts.
+// appended after every screen's contribution. Order mirrors k9s:
+// General → Navigation → Commands (k9s: GENERAL → NAVIGATION → HOTKEYS).
 func GeneralSections() []Section {
 	return []Section{
 		{
@@ -258,17 +371,6 @@ func GeneralSections() []Section {
 			},
 		},
 		{
-			Title: "Commands",
-			Hints: []Hint{
-				{Key: ":topics", Label: "topics list"},
-				{Key: ":groups", Label: "consumer groups"},
-				{Key: ":clusters", Label: "cluster list"},
-				{Key: ":cluster <name>", Label: "switch cluster"},
-				{Key: ":logs", Label: "log viewer"},
-				{Key: ":config sources", Label: "config provenance"},
-			},
-		},
-		{
 			Title: "Navigation",
 			Hints: []Hint{
 				{Key: "↑ / k", Label: "row up"},
@@ -278,6 +380,17 @@ func GeneralSections() []Section {
 				{Key: "g / home", Label: "first row"},
 				{Key: "G / end", Label: "last row"},
 				{Key: "enter", Label: "open / drill in"},
+			},
+		},
+		{
+			Title: "Commands",
+			Hints: []Hint{
+				{Key: ":topics", Label: "topics list"},
+				{Key: ":groups", Label: "consumer groups"},
+				{Key: ":clusters", Label: "cluster list"},
+				{Key: ":cluster <name>", Label: "switch cluster"},
+				{Key: ":logs", Label: "log viewer"},
+				{Key: ":config sources", Label: "config provenance"},
 			},
 		},
 	}

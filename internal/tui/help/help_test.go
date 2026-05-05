@@ -45,6 +45,47 @@ func TestRender_RendersTitleAndAllHints(t *testing.T) {
 	assert.Contains(t, out, "v1.2.3")
 }
 
+func TestRender_PadsToOptionsHeight(t *testing.T) {
+	// arrange
+	sections := []help.Section{
+		{Title: "Browse", Hints: []help.Hint{{Key: "enter", Label: "open"}}},
+	}
+
+	// act
+	out := help.Render(help.Options{
+		Width:    120,
+		Height:   40,
+		Sections: sections,
+		Footer:   "v1.2.3",
+		Styles:   theme.DefaultStyles(),
+	})
+
+	// assert — output spans the full requested height (footer pinned to bottom).
+	assert.Equal(t, 40, strings.Count(out, "\n")+1)
+}
+
+func TestRender_DistributesLeftoverWidthAsFlexGap(t *testing.T) {
+	// arrange — narrow sections so leftover width is large.
+	sections := []help.Section{
+		{Title: "A", Hints: []help.Hint{{Key: "x", Label: "alpha"}}},
+		{Title: "B", Hints: []help.Hint{{Key: "y", Label: "bravo"}}},
+	}
+
+	// act — render at a deliberately wide terminal.
+	out := help.Render(help.Options{
+		Width:    160,
+		Sections: sections,
+		Styles:   theme.DefaultStyles(),
+	})
+
+	// assert — between "alpha" and "<y>" there must be many spaces (flex gap),
+	// far more than the 4-column minimum, proving the gap stretched.
+	idxA := strings.Index(out, "alpha")
+	idxB := strings.Index(out, "<y>")
+	require.True(t, idxA >= 0 && idxB > idxA)
+	assert.Greater(t, idxB-idxA-len("alpha"), 20)
+}
+
 func TestRender_FallsBackToSingleColumnAtSmallWidths(t *testing.T) {
 	// arrange — long labels force multi-column layout to collapse.
 	sections := []help.Section{

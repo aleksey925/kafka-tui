@@ -168,7 +168,12 @@ func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
 
 // renderHelp draws the full-screen `?` overlay. The screen-specific
 // sections come first (so the user sees what they care about right
-// away); the host-owned General/Commands/Navigation blocks follow.
+// away); the host-owned General/Navigation/Commands blocks follow.
+// The whole overlay is wrapped in [layout.Frame] so it gets the same
+// rounded border + side padding as the regular screen body — matches
+// k9s' bordered help view (`SetBorder(true)` +
+// `SetBorderPadding(0,0,1,1)`) and prevents content from touching the
+// terminal edge.
 func (m *Model) renderHelp() string {
 	var sections []help.Section
 	if m.active != nil {
@@ -176,21 +181,40 @@ func (m *Model) renderHelp() string {
 	}
 	sections = append(sections, help.GeneralSections()...)
 
-	screenName := ""
+	title := "Help"
 	if m.active != nil {
-		screenName = m.active.Title()
+		if name := m.active.Title(); name != "" {
+			title = "Help  ·  " + name
+		}
 	}
 
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
-	return help.Render(help.Options{
-		Width:    width,
-		Height:   m.height,
-		Screen:   screenName,
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+
+	innerW := width - 2 - 2*layout.FrameSidePadding
+	innerH := height - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	if innerH < 1 {
+		innerH = 1
+	}
+	body := help.Render(help.Options{
+		Width:    innerW,
+		Height:   innerH,
 		Sections: sections,
 		Footer:   m.build.Display(),
 		Styles:   m.styles,
 	})
+	return layout.Frame(m.styles, layout.FrameOpts{
+		Width:  width,
+		Height: height,
+		Title:  title,
+	}, body)
 }
