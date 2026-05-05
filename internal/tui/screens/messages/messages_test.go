@@ -581,6 +581,63 @@ func TestPartitions_LoadErrorShowsFallback(t *testing.T) {
 	assert.Equal(t, []int32{0, 3}, m.PartitionFilter())
 }
 
+func TestBracket_FromTimestampStartOfSeekWindowToast(t *testing.T) {
+	// from-timestamp resolves to per-partition offsets via OffsetsForTimestamp.
+	// the first record loaded sits at the captured left edge → `[` must
+	// surface the boundary toast.
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	svc := newFakeService()
+	svc.offsetsForTs = map[int32]int64{0: 50}
+	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 50, Timestamp: now}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('5')) // from timestamp
+	for range 50 {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "2026-04-27" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	require.Equal(t, messages.SeekFromTimestamp, m.SeekState().Mode)
+
+	before := m.Toasts().Len()
+	_ = m.Update(keyPress("["))
+	require.Greater(t, m.Toasts().Len(), before)
+	last := m.Toasts().Items()[m.Toasts().Len()-1].Message
+	assert.Contains(t, last, "start of seek window")
+}
+
+func TestBracket_FromOffsetStartOfSeekWindowToast(t *testing.T) {
+	svc := newFakeService()
+	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 100, Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	// open seek, pick "from offset" (3), wipe prefill, type 0:100.
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('3'))
+	for range 50 {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "0:100" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	// the loaded record sits exactly at the captured left edge — `[` must
+	// refuse to step past it and surface the dedicated toast.
+	before := m.Toasts().Len()
+	_ = m.Update(keyPress("["))
+	require.Greater(t, m.Toasts().Len(), before)
+	last := m.Toasts().Items()[m.Toasts().Len()-1].Message
+	assert.Contains(t, last, "start of seek window")
+}
+
 func TestBracket_ToOffsetEndOfSeekWindowToast(t *testing.T) {
 	svc := newFakeService()
 	svc.earlier = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 100, Value: []byte("v")}}
@@ -635,6 +692,109 @@ func TestStaleMessagesLoadedDroppedAfterSeekChange(t *testing.T) {
 	assert.True(t, m.Following())
 }
 
+func TestLive_TitleSpinnerAdvancesOnTick(t *testing.T) {
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following())
+
+	first := stripANSI(m.Title())
+	// drive a few ticks manually with the current dispatch gen so the
+	// race-protected handler accepts them.
+	gen := m.FetchGen()
+	for range 3 {
+		_ = m.Update(messages.LiveTickMsg{Gen: gen})
+	}
+	second := stripANSI(m.Title())
+
+	// the spinner glyph next to LIVE must have advanced.
+	assert.NotEqual(t, first, second, "title spinner should change after ticks")
+	assert.Contains(t, second, "LIVE")
+}
+
+func TestLive_StaleTickFromPreviousLiveDropped(t *testing.T) {
+	// race: a LiveTickMsg from a prior live session arrives after the user
+	// has already started a new one. Without Gen-tagging the stale tick
+	// would re-arm itself and double the spinner rate.
+	now := time.Now()
+	svc := newFakeService()
+	svc.followSession = &kafka.FollowSession{Messages: make(chan kafka.Message), Errors: make(chan error)}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	staleGen := m.FetchGen()
+
+	// step out of live and back in — fetchGen advances past staleGen.
+	cmd := m.Update(keyPress("["))
+	drive(t, m, cmd)
+	require.False(t, m.Following())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following())
+	require.NotEqual(t, staleGen, m.FetchGen())
+
+	// stale tick must be dropped — handler returns no follow-up cmd.
+	follow := m.Update(messages.LiveTickMsg{Gen: staleGen})
+	assert.Nil(t, follow, "stale LiveTickMsg must not re-arm the spinner")
+}
+
+func TestLive_PlaceholderSpinnerAdvancesOnTick(t *testing.T) {
+	// placeholder shows the same frame as the title indicator. on a tick
+	// the rendered glyph in the placeholder must advance, otherwise the
+	// "broker is silent" surface goes static and looks frozen.
+	now := time.Now()
+	svc := newFakeService()
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+
+	first := stripANSI(m.View())
+	require.Contains(t, first, "waiting for new records")
+
+	gen := m.FetchGen()
+	for range 3 {
+		_ = m.Update(messages.LiveTickMsg{Gen: gen})
+	}
+	second := stripANSI(m.View())
+
+	// the placeholder text is unchanged but the leading spinner frame must differ.
+	require.Contains(t, second, "waiting for new records")
+	assert.NotEqual(t, first, second, "placeholder spinner must animate alongside the title")
+}
+
+func TestLive_PlaceholderShownWhenNoMessages(t *testing.T) {
+	now := time.Now()
+	svc := newFakeService()
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+
+	view := stripANSI(m.View())
+	assert.Contains(t, view, "waiting for new records")
+}
+
 func TestSeek_LiveStartsFollow(t *testing.T) {
 	now := time.Now()
 	svc := newFakeService()
@@ -681,6 +841,28 @@ func TestBracket_LiveFlipsToLatest(t *testing.T) {
 }
 
 // ----- earlier/later still works -----
+
+func TestEarlier_PagesOnlyAcrossSeenPartitions(t *testing.T) {
+	// Regression: pressing `[`/`]` after an explicit-partition seek used
+	// to pull in tails of unrelated partitions, because the screen passed
+	// the global m.filter (often empty == "all partitions") into
+	// FetchEarlier. The kafka layer would then load from watermark for
+	// partitions with no baseline, blowing the user out of the focused
+	// seek window into a global view.
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{
+		{Topic: "orders", Partition: 3, Offset: 500, Value: []byte("p3-500")},
+		{Topic: "orders", Partition: 3, Offset: 501, Value: []byte("p3-501")},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPress("["))
+	drive(t, m, cmd)
+
+	// Only the partition the user has actually seen (3) must be requested.
+	assert.Equal(t, []int32{3}, svc.lastPartitions, "paging must be scoped to seen partitions")
+}
 
 func TestEarlierLater_FetchPagesUsingBaseline(t *testing.T) {
 	svc := newFakeService()
@@ -939,7 +1121,7 @@ func TestKeyHints_ContainsExpectedLabels(t *testing.T) {
 	assert.Contains(t, got, "seek")
 	assert.Contains(t, got, "partitions")
 	assert.Contains(t, got, "smart filter")
-	assert.Contains(t, got, "earlier/later")
+	assert.Contains(t, got, "prev/next page")
 	assert.Contains(t, got, "search")
 	assert.Contains(t, got, "produce")
 }

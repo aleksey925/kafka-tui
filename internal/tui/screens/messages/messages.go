@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -190,9 +191,13 @@ type Model struct {
 
 	// seek state
 	seek SeekState
-	// captured target offsets for to-offset / to-timestamp modes; used as a
-	// hard right edge by `]`.
-	toBoundary map[int32]int64
+	// captured edges of the active seek window. fromBoundary is set by
+	// from-offset / from-timestamp dispatches as the lowest valid offset
+	// per partition (`[` stops there); toBoundary is set by to-offset /
+	// to-timestamp dispatches as the highest valid offset per partition
+	// (`]` stops there). nil means "no edge in that direction".
+	fromBoundary map[int32]int64
+	toBoundary   map[int32]int64
 	// fetchGen is bumped on every dispatchSeek and stopFollow. Every async
 	// fetch / follow command captures the current value and tags its
 	// returned message with it; handlers ignore messages whose Gen does
@@ -201,6 +206,11 @@ type Model struct {
 	// from a previous live session) from leaking onto the screen after
 	// the user has already moved on. Recognized as stale on arrival.
 	fetchGen uint64
+
+	// spinnerFrame advances on every LiveTickMsg and is rendered next to
+	// the LIVE label in [Title], so the user always has a visible
+	// "live tail is alive" cue even when records arrive slowly.
+	spinnerFrame int
 
 	// popups
 	seekPopup       *seekPopup
@@ -378,6 +388,11 @@ func (m *Model) Following() bool { return m.live }
 // SeekState returns the active seek state (for tests / chrome).
 func (m *Model) SeekState() SeekState { return m.seek }
 
+// FetchGen returns the current dispatch generation. Exported for tests
+// that need to forge race-protected messages (LiveTickMsg, MessagesLoaded
+// etc.) with the right Gen so the handler accepts them.
+func (m *Model) FetchGen() uint64 { return m.fetchGen }
+
 // PartitionFilter returns the active partition filter (defensive copy).
 func (m *Model) PartitionFilter() []int32 {
 	out := make([]int32, len(m.filter))
@@ -404,7 +419,7 @@ func (m *Model) Title() string {
 		body = fmt.Sprintf("Messages · %s [%d/%d] </%s>", m.topic, m.table.FilteredCount(), total, q)
 	}
 	if m.Following() {
-		body += " ● LIVE"
+		body += " " + liveSpinnerFrame(m.spinnerFrame) + " LIVE"
 	}
 	if m.loading {
 		body += " (loading…)"
@@ -540,7 +555,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "P", Label: "partitions"},
 		{Key: "f", Label: "smart filter"},
 		{Key: "R", Label: "reset"},
-		{Key: "[/]", Label: "earlier/later"},
+		{Key: "[/]", Label: "prev/next page"},
 		{Key: "/", Label: "search"},
 	}
 	if !m.readOnly {
@@ -569,6 +584,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case FollowStartedMsg:
 		return m.handleFollowStarted(msg)
+	case LiveTickMsg:
+		if !m.live || msg.Gen != m.fetchGen {
+			return nil // tick chain dies when live ends or its dispatch goes stale.
+		}
+		m.spinnerFrame++
+		return liveTickCmd(m.fetchGen)
 	case FollowChunkMsg:
 		m.handleFollowChunk(msg)
 		if msg.Closed {
@@ -741,6 +762,7 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 	}
 	m.messages = msg.Messages
 	if msg.SetBoundary {
+		m.fromBoundary = msg.FromBoundary
 		m.toBoundary = msg.ToBoundary
 	}
 	m.refreshTable()
@@ -878,9 +900,8 @@ func (m *Model) followPollCmd() tea.Cmd {
 	}
 }
 
-// loadEarlier handles `[`. Honors per-mode boundaries — `to-*` stays open
-// (left side is always natural), `live` flips to latest before stepping,
-// `earliest` toasts at the head.
+// loadEarlier handles `[`. Honors per-mode boundaries — `from-*` clamps
+// at the captured left edge, `live` flips to latest before stepping.
 func (m *Model) loadEarlier() tea.Cmd {
 	if m.seek.Mode == SeekLive {
 		m.toasts.Push(components.ToastInfo, "paused live to step — back to latest")
@@ -891,9 +912,13 @@ func (m *Model) loadEarlier() tea.Cmd {
 	if len(m.messages) == 0 {
 		return nil
 	}
+	if atFromBoundary(m.messages, m.fromBoundary) {
+		m.toasts.Push(components.ToastInfo, "start of seek window")
+		return nil
+	}
 	baseline := lowestOffsets(m.messages)
 	m.loading = true
-	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, m.filter, m.fetchGen)
+	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
 }
 
 // loadLater handles `]`. Honors boundaries the same way as loadEarlier
@@ -916,7 +941,23 @@ func (m *Model) loadLater() tea.Cmd {
 	}
 	baseline := highestOffsets(m.messages)
 	m.loading = true
-	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, m.filter, m.fetchGen)
+	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
+}
+
+// partitionsFromBaseline narrows the paging fetch to only those partitions
+// the user has already seen records from. Without this restriction the
+// kafka layer's "no baseline → load from watermark" fallback would pull
+// unrelated tails of partitions that were never part of the seek result
+// (e.g. an explicit `from offset 3:500` would start showing tails of
+// partitions 0, 1, 2, ... on the next `[`/`]`). Returns sorted ids for
+// deterministic dispatch.
+func partitionsFromBaseline(baseline map[int32]int64) []int32 {
+	out := make([]int32, 0, len(baseline))
+	for p := range baseline {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // ----- seek popup -----
@@ -1094,6 +1135,7 @@ func parseOffsetExpression(s string) (int32, int64, bool, error) {
 func (m *Model) applySeek(state SeekState) {
 	m.stopFollow()
 	m.seek = state
+	m.fromBoundary = nil
 	m.toBoundary = nil
 	m.persistView()
 }
@@ -1105,6 +1147,7 @@ func (m *Model) resetView() tea.Cmd {
 	m.stopFollow()
 	m.seek = SeekState{Mode: SeekLatest}
 	m.filter = nil
+	m.fromBoundary = nil
 	m.toBoundary = nil
 	m.persistView()
 	m.toasts.Push(components.ToastInfo, "view reset")
@@ -1136,8 +1179,7 @@ func (m *Model) dispatchSeek() tea.Cmd {
 	case SeekToOffset:
 		return m.dispatchToOffset(gen)
 	case SeekFromTimestamp:
-		m.loading = true
-		return loadAtTimestampCmd(m.svc, m.topic, m.seek.Timestamp, m.filter, m.pageSize, gen)
+		return m.dispatchFromTimestamp(gen)
 	case SeekToTimestamp:
 		return m.dispatchToTimestamp(gen)
 	case SeekLive:
@@ -1146,17 +1188,60 @@ func (m *Model) dispatchSeek() tea.Cmd {
 		// `kafka-console-consumer` (without --from-beginning). No
 		// historical fetch; the user sees records as they arrive.
 		m.live = true
-		return startFollowCmd(m.svc, m.topic, m.filter, gen)
+		return tea.Batch(
+			startFollowCmd(m.svc, m.topic, m.filter, gen),
+			liveTickCmd(gen),
+		)
 	}
 	return nil
 }
 
 func (m *Model) dispatchFromOffset(gen uint64) tea.Cmd {
 	if m.seek.HasPart {
+		svc := m.svc
+		topic := m.topic
+		partition := m.seek.Partition
+		offset := m.seek.Offset
+		pageSize := m.pageSize
+		boundary := map[int32]int64{partition: offset}
 		m.loading = true
-		return loadAtOffsetCmd(m.svc, m.topic, m.seek.Partition, m.seek.Offset, m.pageSize, gen)
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			msgs, err := svc.FetchAtOffset(ctx, topic, partition, offset, pageSize)
+			return MessagesLoadedMsg{Messages: msgs, FromBoundary: boundary, SetBoundary: true, Gen: gen, Err: err}
+		}
 	}
 	return m.dispatchOffsetClampedForward(gen)
+}
+
+// dispatchFromTimestamp resolves the timestamp into per-partition starting
+// offsets (so the left edge of the seek window is captured for `[`
+// boundary checks), then forward-loads from those offsets.
+func (m *Model) dispatchFromTimestamp(gen uint64) tea.Cmd {
+	svc := m.svc
+	topic := m.topic
+	ts := m.seek.Timestamp
+	pageSize := m.pageSize
+	parts := append([]int32(nil), m.filter...)
+	m.loading = true
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		offsets, err := svc.OffsetsForTimestamp(ctx, topic, ts, parts)
+		if err != nil {
+			return MessagesLoadedMsg{Gen: gen, Err: err}
+		}
+		boundary := map[int32]int64{}
+		fetch := map[int32]int64{}
+		for p, o := range offsets {
+			boundary[p] = o
+			fetch[p] = o
+		}
+		per := perPartShare(pageSize, len(fetch))
+		msgs, err := svc.FetchAtOffsets(ctx, topic, fetch, per)
+		return MessagesLoadedMsg{Messages: msgs, FromBoundary: boundary, SetBoundary: true, Gen: gen, Err: err}
+	}
 }
 
 func (m *Model) dispatchOffsetClampedForward(gen uint64) tea.Cmd {
@@ -1190,7 +1275,9 @@ func (m *Model) dispatchOffsetClampedForward(gen uint64) tea.Cmd {
 		}
 		per := perPartShare(pageSize, len(offsets))
 		msgs, err := svc.FetchAtOffsets(ctx, topic, offsets, per)
-		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
+		// FromBoundary is the same per-partition starting point for the
+		// fuzzy offset jump — `[` will refuse to step before it.
+		return MessagesLoadedMsg{Messages: msgs, FromBoundary: maps.Clone(offsets), SetBoundary: true, Gen: gen, Err: err}
 	}
 }
 
@@ -1723,7 +1810,26 @@ func (m *Model) View() string {
 			return header + "\n" + m.placePopupInBody(m.renderSmartFilter())
 		}
 	}
+	if m.live && len(m.messages) == 0 {
+		return header + "\n" + m.placeWaitingForLive()
+	}
 	return header + "\n" + m.table.View()
+}
+
+// placeWaitingForLive renders a centered "waiting for new records…" hint
+// in the table area, prefixed with the same brail spinner as the LIVE
+// title indicator so both animations advance in lock-step.
+func (m *Model) placeWaitingForLive() string {
+	hint := m.styles.HintLabel.Render(liveSpinnerFrame(m.spinnerFrame) + " waiting for new records…")
+	if m.width <= 0 {
+		return hint
+	}
+	centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, hint)
+	h := m.bodyHeight()
+	if h <= 0 {
+		return centered
+	}
+	return lipgloss.PlaceVertical(h, lipgloss.Center, centered)
 }
 
 // renderStateHeader returns the compact `seek: ... • partitions: ... •
@@ -2046,6 +2152,22 @@ func atToBoundary(msgs []kafka.Message, boundary map[int32]int64) bool {
 	return false
 }
 
+// atFromBoundary reports whether the lowest loaded offset of any seen
+// partition has reached its captured left edge. boundary[p] is the lowest
+// offset that belongs to the seek window for partition p (inclusive).
+func atFromBoundary(msgs []kafka.Message, boundary map[int32]int64) bool {
+	if len(boundary) == 0 || len(msgs) == 0 {
+		return false
+	}
+	low := lowestOffsets(msgs)
+	for p, b := range boundary {
+		if l, ok := low[p]; ok && l <= b {
+			return true
+		}
+	}
+	return false
+}
+
 // renderPartitionFilter inverts ParsePartitionFilter into a compact
 // canonical syntax. Empty input yields "".
 func renderPartitionFilter(parts []int32) string {
@@ -2110,19 +2232,22 @@ func maxInt(a, b int) int {
 
 // MessagesLoadedMsg replaces the current window with a fresh batch.
 //
-// ToBoundary is populated by the to-offset / to-timestamp dispatch paths so
-// the screen can record the captured right-edge offsets without writing to
-// model state from a [tea.Cmd] goroutine. nil means "do not change boundary"
-// (`SetBoundary` discriminates clearing vs. not-touching).
+// FromBoundary / ToBoundary are populated by the from- and to-* dispatch
+// paths so the screen can record the captured per-partition left/right
+// edges of the seek window without writing model state from a [tea.Cmd]
+// goroutine. nil means "no edge in that direction"; `SetBoundary` flips
+// the handler from "leave existing edges alone" to "replace with these
+// values".
 //
 // Gen is the value of [Model.fetchGen] at the moment the dispatching cmd
 // was built. Handlers drop the message when it no longer matches.
 type MessagesLoadedMsg struct {
-	Messages    []kafka.Message
-	ToBoundary  map[int32]int64
-	SetBoundary bool
-	Gen         uint64
-	Err         error
+	Messages     []kafka.Message
+	FromBoundary map[int32]int64
+	ToBoundary   map[int32]int64
+	SetBoundary  bool
+	Gen          uint64
+	Err          error
 }
 
 // MessagesAppendedMsg appends or prepends a batch to the existing window.
@@ -2155,6 +2280,34 @@ type FollowChunkMsg struct {
 type FollowErrMsg struct {
 	Gen uint64
 	Err error
+}
+
+// LiveTickMsg drives the LIVE-indicator spinner animation. Sent on a
+// recurring timer while live tail is active. Gen pins the tick to the
+// dispatch that started it so a stale chain queued from a previous live
+// session doesn't merge with a fresh one (which would multiply the
+// spinner rate). Exported so tests can advance the spinner synchronously
+// without driving a real timer.
+type LiveTickMsg struct{ Gen uint64 }
+
+// liveSpinnerInterval is the delay between spinner frame advances. Slow
+// enough to be readable, fast enough to feel "alive" on a quiet topic.
+const liveSpinnerInterval = 120 * time.Millisecond
+
+// liveSpinnerFrames is the brail-spinner sequence used by the LIVE
+// indicator and the "waiting for new records" placeholder.
+var liveSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+func liveSpinnerFrame(i int) string {
+	// Use Go modulo with the +len wraparound so any int (including
+	// math.MinInt where -i overflows back to negative) maps to a valid
+	// non-negative index.
+	idx := ((i % len(liveSpinnerFrames)) + len(liveSpinnerFrames)) % len(liveSpinnerFrames)
+	return string(liveSpinnerFrames[idx])
+}
+
+func liveTickCmd(gen uint64) tea.Cmd {
+	return tea.Tick(liveSpinnerInterval, func(time.Time) tea.Msg { return LiveTickMsg{Gen: gen} })
 }
 
 func loadLastNCmd(svc Service, topic string, n int, parts []int32, gen uint64) tea.Cmd {
@@ -2190,23 +2343,5 @@ func loadLaterCmd(svc Service, topic string, baseline map[int32]int64, n int, pa
 		defer cancel()
 		msgs, err := svc.FetchLater(ctx, topic, baseline, n, parts)
 		return MessagesAppendedMsg{Messages: msgs, Direction: "later", Gen: gen, Err: err}
-	}
-}
-
-func loadAtOffsetCmd(svc Service, topic string, partition int32, offset int64, n int, gen uint64) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		msgs, err := svc.FetchAtOffset(ctx, topic, partition, offset, n)
-		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
-	}
-}
-
-func loadAtTimestampCmd(svc Service, topic string, ts time.Time, parts []int32, n int, gen uint64) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		msgs, err := svc.FetchAtTimestamp(ctx, topic, ts, parts, n)
-		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }
