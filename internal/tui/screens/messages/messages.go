@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,14 @@ type Model struct {
 	// captured target offsets for to-offset / to-timestamp modes; used as a
 	// hard right edge by `]`.
 	toBoundary map[int32]int64
+	// fetchGen is bumped on every dispatchSeek and stopFollow. Every async
+	// fetch / follow command captures the current value and tags its
+	// returned message with it; handlers ignore messages whose Gen does
+	// not match the live counter. This is how we stop a stale
+	// MessagesLoadedMsg from a previous seek (or a stale FollowChunkMsg
+	// from a previous live session) from leaking onto the screen after
+	// the user has already moved on. Recognized as stale on arrival.
+	fetchGen uint64
 
 	// popups
 	seekPopup       *seekPopup
@@ -294,7 +303,14 @@ func restoreViewCmd(svc Service, topic string, raw ViewState) tea.Cmd {
 // stale fields against fresh watermarks (offset out of range → clamp;
 // partition no longer present → drop from filter; live mode → fall back to
 // latest). On metadata fetch failure, falls back to the default dispatch.
+//
+// stopFollow is invoked unconditionally before the seek state is overwritten
+// so that any in-flight live-tail dial the user may have triggered while the
+// async restore was pending is canceled — without it, a late
+// FollowStartedMsg could attach a session that does not match the restored
+// seek state.
 func (m *Model) handleViewRestored(msg viewRestoredMsg) tea.Cmd {
+	m.stopFollow()
 	if msg.err != nil {
 		m.toasts.Push(components.ToastWarning, "restore view: "+msg.err.Error())
 		return m.dispatchSeek()
@@ -464,12 +480,29 @@ func (m *Model) HasOverlay() bool {
 	return m.mode == ModeDetail || m.mode == ModeSeek || m.mode == ModePartitions || m.mode == ModeSmartFilter
 }
 
+// Layout budgets used to compute how many rows are available for
+// dynamic content. If the popup chrome (border + title + labels + input
+// + hint) is changed, popupChromeRows must be adjusted to match — the
+// list area on big topics depends on this for scroll bounds.
+const (
+	chromeRows      = 8  // rows reserved by host chrome + screen-local state header
+	popupChromeRows = 12 // rows reserved by the partition popup's own chrome
+)
+
+// bodyHeight is the number of rows available for the table or a popup
+// rendered in its place. Returns 0 when the size is not yet known.
+func (m *Model) bodyHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	return maxInt(1, m.height-chromeRows)
+}
+
 // SetSize updates width/height.
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		// reserve a row for the active-state header line.
-		m.table.SetHeight(maxInt(1, h-8))
+		m.table.SetHeight(m.bodyHeight())
 	}
 	if w > 0 {
 		m.table.SetTotalWidth(w)
@@ -506,6 +539,7 @@ func (m *Model) KeyHints() []layout.KeyHint {
 		{Key: "s", Label: "seek"},
 		{Key: "P", Label: "partitions"},
 		{Key: "f", Label: "smart filter"},
+		{Key: "R", Label: "reset"},
 		{Key: "[/]", Label: "earlier/later"},
 		{Key: "/", Label: "search"},
 	}
@@ -527,6 +561,9 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case viewRestoredMsg:
 		return m.handleViewRestored(msg)
+	case partitionsLoadedMsg:
+		m.handlePartitionsLoaded(msg)
+		return nil
 	case MessagesAppendedMsg:
 		m.handleAppended(msg)
 		return nil
@@ -578,8 +615,9 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 		m.openSeek()
 		return nil
 	case "P":
-		m.openPartitions()
-		return nil
+		return m.openPartitions()
+	case "R":
+		return m.resetView()
 	case "f":
 		m.openSmartFilter()
 		return nil
@@ -693,6 +731,9 @@ func (m *Model) cursorIndex() (int, bool) {
 }
 
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
+	if msg.Gen != m.fetchGen {
+		return // stale: user moved on to a newer dispatch
+	}
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load messages: "+msg.Err.Error())
@@ -706,6 +747,9 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 }
 
 func (m *Model) handleAppended(msg MessagesAppendedMsg) {
+	if msg.Gen != m.fetchGen {
+		return // stale: paging result for a seek the user has since left
+	}
 	m.loading = false
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load messages: "+msg.Err.Error())
@@ -724,6 +768,9 @@ func (m *Model) handleAppended(msg MessagesAppendedMsg) {
 }
 
 func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
+	if msg.Gen != m.fetchGen {
+		return // stale: chunk from a previous live session
+	}
 	if len(msg.Messages) > 0 {
 		// follow yields newest records — prepend to keep newest-first ordering.
 		m.messages = append(msg.Messages, m.messages...)
@@ -735,6 +782,9 @@ func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 }
 
 func (m *Model) handleFollowErr(msg FollowErrMsg) {
+	if msg.Gen != m.fetchGen {
+		return
+	}
 	m.toasts.Push(components.ToastError, "follow: "+msg.Err.Error())
 	m.stopFollow()
 }
@@ -742,14 +792,21 @@ func (m *Model) handleFollowErr(msg FollowErrMsg) {
 // startFollowCmd dials the broker for a live-tail session in the
 // background. Result arrives as [FollowStartedMsg] which the host promotes
 // into a polling loop.
-func startFollowCmd(svc Service, topic string, parts []int32) tea.Cmd {
+func startFollowCmd(svc Service, topic string, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		sess, err := svc.Follow(context.Background(), topic, parts)
-		return FollowStartedMsg{Session: sess, Err: err}
+		return FollowStartedMsg{Session: sess, Gen: gen, Err: err}
 	}
 }
 
 func (m *Model) handleFollowStarted(msg FollowStartedMsg) tea.Cmd {
+	if msg.Gen != m.fetchGen {
+		// stale: user has dispatched a new seek since this dial was issued.
+		if msg.Session != nil {
+			msg.Session.Close()
+		}
+		return nil
+	}
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "follow: "+msg.Err.Error())
 		m.live = false
@@ -773,6 +830,9 @@ func (m *Model) stopFollow() {
 		m.follow = nil
 	}
 	m.live = false
+	// bump generation: any chunk already in flight from the now-closed
+	// follow session will be discarded by handleFollowChunk on arrival.
+	m.fetchGen++
 }
 
 // Close releases any background resources owned by the screen. The host
@@ -787,32 +847,33 @@ func (m *Model) followPollCmd() tea.Cmd {
 		return nil
 	}
 	sess := m.follow
+	gen := m.fetchGen
 	return func() tea.Msg {
 		select {
 		case msg, ok := <-sess.Messages:
 			if !ok {
-				return FollowChunkMsg{Closed: true}
+				return FollowChunkMsg{Closed: true, Gen: gen}
 			}
 			batch := []kafka.Message{msg}
 			for {
 				select {
 				case extra, ok := <-sess.Messages:
 					if !ok {
-						return FollowChunkMsg{Messages: batch, Closed: true}
+						return FollowChunkMsg{Messages: batch, Closed: true, Gen: gen}
 					}
 					batch = append(batch, extra)
 				default:
-					return FollowChunkMsg{Messages: batch}
+					return FollowChunkMsg{Messages: batch, Gen: gen}
 				}
 			}
 		case err, ok := <-sess.Errors:
 			if !ok {
-				return FollowChunkMsg{Closed: true}
+				return FollowChunkMsg{Closed: true, Gen: gen}
 			}
 			if err == nil {
-				return FollowChunkMsg{}
+				return FollowChunkMsg{Gen: gen}
 			}
-			return FollowErrMsg{Err: err}
+			return FollowErrMsg{Gen: gen, Err: err}
 		}
 	}
 }
@@ -832,7 +893,7 @@ func (m *Model) loadEarlier() tea.Cmd {
 	}
 	baseline := lowestOffsets(m.messages)
 	m.loading = true
-	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, m.filter)
+	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, m.filter, m.fetchGen)
 }
 
 // loadLater handles `]`. Honors boundaries the same way as loadEarlier
@@ -855,7 +916,7 @@ func (m *Model) loadLater() tea.Cmd {
 	}
 	baseline := highestOffsets(m.messages)
 	m.loading = true
-	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, m.filter)
+	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, m.filter, m.fetchGen)
 }
 
 // ----- seek popup -----
@@ -918,7 +979,7 @@ func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
 		switch mode {
 		case SeekLatest, SeekEarliest, SeekLive:
 			// no parameters — dispatch immediately.
-			m.applySeek(mode, SeekState{Mode: mode})
+			m.applySeek(SeekState{Mode: mode})
 			m.closeSeek()
 			return m.dispatchSeek()
 		default:
@@ -945,7 +1006,7 @@ func (m *Model) handleSeekInput(key tea.KeyPressMsg) tea.Cmd {
 			m.toasts.Push(components.ToastError, err.Error())
 			return nil
 		}
-		m.applySeek(pop.chosen, state)
+		m.applySeek(state)
 		m.closeSeek()
 		return m.dispatchSeek()
 	}
@@ -1030,54 +1091,75 @@ func parseOffsetExpression(s string) (int32, int64, bool, error) {
 
 // applySeek records the new seek state and stops follow if active. Persists
 // the state (when a repository is wired and the mode is not live).
-func (m *Model) applySeek(_ SeekMode, state SeekState) {
+func (m *Model) applySeek(state SeekState) {
 	m.stopFollow()
 	m.seek = state
 	m.toBoundary = nil
 	m.persistView()
 }
 
+// resetView returns the screen to its default view: seek=latest, no
+// partition filter, no live tail, no captured boundary. Persists the
+// reset and re-dispatches the initial fetch.
+func (m *Model) resetView() tea.Cmd {
+	m.stopFollow()
+	m.seek = SeekState{Mode: SeekLatest}
+	m.filter = nil
+	m.toBoundary = nil
+	m.persistView()
+	m.toasts.Push(components.ToastInfo, "view reset")
+	return m.dispatchSeek()
+}
+
 // dispatchSeek issues the fetch command appropriate for the active seek
-// state, applying watermark clamps for offset-only forms.
+// state, applying watermark clamps for offset-only forms. Any previously
+// loaded messages are cleared first so the user does not see stale records
+// from the prior view while the new fetch is in flight (or, in live mode,
+// while waiting for the first incoming record).
+//
+// fetchGen is bumped here so any in-flight fetch from the previous view is
+// recognized as stale by the handlers and dropped on arrival.
 func (m *Model) dispatchSeek() tea.Cmd {
+	m.fetchGen++
+	gen := m.fetchGen
+	m.messages = nil
+	m.refreshTable()
 	switch m.seek.Mode {
 	case SeekLatest:
 		m.loading = true
-		return loadLastNCmd(m.svc, m.topic, m.pageSize, m.filter)
+		return loadLastNCmd(m.svc, m.topic, m.pageSize, m.filter, gen)
 	case SeekEarliest:
 		m.loading = true
-		return loadEarliestCmd(m.svc, m.topic, m.pageSize, m.filter)
+		return loadEarliestCmd(m.svc, m.topic, m.pageSize, m.filter, gen)
 	case SeekFromOffset:
-		return m.dispatchFromOffset()
+		return m.dispatchFromOffset(gen)
 	case SeekToOffset:
-		return m.dispatchToOffset()
+		return m.dispatchToOffset(gen)
 	case SeekFromTimestamp:
 		m.loading = true
-		return loadAtTimestampCmd(m.svc, m.topic, m.seek.Timestamp, m.filter, m.pageSize)
+		return loadAtTimestampCmd(m.svc, m.topic, m.seek.Timestamp, m.filter, m.pageSize, gen)
 	case SeekToTimestamp:
-		return m.dispatchToTimestamp()
+		return m.dispatchToTimestamp(gen)
 	case SeekLive:
-		// load the tail first so the user sees recent context, then dial
-		// the follow session asynchronously.
-		m.loading = true
+		// live tail starts from an empty screen and streams only new
+		// records — matches the semantics of kafbat-ui, AKHQ, Kowl and
+		// `kafka-console-consumer` (without --from-beginning). No
+		// historical fetch; the user sees records as they arrive.
 		m.live = true
-		return tea.Batch(
-			loadLastNCmd(m.svc, m.topic, m.pageSize, m.filter),
-			startFollowCmd(m.svc, m.topic, m.filter),
-		)
+		return startFollowCmd(m.svc, m.topic, m.filter, gen)
 	}
 	return nil
 }
 
-func (m *Model) dispatchFromOffset() tea.Cmd {
+func (m *Model) dispatchFromOffset(gen uint64) tea.Cmd {
 	if m.seek.HasPart {
 		m.loading = true
-		return loadAtOffsetCmd(m.svc, m.topic, m.seek.Partition, m.seek.Offset, m.pageSize)
+		return loadAtOffsetCmd(m.svc, m.topic, m.seek.Partition, m.seek.Offset, m.pageSize, gen)
 	}
-	return m.dispatchOffsetClampedForward()
+	return m.dispatchOffsetClampedForward(gen)
 }
 
-func (m *Model) dispatchOffsetClampedForward() tea.Cmd {
+func (m *Model) dispatchOffsetClampedForward(gen uint64) tea.Cmd {
 	svc := m.svc
 	topic := m.topic
 	off := m.seek.Offset
@@ -1087,21 +1169,32 @@ func (m *Model) dispatchOffsetClampedForward() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		wm, err := svc.WatermarksFor(ctx, topic, parts)
-		if err != nil {
-			return MessagesLoadedMsg{Err: err}
-		}
+		// FetchAtOffsets clamps each per-partition offset against the
+		// topic's watermarks internally, so no upfront WatermarksFor is
+		// needed when the partition set is already known. When the user
+		// has no filter we still need the partition list — fall back to
+		// watermarks just for that case.
 		offsets := map[int32]int64{}
-		for p, w := range wm {
-			offsets[p] = clampOffset(off, w.Low, w.High)
+		if len(parts) > 0 {
+			for _, p := range parts {
+				offsets[p] = off
+			}
+		} else {
+			wm, err := svc.WatermarksFor(ctx, topic, nil)
+			if err != nil {
+				return MessagesLoadedMsg{Gen: gen, Err: err}
+			}
+			for p := range wm {
+				offsets[p] = off
+			}
 		}
 		per := perPartShare(pageSize, len(offsets))
 		msgs, err := svc.FetchAtOffsets(ctx, topic, offsets, per)
-		return MessagesLoadedMsg{Messages: msgs, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }
 
-func (m *Model) dispatchToOffset() tea.Cmd {
+func (m *Model) dispatchToOffset(gen uint64) tea.Cmd {
 	svc := m.svc
 	topic := m.topic
 	pageSize := m.pageSize
@@ -1114,7 +1207,7 @@ func (m *Model) dispatchToOffset() tea.Cmd {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			msgs, err := svc.FetchEarlier(ctx, topic, boundary, pageSize, []int32{partition})
-			return MessagesLoadedMsg{Messages: msgs, ToBoundary: boundary, SetBoundary: true, Err: err}
+			return MessagesLoadedMsg{Messages: msgs, ToBoundary: boundary, SetBoundary: true, Gen: gen, Err: err}
 		}
 	}
 	off := m.seek.Offset
@@ -1123,7 +1216,7 @@ func (m *Model) dispatchToOffset() tea.Cmd {
 		defer cancel()
 		wm, err := svc.WatermarksFor(ctx, topic, parts)
 		if err != nil {
-			return MessagesLoadedMsg{Err: err}
+			return MessagesLoadedMsg{Gen: gen, Err: err}
 		}
 		baseline := map[int32]int64{}
 		for p, w := range wm {
@@ -1135,11 +1228,11 @@ func (m *Model) dispatchToOffset() tea.Cmd {
 			pSlice = append(pSlice, p)
 		}
 		msgs, err := svc.FetchEarlier(ctx, topic, baseline, pageSize, pSlice)
-		return MessagesLoadedMsg{Messages: msgs, ToBoundary: baseline, SetBoundary: true, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, ToBoundary: baseline, SetBoundary: true, Gen: gen, Err: err}
 	}
 }
 
-func (m *Model) dispatchToTimestamp() tea.Cmd {
+func (m *Model) dispatchToTimestamp(gen uint64) tea.Cmd {
 	svc := m.svc
 	topic := m.topic
 	pageSize := m.pageSize
@@ -1151,7 +1244,7 @@ func (m *Model) dispatchToTimestamp() tea.Cmd {
 		defer cancel()
 		offsets, err := svc.OffsetsForTimestamp(ctx, topic, ts, parts)
 		if err != nil {
-			return MessagesLoadedMsg{Err: err}
+			return MessagesLoadedMsg{Gen: gen, Err: err}
 		}
 		baseline := map[int32]int64{}
 		var pSlice []int32
@@ -1160,24 +1253,104 @@ func (m *Model) dispatchToTimestamp() tea.Cmd {
 			pSlice = append(pSlice, p)
 		}
 		msgs, err := svc.FetchEarlier(ctx, topic, baseline, pageSize, pSlice)
-		return MessagesLoadedMsg{Messages: msgs, ToBoundary: baseline, SetBoundary: true, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, ToBoundary: baseline, SetBoundary: true, Gen: gen, Err: err}
 	}
 }
 
 // ----- partitions popup -----
 
+// partitionsFocus discriminates which side of the popup receives keys.
+type partitionsFocus int
+
+const (
+	focusList partitionsFocus = iota
+	focusInput
+)
+
+// partitionsPopup is the partition-filter dialog: a checkbox list of the
+// topic's actual partitions on top, a free-form text input below. Tab
+// switches focus; the two views stay in sync — toggling a checkbox
+// rewrites the input; valid edits in the input re-tick checkboxes.
 type partitionsPopup struct {
-	form *components.Form
+	loading      bool
+	loadErr      string
+	partitions   []int32        // sorted partition ids of the topic
+	selected     map[int32]bool // current selection
+	listCursor   int
+	listScroll   int // first visible row in the checkbox list
+	focus        partitionsFocus
+	input        string
+	inputCursor  int    // rune index inside input
+	parseErr     string // last parse error of input ("" == valid)
+	allDiscarded bool   // input parsed ok but referenced unknown partitions (warning)
 }
 
-func (m *Model) openPartitions() {
-	prefill := renderPartitionFilter(m.filter)
-	form := components.NewForm(
-		[]components.Field{{Key: "value", Label: "partitions (e.g. 0-4,7,10-12, empty=all)", Kind: components.FieldText, Value: prefill}},
-		components.WithFormStyles(m.styles),
-	)
-	m.partitionsPopup = &partitionsPopup{form: form}
+// partitionsLoadedMsg carries the topic's partition list to populate the
+// popup once async metadata fetch completes.
+type partitionsLoadedMsg struct {
+	partitions []int32
+	err        error
+}
+
+func loadPartitionsCmd(svc Service, topic string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		wm, err := svc.WatermarksFor(ctx, topic, nil)
+		if err != nil {
+			return partitionsLoadedMsg{err: err}
+		}
+		out := make([]int32, 0, len(wm))
+		for p := range wm {
+			out = append(out, p)
+		}
+		slices.Sort(out)
+		return partitionsLoadedMsg{partitions: out}
+	}
+}
+
+func (m *Model) openPartitions() tea.Cmd {
+	m.partitionsPopup = &partitionsPopup{
+		loading:  true,
+		selected: map[int32]bool{},
+		input:    renderPartitionFilter(m.filter),
+		focus:    focusList,
+	}
+	m.partitionsPopup.inputCursor = runeLen(m.partitionsPopup.input)
 	m.mode = ModePartitions
+	return loadPartitionsCmd(m.svc, m.topic)
+}
+
+func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
+	if m.partitionsPopup == nil {
+		return
+	}
+	pop := m.partitionsPopup
+	pop.loading = false
+	if msg.err != nil {
+		pop.loadErr = msg.err.Error()
+		return
+	}
+	pop.partitions = msg.partitions
+	// initial selection: the active filter, or "all" when filter is empty.
+	pop.selected = map[int32]bool{}
+	if len(m.filter) == 0 {
+		for _, p := range pop.partitions {
+			pop.selected[p] = true
+		}
+	} else {
+		want := map[int32]bool{}
+		for _, p := range m.filter {
+			want[p] = true
+		}
+		for _, p := range pop.partitions {
+			if want[p] {
+				pop.selected[p] = true
+			}
+		}
+	}
+	pop.input = m.canonicalSelection()
+	pop.inputCursor = runeLen(pop.input)
 }
 
 func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
@@ -1185,17 +1358,41 @@ func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
 		m.mode = ModeList
 		return nil
 	}
+	pop := m.partitionsPopup
 	switch key.String() {
 	case "esc":
 		m.partitionsPopup = nil
 		m.mode = ModeList
 		return nil
+	case "tab":
+		if pop.focus == focusList {
+			pop.focus = focusInput
+		} else {
+			pop.focus = focusList
+		}
+		return nil
 	case "enter":
-		fld, _ := m.partitionsPopup.form.Field("value")
-		parts, err := kafka.ParsePartitionFilter(fld.Value)
-		if err != nil {
-			m.toasts.Push(components.ToastError, err.Error())
+		if pop.parseErr != "" {
+			m.toasts.Push(components.ToastError, pop.parseErr)
 			return nil
+		}
+		// final selection comes from checkboxes when known; falls back to
+		// raw input when partitions failed to load.
+		var parts []int32
+		if pop.partitions != nil {
+			parts = m.selectedPartitions()
+			// "all selected" → treat as empty filter so future fetches
+			// skip the filter entirely.
+			if len(parts) == len(pop.partitions) {
+				parts = nil
+			}
+		} else {
+			p, err := kafka.ParsePartitionFilter(pop.input)
+			if err != nil {
+				m.toasts.Push(components.ToastError, err.Error())
+				return nil
+			}
+			parts = p
 		}
 		m.filter = parts
 		m.partitionsPopup = nil
@@ -1203,8 +1400,180 @@ func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
 		m.persistView()
 		return m.dispatchSeek()
 	}
-	m.partitionsPopup.form, _ = m.partitionsPopup.form.Update(key)
+	if pop.focus == focusList {
+		m.handlePartitionsListKey(key)
+	} else {
+		m.handlePartitionsInputKey(key)
+	}
 	return nil
+}
+
+// handlePartitionsListKey routes keys when the checkbox list is focused.
+func (m *Model) handlePartitionsListKey(key tea.KeyPressMsg) {
+	pop := m.partitionsPopup
+	if len(pop.partitions) == 0 {
+		return
+	}
+	switch key.String() {
+	case "up", "k":
+		pop.listCursor = (pop.listCursor - 1 + len(pop.partitions)) % len(pop.partitions)
+	case "down", "j":
+		pop.listCursor = (pop.listCursor + 1) % len(pop.partitions)
+	case "home":
+		pop.listCursor = 0
+	case "end":
+		pop.listCursor = len(pop.partitions) - 1
+	case "space", " ":
+		p := pop.partitions[pop.listCursor]
+		// keep the map clean: either present-with-true or absent. This
+		// way len(pop.selected) == count of actually selected entries.
+		if pop.selected[p] {
+			delete(pop.selected, p)
+		} else {
+			pop.selected[p] = true
+		}
+		m.syncInputFromSelection()
+	case "a":
+		// toggle between "all selected" and "none selected". Any partial
+		// state pulls towards "all" first, mirroring the standard
+		// select-all checkbox in browsers and spreadsheets.
+		if len(pop.selected) == len(pop.partitions) {
+			pop.selected = map[int32]bool{}
+		} else {
+			for _, p := range pop.partitions {
+				pop.selected[p] = true
+			}
+		}
+		m.syncInputFromSelection()
+	}
+}
+
+// handlePartitionsInputKey routes keys when the text input is focused.
+// Edits the input string in place and re-validates against the topic's
+// partitions; on success, ticks/unticks checkboxes accordingly.
+func (m *Model) handlePartitionsInputKey(key tea.KeyPressMsg) {
+	pop := m.partitionsPopup
+	runes := []rune(pop.input)
+	if pop.inputCursor > len(runes) {
+		pop.inputCursor = len(runes)
+	}
+	switch key.String() {
+	case "left":
+		if pop.inputCursor > 0 {
+			pop.inputCursor--
+		}
+	case "right":
+		if pop.inputCursor < len(runes) {
+			pop.inputCursor++
+		}
+	case "home":
+		pop.inputCursor = 0
+	case "end":
+		pop.inputCursor = len(runes)
+	case "backspace":
+		if pop.inputCursor > 0 {
+			pop.input = string(runes[:pop.inputCursor-1]) + string(runes[pop.inputCursor:])
+			pop.inputCursor--
+			m.syncSelectionFromInput()
+		}
+	case "delete":
+		if pop.inputCursor < len(runes) {
+			pop.input = string(runes[:pop.inputCursor]) + string(runes[pop.inputCursor+1:])
+			m.syncSelectionFromInput()
+		}
+	default:
+		if t := key.Text; t != "" {
+			pop.input = string(runes[:pop.inputCursor]) + t + string(runes[pop.inputCursor:])
+			pop.inputCursor += len([]rune(t))
+			m.syncSelectionFromInput()
+		}
+	}
+}
+
+// selectedPartitions returns the currently-ticked partitions in ascending order.
+func (m *Model) selectedPartitions() []int32 {
+	pop := m.partitionsPopup
+	out := make([]int32, 0, len(pop.selected))
+	for _, p := range pop.partitions {
+		if pop.selected[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// canonicalSelection renders the current ticked set in the canonical
+// `0-4,7,10-12` syntax. "All ticked" or "none ticked" both emit "" so the
+// input visually matches the "all partitions" convention used elsewhere.
+func (m *Model) canonicalSelection() string {
+	pop := m.partitionsPopup
+	if len(pop.partitions) == 0 {
+		return ""
+	}
+	picks := m.selectedPartitions()
+	if len(picks) == len(pop.partitions) {
+		return ""
+	}
+	return renderPartitionFilter(picks)
+}
+
+// syncInputFromSelection mirrors the checkbox state into the input field.
+func (m *Model) syncInputFromSelection() {
+	pop := m.partitionsPopup
+	pop.input = m.canonicalSelection()
+	pop.inputCursor = runeLen(pop.input)
+	pop.parseErr = ""
+	pop.allDiscarded = false
+}
+
+// syncSelectionFromInput parses the input field and ticks the corresponding
+// checkboxes when valid. Invalid input is recorded in parseErr and surfaced
+// in the popup body; checkbox state stays untouched until the user types a
+// valid expression. References to partitions outside the topic are kept as
+// a soft warning (allDiscarded) without blocking enter — the kafka layer
+// silently drops unknown partitions on fetch.
+func (m *Model) syncSelectionFromInput() {
+	pop := m.partitionsPopup
+	if pop.partitions == nil {
+		// metadata not loaded yet — only validate syntax.
+		_, err := kafka.ParsePartitionFilter(pop.input)
+		if err != nil {
+			pop.parseErr = err.Error()
+		} else {
+			pop.parseErr = ""
+		}
+		return
+	}
+	parts, err := kafka.ParsePartitionFilter(pop.input)
+	if err != nil {
+		pop.parseErr = err.Error()
+		return
+	}
+	pop.parseErr = ""
+	pop.allDiscarded = false
+	known := map[int32]bool{}
+	for _, p := range pop.partitions {
+		known[p] = true
+	}
+	pop.selected = map[int32]bool{}
+	if len(parts) == 0 {
+		// empty input → all partitions selected.
+		for _, p := range pop.partitions {
+			pop.selected[p] = true
+		}
+		return
+	}
+	unknownCount := 0
+	for _, p := range parts {
+		if known[p] {
+			pop.selected[p] = true
+		} else {
+			unknownCount++
+		}
+	}
+	if unknownCount > 0 && len(pop.selected) == 0 {
+		pop.allDiscarded = true
+	}
 }
 
 // ----- smart filter stub -----
@@ -1327,33 +1696,34 @@ func valuePreviewWidth(termWidth int) int {
 	return termWidth
 }
 
-// View renders the screen body. The active-state header line is rendered
-// above the table; popups render centered over the body in their respective
-// modes.
+// View renders the screen body. The active-state header line is always
+// rendered above the body; in popup modes the popup replaces the table
+// area, anchored near the top so it does not look unmoored at the bottom
+// of large terminals.
 func (m *Model) View() string {
 	if m.mode == ModeDetail {
 		return m.detail.View()
 	}
 	header := m.renderStateHeader()
-	body := m.table.View()
-	base := header + "\n" + body
+	// ModeDetail is handled at the top of this function and never reaches
+	// the switch below.
 	switch m.mode {
 	case ModeList, ModeDetail:
 		// no popup overlay.
 	case ModeSeek:
 		if m.seekPopup != nil {
-			return m.overlay(base, m.renderSeekPopup())
+			return header + "\n" + m.placePopupInBody(m.renderSeekPopup())
 		}
 	case ModePartitions:
 		if m.partitionsPopup != nil {
-			return m.overlay(base, "  partition filter\n\n"+m.partitionsPopup.form.View())
+			return header + "\n" + m.placePopupInBody(m.renderPartitionsPopup())
 		}
 	case ModeSmartFilter:
 		if m.smartFilterOpen {
-			return m.overlay(base, m.renderSmartFilter())
+			return header + "\n" + m.placePopupInBody(m.renderSmartFilter())
 		}
 	}
-	return base
+	return header + "\n" + m.table.View()
 }
 
 // renderStateHeader returns the compact `seek: ... • partitions: ... •
@@ -1408,22 +1778,176 @@ func (m *Model) renderSeekPopup() string {
 	if m.seekPopup.stage == stageMenu {
 		return m.seekPopup.menu.View(0)
 	}
-	title := "  seek · " + m.seekPopup.chosen.String()
-	hint := "  enter ok   esc back"
-	body := title + "\n\n" + m.seekPopup.form.View() + "\n\n" + m.styles.HintLabel.Render(hint)
+	title := m.styles.HelpTitle.Render("seek · " + m.seekPopup.chosen.String())
+	hint := m.styles.HintLabel.Render("enter ok   esc back")
+	body := title + "\n\n" + m.seekPopup.form.View() + "\n\n" + hint
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 2).
 		Render(body)
 }
 
-// overlay places `popup` centered over `base` (visually). For now we just
-// concatenate so the host's frame can render both.
-func (m *Model) overlay(base, popup string) string {
+// placePopupInBody renders the popup horizontally centered and anchored to
+// the top of the table area (so it appears just below the active-state
+// header line rather than at the bottom of the terminal). The reserved
+// height matches `m.table.SetHeight` to keep the chrome stable when
+// switching between list and popup modes.
+func (m *Model) placePopupInBody(popup string) string {
 	if m.width <= 0 {
-		return base + "\n\n" + popup
+		return popup
 	}
-	return base + "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, popup)
+	centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, popup)
+	h := m.bodyHeight()
+	if h <= 0 {
+		return centered
+	}
+	return lipgloss.PlaceVertical(h, lipgloss.Top, centered)
+}
+
+// renderPartitionsPopup draws the dialog: title, checkbox list of the
+// topic's partitions, the canonical input field, and a hint line. Visual
+// focus is moved between list and input so the user always sees where
+// keystrokes will land.
+func (m *Model) renderPartitionsPopup() string {
+	pop := m.partitionsPopup
+	title := m.styles.HelpTitle.Render("partition filter")
+
+	var listBlock string
+	switch {
+	case pop.loading:
+		listBlock = "    " + m.styles.HintLabel.Render("loading partitions…")
+	case pop.loadErr != "":
+		listBlock = "    " + m.styles.StatusErr.Render("load failed: "+pop.loadErr)
+	case len(pop.partitions) == 0:
+		listBlock = "    " + m.styles.HintLabel.Render("(topic has no partitions)")
+	default:
+		maxRows := m.partitionsListWindow()
+		m.clampPartitionsScroll(maxRows)
+		first := pop.listScroll
+		last := min(first+maxRows, len(pop.partitions))
+		rows := make([]string, 0, last-first+2)
+		if first > 0 {
+			rows = append(rows, "    "+m.styles.HintLabel.Render(fmt.Sprintf("↑ %d more", first)))
+		}
+		for i := first; i < last; i++ {
+			p := pop.partitions[i]
+			marker := "[ ]"
+			if pop.selected[p] {
+				marker = "[×]"
+			}
+			prefix := "  "
+			rowStyle := m.styles.Command
+			if pop.focus == focusList && i == pop.listCursor {
+				prefix = "▸ "
+				rowStyle = m.styles.CommandHL
+			}
+			rows = append(rows, prefix+rowStyle.Render(fmt.Sprintf("%s %d", marker, p)))
+		}
+		if last < len(pop.partitions) {
+			rows = append(rows, "    "+m.styles.HintLabel.Render(fmt.Sprintf("↓ %d more", len(pop.partitions)-last)))
+		}
+		listBlock = strings.Join(rows, "\n")
+	}
+
+	var listLabel string
+	if pop.focus == focusList {
+		listLabel = m.styles.HintKey.Render("▸ partitions")
+	} else {
+		listLabel = m.styles.HintLabel.Render("  partitions")
+	}
+
+	var inputLabel string
+	if pop.focus == focusInput {
+		inputLabel = m.styles.HintKey.Render("▸ filter")
+	} else {
+		inputLabel = m.styles.HintLabel.Render("  filter")
+	}
+	inputBody := m.renderPartitionsInputField()
+	var inputErr string
+	switch {
+	case pop.parseErr != "":
+		inputErr = "    " + m.styles.StatusErr.Render("invalid: "+pop.parseErr)
+	case pop.allDiscarded:
+		inputErr = "    " + m.styles.StatusWarn.Render("none of the listed partitions exist in this topic")
+	}
+
+	hint := m.styles.HintLabel.Render("tab switch   space toggle   a all/none   enter apply   esc back")
+
+	parts := []string{
+		title,
+		"",
+		listLabel,
+		listBlock,
+		"",
+		inputLabel,
+		inputBody,
+	}
+	if inputErr != "" {
+		parts = append(parts, inputErr)
+	}
+	parts = append(parts, "", hint)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 2).
+		Render(strings.Join(parts, "\n"))
+}
+
+// partitionsListWindow is how many checkbox rows fit inside the popup
+// without overflowing the body area. Whatever is left of bodyHeight after
+// popupChromeRows goes to the list. A floor keeps the list usable on tiny
+// terminals.
+func (m *Model) partitionsListWindow() int {
+	avail := m.bodyHeight() - popupChromeRows
+	if avail < 3 {
+		return 3
+	}
+	return avail
+}
+
+// clampPartitionsScroll keeps the cursor visible within the [scroll,
+// scroll+window) range, scrolling on demand when the cursor moves out.
+func (m *Model) clampPartitionsScroll(window int) {
+	pop := m.partitionsPopup
+	if window <= 0 || len(pop.partitions) == 0 {
+		pop.listScroll = 0
+		return
+	}
+	if pop.listCursor < pop.listScroll {
+		pop.listScroll = pop.listCursor
+	}
+	if pop.listCursor >= pop.listScroll+window {
+		pop.listScroll = pop.listCursor - window + 1
+	}
+	maxScroll := max(len(pop.partitions)-window, 0)
+	if pop.listScroll > maxScroll {
+		pop.listScroll = maxScroll
+	}
+	if pop.listScroll < 0 {
+		pop.listScroll = 0
+	}
+}
+
+// renderPartitionsInputField draws the text input row with a block cursor
+// when it has focus and a placeholder dash when empty.
+func (m *Model) renderPartitionsInputField() string {
+	pop := m.partitionsPopup
+	if pop.focus != focusInput {
+		if pop.input == "" {
+			return "    " + m.styles.HintLabel.Render("(empty = all)")
+		}
+		return "    " + m.styles.Command.Render(pop.input)
+	}
+	runes := []rune(pop.input)
+	cur := min(pop.inputCursor, len(runes))
+	before := string(runes[:cur])
+	var underCursor, after string
+	if cur >= len(runes) {
+		underCursor = " "
+	} else {
+		underCursor = string(runes[cur])
+		after = string(runes[cur+1:])
+	}
+	return "    " + m.styles.Command.Render(before) + m.styles.Cursor.Render(underCursor) + m.styles.Command.Render(after)
 }
 
 // FormatTimestamp renders a message timestamp as `YYYY-MM-DD HH:MM:SS.mmm`
@@ -1573,6 +2097,8 @@ func perPartShare(total, parts int) int {
 	return (total + parts - 1) / parts
 }
 
+func runeLen(s string) int { return len([]rune(s)) }
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -1588,10 +2114,14 @@ func maxInt(a, b int) int {
 // the screen can record the captured right-edge offsets without writing to
 // model state from a [tea.Cmd] goroutine. nil means "do not change boundary"
 // (`SetBoundary` discriminates clearing vs. not-touching).
+//
+// Gen is the value of [Model.fetchGen] at the moment the dispatching cmd
+// was built. Handlers drop the message when it no longer matches.
 type MessagesLoadedMsg struct {
 	Messages    []kafka.Message
 	ToBoundary  map[int32]int64
 	SetBoundary bool
+	Gen         uint64
 	Err         error
 }
 
@@ -1600,6 +2130,7 @@ type MessagesAppendedMsg struct {
 	Messages  []kafka.Message
 	Prepend   bool   // true when the batch is older than the current window
 	Direction string // human-readable direction word for empty-result toast
+	Gen       uint64
 	Err       error
 }
 
@@ -1607,6 +2138,7 @@ type MessagesAppendedMsg struct {
 // completes. Session is non-nil iff Err is nil.
 type FollowStartedMsg struct {
 	Session *kafka.FollowSession
+	Gen     uint64
 	Err     error
 }
 
@@ -1615,64 +2147,66 @@ type FollowStartedMsg struct {
 type FollowChunkMsg struct {
 	Messages []kafka.Message
 	Closed   bool
+	Gen      uint64
 }
 
 // FollowErrMsg surfaces an error from a follow session. The session is
 // closed before this message is sent.
 type FollowErrMsg struct {
+	Gen uint64
 	Err error
 }
 
-func loadLastNCmd(svc Service, topic string, n int, parts []int32) tea.Cmd {
+func loadLastNCmd(svc Service, topic string, n int, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchLastN(ctx, topic, n, parts)
-		return MessagesLoadedMsg{Messages: msgs, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }
 
-func loadEarliestCmd(svc Service, topic string, n int, parts []int32) tea.Cmd {
+func loadEarliestCmd(svc Service, topic string, n int, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchEarliest(ctx, topic, n, parts)
-		return MessagesLoadedMsg{Messages: msgs, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }
 
-func loadEarlierCmd(svc Service, topic string, baseline map[int32]int64, n int, parts []int32) tea.Cmd {
+func loadEarlierCmd(svc Service, topic string, baseline map[int32]int64, n int, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchEarlier(ctx, topic, baseline, n, parts)
-		return MessagesAppendedMsg{Messages: msgs, Prepend: true, Direction: "earlier", Err: err}
+		return MessagesAppendedMsg{Messages: msgs, Prepend: true, Direction: "earlier", Gen: gen, Err: err}
 	}
 }
 
-func loadLaterCmd(svc Service, topic string, baseline map[int32]int64, n int, parts []int32) tea.Cmd {
+func loadLaterCmd(svc Service, topic string, baseline map[int32]int64, n int, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchLater(ctx, topic, baseline, n, parts)
-		return MessagesAppendedMsg{Messages: msgs, Direction: "later", Err: err}
+		return MessagesAppendedMsg{Messages: msgs, Direction: "later", Gen: gen, Err: err}
 	}
 }
 
-func loadAtOffsetCmd(svc Service, topic string, partition int32, offset int64, n int) tea.Cmd {
+func loadAtOffsetCmd(svc Service, topic string, partition int32, offset int64, n int, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchAtOffset(ctx, topic, partition, offset, n)
-		return MessagesLoadedMsg{Messages: msgs, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }
 
-func loadAtTimestampCmd(svc Service, topic string, ts time.Time, parts []int32, n int) tea.Cmd {
+func loadAtTimestampCmd(svc Service, topic string, ts time.Time, parts []int32, n int, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		msgs, err := svc.FetchAtTimestamp(ctx, topic, ts, parts, n)
-		return MessagesLoadedMsg{Messages: msgs, Err: err}
+		return MessagesLoadedMsg{Messages: msgs, Gen: gen, Err: err}
 	}
 }

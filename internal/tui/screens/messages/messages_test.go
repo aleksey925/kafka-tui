@@ -263,14 +263,25 @@ func TestPartitions_OpensOnP(t *testing.T) {
 func TestPartitions_SubmitFiltersAndReloads(t *testing.T) {
 	svc := newFakeService()
 	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 10},
+		1: {Low: 0, High: 10},
+		2: {Low: 0, High: 10},
+		3: {Low: 0, High: 10},
+	}
 	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPressRune('P'))
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd) // resolve loadPartitionsCmd → partitionsLoadedMsg
+
+	// switch to text input and type "0,2-3".
+	_ = m.Update(keyPress("tab"))
+	// initial input is "" (all selected). Type the new filter.
 	for _, r := range "0,2-3" {
 		_ = m.Update(keyPressRune(r))
 	}
-	cmd := m.Update(keyPress("enter"))
+	cmd = m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 
 	assert.Equal(t, messages.ModeList, m.CurrentMode())
@@ -278,16 +289,121 @@ func TestPartitions_SubmitFiltersAndReloads(t *testing.T) {
 	assert.Equal(t, []int32{0, 2, 3}, svc.lastPartitions)
 }
 
-func TestPartitions_InvalidShowsToast(t *testing.T) {
-	m := buildModelWithMessages(t, []kafka.Message{{Topic: "orders", Value: []byte("v")}})
-	_ = m.Update(keyPressRune('P'))
+func TestPartitions_ListToggleAppliesSubset(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+
+	// initially all selected; press `a` to clear (toggle), then space on partition 1.
+	_ = m.Update(keyPressRune('a'))
+	_ = m.Update(keyPress("down"))
+	_ = m.Update(keyPressRune(' '))
+	cmd = m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	assert.Equal(t, []int32{1}, m.PartitionFilter())
+}
+
+func TestPartitions_AllToggleCyclesAllNone(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+
+	// initial: all selected → first `a` clears.
+	_ = m.Update(keyPressRune('a'))
+	// pick one partition manually so we are now in a partial state.
+	_ = m.Update(keyPressRune(' ')) // toggle partition 0 on
+	// partial state → next `a` should pull to "all".
+	_ = m.Update(keyPressRune('a'))
+	cmd = m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	assert.Empty(t, m.PartitionFilter(), "all selected serializes to empty filter")
+}
+
+func TestPartitions_InvalidInputBlocksEnter(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{0: {Low: 0, High: 5}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+	_ = m.Update(keyPress("tab"))
 	for _, r := range "abc" {
 		_ = m.Update(keyPressRune(r))
 	}
 	_ = m.Update(keyPress("enter"))
 
-	assert.Equal(t, messages.ModePartitions, m.CurrentMode())
+	assert.Equal(t, messages.ModePartitions, m.CurrentMode(), "invalid input must keep popup open")
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+}
+
+func TestPartitions_RenderShowsScrollHintsForLargeTopic(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{}
+	for i := range int32(50) {
+		svc.watermarks[i] = kafka.PartitionWatermarks{Low: 0, High: 1}
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+
+	view := stripANSI(m.View())
+	// at top: cursor at 0, only down-indicator should appear.
+	assert.Contains(t, view, "more")
+}
+
+func TestReset_RClearsFilterAndSeek(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	// set a non-default state via the partition popup.
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+	_ = m.Update(keyPress("tab"))
+	for _, r := range "1" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd = m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	require.Equal(t, []int32{1}, m.PartitionFilter())
+
+	// R resets.
+	cmd = m.Update(keyPressRune('R'))
+	drive(t, m, cmd)
+
+	assert.Empty(t, m.PartitionFilter())
+	assert.Equal(t, messages.SeekLatest, m.SeekState().Mode)
 }
 
 // ----- smart filter stub -----
@@ -320,6 +436,204 @@ func TestHeader_DescribesActiveSeekAndPartitions(t *testing.T) {
 }
 
 // ----- live tail via seek -----
+
+func TestSeek_LiveClearsHistoricalMessages(t *testing.T) {
+	// switching to live must drop any previously-loaded historical
+	// messages — live tail is a stream of only new records.
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("old-1"), Timestamp: now},
+		{Topic: "orders", Partition: 0, Offset: 2, Value: []byte("old-2"), Timestamp: now},
+	}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+	require.Len(t, m.Messages(), 2, "lastN must populate the screen first")
+
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+
+	assert.Empty(t, m.Messages(), "switching to live must clear old messages")
+	assert.True(t, m.Following())
+}
+
+func TestStaleMessagesAppendedDroppedAfterReset(t *testing.T) {
+	// `[` issues a paging cmd; before its result lands the user resets the
+	// view. The stale MessagesAppendedMsg must be dropped, otherwise the
+	// pre-reset payload would prepend onto the fresh latest screen.
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 5, Value: []byte("a")}}
+	svc.earlier = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 4, Value: []byte("stale")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	pagingCmd := m.Update(keyPress("["))
+	require.NotNil(t, pagingCmd)
+
+	// reset bumps fetchGen twice (stopFollow + dispatchSeek), making the
+	// in-flight paging gen stale.
+	resetCmd := m.Update(keyPressRune('R'))
+	drive(t, m, resetCmd)
+
+	// now drive the stale paging cmd.
+	drive(t, m, pagingCmd)
+
+	for _, msg := range m.Messages() {
+		assert.NotEqual(t, []byte("stale"), msg.Value, "stale paging payload must not appear post-reset")
+	}
+}
+
+func TestStaleFollowChunkDroppedAfterFlipOutOfLive(t *testing.T) {
+	// while in live, a chunk could already be sitting in the channel buffer
+	// when the user steps via `[` and the screen flips to latest. The
+	// chunk's stale Gen must cause it to be discarded by handleFollowChunk.
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a"), Timestamp: now}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	drive(t, m, m.Init())
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following())
+
+	// flip out of live: bumps fetchGen twice (stopFollow + dispatchSeek).
+	flipCmd := m.Update(keyPress("["))
+	drive(t, m, flipCmd)
+	require.False(t, m.Following())
+	preFlip := append([]kafka.Message(nil), m.Messages()...)
+
+	// stale chunk arrives carrying an outdated Gen — Gen=0 is guaranteed
+	// stale because every dispatchSeek/stopFollow only ever increments.
+	_ = m.Update(messages.FollowChunkMsg{
+		Gen:      0,
+		Messages: []kafka.Message{{Topic: "orders", Value: []byte("stale-live"), Timestamp: now}},
+	})
+
+	for _, msg := range m.Messages() {
+		assert.NotEqual(t, []byte("stale-live"), msg.Value, "stale follow chunk must not bleed into latest")
+	}
+	assert.Len(t, m.Messages(), len(preFlip), "stale chunk must not change message count")
+}
+
+func TestPartitions_InputUpdatesCheckboxes(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+
+	// switch to input and type "0,2" — checkboxes must follow.
+	_ = m.Update(keyPress("tab"))
+	for _, r := range "0,2" {
+		_ = m.Update(keyPressRune(r))
+	}
+
+	// rendering uses `[×]` for ticked, `[ ]` for unticked.
+	view := stripANSI(m.View())
+	assert.Contains(t, view, "[×] 0", "input edit must tick partition 0 in the checkbox list")
+	assert.Contains(t, view, "[×] 2", "input edit must tick partition 2 in the checkbox list")
+	assert.Contains(t, view, "[ ] 1", "partition 1 must be unticked")
+
+	// applying preserves the input-driven selection end-to-end.
+	cmd = m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	assert.Equal(t, []int32{0, 2}, m.PartitionFilter())
+}
+
+func TestPartitions_LoadErrorShowsFallback(t *testing.T) {
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarksErr = errors.New("metadata down")
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+
+	view := stripANSI(m.View())
+	assert.Contains(t, view, "load failed", "load error must be surfaced in the popup")
+	assert.Contains(t, view, "metadata down")
+
+	// fallback path: text input still works for valid syntax even without
+	// the partition list.
+	_ = m.Update(keyPress("tab"))
+	for _, r := range "0,3" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd = m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	assert.Equal(t, []int32{0, 3}, m.PartitionFilter())
+}
+
+func TestBracket_ToOffsetEndOfSeekWindowToast(t *testing.T) {
+	svc := newFakeService()
+	svc.earlier = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 100, Value: []byte("v")}}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	// open seek, pick "to offset" (4), prefill empty, type 0:100.
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('4'))
+	for range 50 {
+		_ = m.Update(keyPress("backspace"))
+	}
+	for _, r := range "0:100" {
+		_ = m.Update(keyPressRune(r))
+	}
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+
+	// now the boundary {0:101} is captured and m.messages = [{0,100}].
+	// `]` must hit the boundary and surface the dedicated toast.
+	before := m.Toasts().Len()
+	_ = m.Update(keyPress("]"))
+	require.Greater(t, m.Toasts().Len(), before)
+	last := m.Toasts().Items()[m.Toasts().Len()-1].Message
+	assert.Contains(t, last, "end of seek window")
+}
+
+func TestStaleMessagesLoadedDroppedAfterSeekChange(t *testing.T) {
+	// Race: a MessagesLoadedMsg from a prior dispatch arrives after the
+	// user has switched to live. Without generation tagging the stale
+	// payload would replace the cleared screen with historical messages.
+	now := time.Now()
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Offset: 1, Value: []byte("old"), Timestamp: now}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Now: func() time.Time { return now }})
+	initCmd := m.Init() // produces MessagesLoadedMsg eventually
+
+	// switch to live before the initial load is delivered.
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following())
+
+	// now drive the deferred init cmd: it returns a stale MessagesLoadedMsg
+	// which the handler must drop.
+	drive(t, m, initCmd)
+
+	assert.Empty(t, m.Messages(), "stale historical fetch must not bleed into live mode")
+	assert.True(t, m.Following())
+}
 
 func TestSeek_LiveStartsFollow(t *testing.T) {
 	now := time.Now()
@@ -526,6 +840,38 @@ func TestPersistence_RestoreDropsDeadPartitions(t *testing.T) {
 	assert.Equal(t, []int32{0}, m.PartitionFilter())
 }
 
+func TestPersistence_RestoreCancelsRacingLive(t *testing.T) {
+	// race: between Init and the async viewRestoredMsg arriving, the user
+	// triggers `s 7` (live). The restore must cancel that live before
+	// applying the persisted state, otherwise a late FollowStartedMsg
+	// attaches a session inconsistent with the restored seek mode.
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{0: {Low: 0, High: 10}}
+	msgCh := make(chan kafka.Message)
+	errCh := make(chan error)
+	svc.followSession = &kafka.FollowSession{Messages: msgCh, Errors: errCh}
+
+	repo := newFakeRepo()
+	repo.saved["c1\x00orders"] = messages.ViewState{SeekMode: messages.SeekLatest}
+
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
+
+	// initiate restore but do not drive it yet — model is in initial state.
+	initCmd := m.Init()
+
+	// user races a live request in.
+	_ = m.Update(keyPressRune('s'))
+	_ = m.Update(keyPressRune('7'))
+	require.True(t, m.Following(), "live must be active before restore arrives")
+
+	// now deliver the restore — it should cancel the racing live.
+	drive(t, m, initCmd)
+
+	assert.False(t, m.Following(), "restore must cancel racing live")
+	assert.Equal(t, messages.SeekLatest, m.SeekState().Mode)
+}
+
 func TestPersistence_RestoreClampsOffsetAboveLatest(t *testing.T) {
 	svc := newFakeService()
 	svc.atOffset = []kafka.Message{{Topic: "orders", Partition: 0, Offset: 9, Value: []byte("clamped")}}
@@ -550,15 +896,23 @@ func TestPersistence_RestoreClampsOffsetAboveLatest(t *testing.T) {
 func TestPersistence_PartitionsSubmitWritesView(t *testing.T) {
 	svc := newFakeService()
 	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+		3: {Low: 0, High: 5},
+	}
 	repo := newFakeRepo()
 	m := messages.New(messages.Options{Service: svc, Topic: "orders", Cluster: "c1", ViewState: repo})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPressRune('P'))
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+	_ = m.Update(keyPress("tab"))
 	for _, r := range "0,3" {
 		_ = m.Update(keyPressRune(r))
 	}
-	cmd := m.Update(keyPress("enter"))
+	cmd = m.Update(keyPress("enter"))
 	drive(t, m, cmd)
 
 	require.NotNil(t, repo.saved["c1\x00orders"])
@@ -631,16 +985,17 @@ type offsetCall struct {
 }
 
 type fakeService struct {
-	mu           sync.Mutex
-	lastN        []kafka.Message
-	earliest     []kafka.Message
-	earlier      []kafka.Message
-	later        []kafka.Message
-	atOffset     []kafka.Message
-	atTimestamp  []kafka.Message
-	watermarks   map[int32]kafka.PartitionWatermarks
-	offsetsForTs map[int32]int64
-	err          error
+	mu            sync.Mutex
+	lastN         []kafka.Message
+	earliest      []kafka.Message
+	earlier       []kafka.Message
+	later         []kafka.Message
+	atOffset      []kafka.Message
+	atTimestamp   []kafka.Message
+	watermarks    map[int32]kafka.PartitionWatermarks
+	watermarksErr error
+	offsetsForTs  map[int32]int64
+	err           error
 
 	lastPartitions      []int32
 	lastEarlierBaseline map[int32]int64
@@ -680,8 +1035,20 @@ func (f *fakeService) FetchAtOffset(_ context.Context, _ string, p int32, off in
 func (f *fakeService) FetchAtOffsets(_ context.Context, _ string, offsets map[int32]int64, _ int) ([]kafka.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// mirror the real client: clamp each requested offset against the
+	// partition's watermarks before recording the call. This lets screen
+	// tests assert that the right post-clamp offsets reach the kafka layer.
 	for p, o := range offsets {
-		f.atOffsetCalls = append(f.atOffsetCalls, offsetCall{partition: p, offset: o})
+		clamped := o
+		if w, ok := f.watermarks[p]; ok {
+			if clamped < w.Low {
+				clamped = w.Low
+			}
+			if clamped >= w.High {
+				clamped = w.High - 1
+			}
+		}
+		f.atOffsetCalls = append(f.atOffsetCalls, offsetCall{partition: p, offset: clamped})
 	}
 	return append([]kafka.Message(nil), f.atOffset...), f.err
 }
@@ -713,6 +1080,9 @@ func (f *fakeService) FetchLater(_ context.Context, _ string, baseline map[int32
 func (f *fakeService) WatermarksFor(_ context.Context, _ string, parts []int32) (map[int32]kafka.PartitionWatermarks, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.watermarksErr != nil {
+		return nil, f.watermarksErr
+	}
 	if f.watermarks == nil {
 		return map[int32]kafka.PartitionWatermarks{}, nil
 	}
