@@ -13,6 +13,20 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/topics"
 )
 
+// requiresClient reports whether id can only be instantiated once a Kafka
+// client is connected. Kept in sync with the `m.client != nil` guards in
+// [Model.instantiate].
+func requiresClient(id ScreenID) bool {
+	switch id {
+	case ScreenTopics, ScreenTopicConfigs, ScreenTopicConfigEdit,
+		ScreenMessages, ScreenProduce, ScreenGroups:
+		return true
+	case ScreenClusters, ScreenLogs, ScreenConfigSrc, ScreenHelpOverlay:
+		return false
+	}
+	return false
+}
+
 // instantiate constructs the screen for id. When boot is nil or required
 // deps are absent, the active screen is left nil and renderBody falls back
 // to the placeholder.

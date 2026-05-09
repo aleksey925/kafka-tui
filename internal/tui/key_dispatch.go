@@ -3,6 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/filterhistory"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
@@ -136,6 +137,25 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeNormal
 		m.command = layout.CommandBar{}
 		m.applySize()
+		// guard cluster-bound screens so `:topics` / `:groups` from the
+		// clusters picker don't leave the user on a blank placeholder.
+		// the toast is pushed to the active screen so promoteFlash surfaces
+		// it through the global flash bar — k9s-style — instead of an
+		// inline error glued to the command prompt. when the active screen
+		// has no toast queue (e.g. configsrc), bounce to the clusters
+		// picker so the warning has somewhere to land and the next obvious
+		// action is right there.
+		if requiresClient(cmd.Screen) && m.client == nil {
+			if q, ok := activeToastQueue(m.active); ok {
+				q.Push(components.ToastWarning, "connect to a cluster first")
+				return m, nil
+			}
+			next := m.replaceScreen(ScreenClusters, "")
+			if q, ok := activeToastQueue(m.active); ok {
+				q.Push(components.ToastWarning, "connect to a cluster first")
+			}
+			return m, next
+		}
 		next := m.replaceScreen(cmd.Screen, cmd.Arg)
 		return m, next
 	case "tab":

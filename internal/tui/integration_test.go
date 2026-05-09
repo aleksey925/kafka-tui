@@ -647,6 +647,80 @@ func TestCommand_LogsAndConfigSourcesPushScreens(t *testing.T) {
 	assert.Contains(t, out, "Config Sources")
 }
 
+func TestCommand_RequiresClientGuardsClusterScreens(t *testing.T) {
+	for _, name := range []string{"topics", "groups"} {
+		t.Run(name, func(t *testing.T) {
+			// arrange — fresh model per case so a leftover toast from an
+			// earlier run can't satisfy this run's assertion via flash echo.
+			m := newGuardHost(t)
+
+			// act
+			feed(m, ":")
+			for _, r := range name {
+				feed(m, r)
+			}
+			_, cmd := m.Update(keyPress("enter"))
+			drainCmd(t, m, cmd)
+
+			// assert
+			assert.Equal(t, tui.ModeNormal, m.Mode(), "command prompt must close")
+			assert.Equal(t, tui.ScreenClusters, m.Router().Active(), "must not navigate away from clusters")
+			out := m.Render()
+			assert.Contains(t, out, "connect to a cluster first", "guard toast must surface in the flash bar")
+			assert.NotContains(t, out, "coming soon", "must not leave the user on a placeholder")
+		})
+	}
+}
+
+// TestCommand_RequiresClientGuardsFallbackFromConfigSources pins the fallback
+// path for screens without a toast queue: typing `:topics` from the configsrc
+// screen (which can't surface toasts) must redirect the user back to the
+// clusters picker with the guard warning attached, instead of swallowing it
+// silently.
+func TestCommand_RequiresClientGuardsFallbackFromConfigSources(t *testing.T) {
+	// arrange — start on clusters, then jump to configsrc via `:config sources`.
+	m := newGuardHost(t)
+	feed(m, ":", 'c', 'o', 'n', 'f', 'i', 'g', ' ', 's', 'o', 'u', 'r', 'c', 'e', 's')
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Equal(t, tui.ScreenConfigSrc, m.Router().Active(), "precondition: must reach configsrc")
+
+	// act — type `:topics` from configsrc with no client connected.
+	feed(m, ":", 't', 'o', 'p', 'i', 'c', 's')
+	_, cmd = m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+
+	// assert — guard must bounce us back to clusters and surface the warning.
+	assert.Equal(t, tui.ModeNormal, m.Mode())
+	assert.Equal(t, tui.ScreenClusters, m.Router().Active(), "guard must redirect to clusters when active screen has no toast queue")
+	assert.Contains(t, m.Render(), "connect to a cluster first")
+}
+
+func newGuardHost(t *testing.T) *tui.Model {
+	t.Helper()
+	loaded := &config.Loaded{
+		Config:   config.Defaults(),
+		Clusters: []config.Cluster{{Name: "alpha", Brokers: []string{"a:9092"}}},
+		Sources: config.Sources{
+			Config:   map[string]config.Source{},
+			Clusters: map[string]map[string]config.Source{},
+		},
+	}
+	boot := &tui.Bootstrap{
+		Loaded:   loaded,
+		Clusters: loaded.Clusters,
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+	}
+	return tui.New(tui.Options{
+		Initial:   tui.ScreenClusters,
+		Width:     120,
+		Height:    30,
+		Bootstrap: boot,
+	})
+}
+
 // TestConnect_DialsAndPushesTopics drives the cluster→topics connect path
 // against a real kfake broker, exercising connectCluster, replaceScreen,
 // instantiate(topics), updateHeaderForActive, findCluster, newTopics, and

@@ -138,6 +138,8 @@ func TestRouter_ReplaceOnEmpty(t *testing.T) {
 }
 
 func TestModel_CommandModeRoutesScreen(t *testing.T) {
+	// `:logs` is used here because it doesn't require a connected client —
+	// `:topics` is blocked from the clusters screen until a cluster is selected.
 	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
 
 	// open command bar
@@ -145,12 +147,12 @@ func TestModel_CommandModeRoutesScreen(t *testing.T) {
 	m = updated.(*tui.Model)
 	assert.Equal(t, tui.ModeCommand, m.Mode())
 
-	// type "topics"
-	for _, ch := range "topics" {
+	// type "logs"
+	for _, ch := range "logs" {
 		updated, _ = m.Update(keyPressRune(ch))
 		m = updated.(*tui.Model)
 	}
-	assert.Equal(t, "topics", m.CommandBuffer())
+	assert.Equal(t, "logs", m.CommandBuffer())
 
 	// submit
 	updated, _ = m.Update(keyPress("enter"))
@@ -158,7 +160,7 @@ func TestModel_CommandModeRoutesScreen(t *testing.T) {
 
 	assert.Equal(t, tui.ModeNormal, m.Mode())
 	assert.Empty(t, m.CommandBuffer())
-	assert.Equal(t, tui.ScreenTopics, m.Router().Active())
+	assert.Equal(t, tui.ScreenLogs, m.Router().Active())
 }
 
 func TestModel_CommandUnknownStaysInCommandMode(t *testing.T) {
@@ -307,12 +309,15 @@ func TestModel_CommandTabCompletion__backspace_updates_suggestion(t *testing.T) 
 }
 
 func TestModel_CommandTabCompletion__tab_then_enter(t *testing.T) {
+	// `:logs` is used here because it doesn't require a connected client —
+	// `:groups` and `:topics` are blocked from the clusters screen until a
+	// cluster is selected.
 	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
 
 	// arrange
 	updated, _ := m.Update(keyPress(":"))
 	m = updated.(*tui.Model)
-	for _, ch := range "gr" {
+	for _, ch := range "lo" {
 		updated, _ = m.Update(keyPressRune(ch))
 		m = updated.(*tui.Model)
 	}
@@ -320,14 +325,14 @@ func TestModel_CommandTabCompletion__tab_then_enter(t *testing.T) {
 	// act — Tab then Enter
 	updated, _ = m.Update(keyPress("tab"))
 	m = updated.(*tui.Model)
-	assert.Equal(t, "groups", m.CommandBuffer())
+	assert.Equal(t, "logs", m.CommandBuffer())
 
 	updated, _ = m.Update(keyPress("enter"))
 	m = updated.(*tui.Model)
 
 	// assert
 	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Equal(t, tui.ScreenGroups, m.Router().Active())
+	assert.Equal(t, tui.ScreenLogs, m.Router().Active())
 }
 
 func TestModel_SearchModeOpensPromptAndForwardsToScreen(t *testing.T) {
