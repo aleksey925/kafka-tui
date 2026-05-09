@@ -67,8 +67,10 @@ func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 	return c, nil
 }
 
-// View renders the confirm dialog. Pass width=0 for automatic sizing.
-func (c *Confirm) View(width int) string {
+// View renders the confirm dialog as a centered modal. width and height
+// are the body-area dimensions to center within; pass 0 for either axis
+// to skip placement on that axis.
+func (c *Confirm) View(width, height int) string {
 	hint := c.styles.HintKey.Render(c.YesKey) + c.styles.HintLabel.Render(" yes  ") +
 		c.styles.HintKey.Render(c.NoKey) + c.styles.HintLabel.Render(" no")
 
@@ -87,8 +89,12 @@ func (c *Confirm) View(width int) string {
 		Foreground(c.styles.Palette.Foreground).
 		Render(strings.Join(body, "\n"))
 
-	if width <= 0 {
-		return box
+	placed := box
+	if width > 0 {
+		placed = lipgloss.PlaceHorizontal(width, lipgloss.Center, placed)
 	}
-	return lipgloss.PlaceHorizontal(width, lipgloss.Center, box)
+	if height > 0 {
+		placed = lipgloss.PlaceVertical(height, lipgloss.Center, placed)
+	}
+	return placed
 }

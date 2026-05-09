@@ -756,11 +756,10 @@ func (m *Model) View() string {
 		return m.reset.View()
 	case ModeList:
 	}
-	parts := []string{m.table.View()}
 	if m.confirm != nil {
-		parts = append(parts, m.confirm.View(m.width))
+		return m.confirm.View(m.width, m.height)
 	}
-	return strings.Join(parts, "\n")
+	return m.table.View()
 }
 
 // ----- Messages -----

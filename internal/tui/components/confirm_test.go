@@ -1,6 +1,7 @@
 package components_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,7 +48,7 @@ func TestConfirm_Reset(t *testing.T) {
 
 func TestConfirm_ViewIncludesTitleMessageHints(t *testing.T) {
 	c := components.NewConfirm("Delete topic", "topic-name will be removed")
-	out := c.View(0)
+	out := c.View(0, 0)
 	assert.Contains(t, out, "Delete topic")
 	assert.Contains(t, out, "topic-name will be removed")
 	assert.Contains(t, out, "y")
@@ -58,13 +59,21 @@ func TestConfirm_ViewIncludesTitleMessageHints(t *testing.T) {
 
 func TestConfirm_ViewCenteredAtWidth(t *testing.T) {
 	c := components.NewConfirm("t", "m")
-	out := c.View(80)
-	// the placed string has trailing spaces or a centered box; just sanity-check
-	// that it renders something non-empty.
+	out := c.View(80, 0)
 	assert.NotEmpty(t, out)
+}
+
+func TestConfirm_ViewVerticallyCentered(t *testing.T) {
+	c := components.NewConfirm("Delete", "msg")
+	out := c.View(80, 24)
+	// vertical centering expands the rendered output to the full height,
+	// so the line count must match (modulo trailing newline noise).
+	lines := len(strings.Split(out, "\n"))
+	assert.Equal(t, 24, lines, "view must fill the full height to center the box")
+	assert.Contains(t, out, "Delete")
 }
 
 func TestWithConfirmStyles_AppliesPalette(t *testing.T) {
 	c := components.NewConfirm("Title", "Body", components.WithConfirmStyles(theme.DefaultStyles()))
-	assert.NotEmpty(t, c.View(40))
+	assert.NotEmpty(t, c.View(40, 0))
 }
