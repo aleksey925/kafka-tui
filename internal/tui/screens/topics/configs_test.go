@@ -191,7 +191,7 @@ func TestConfigsScreen_ViewportScrollsWithCursor(t *testing.T) {
 	// page down repeatedly — viewport must follow until the bottom row
 	// is reachable.
 	for range 4 {
-		_ = m.Update(keyPress("ctrl+d"))
+		_ = m.Update(keyPress("ctrl+f"))
 	}
 	out = m.View()
 	assert.Contains(t, out, "delete.retention.ms")

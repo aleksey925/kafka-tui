@@ -160,10 +160,10 @@ func TestReadOnly_BlocksMutatingHotkeys(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc, ReadOnly: true})
 	drive(t, m, m.Init())
 
-	for _, k := range []string{"n", "D", "y", "p"} {
+	for _, k := range []string{"n", "ctrl+d", "y", "p"} {
 		_ = m.Update(keyPress(k))
 		assert.Empty(t, m.ConsumeAction().Produce, "p must not raise produce in RO")
-		assert.False(t, m.ConfirmOpen(), "D must not open confirm in RO")
+		assert.False(t, m.ConfirmOpen(), "ctrl+d must not open confirm in RO")
 		assert.Equal(t, topics.ModeList, m.CurrentMode(), "n/y must not enter overlay in RO")
 		// each blocked key produces a warning toast
 	}
@@ -176,7 +176,7 @@ func TestDelete_ConfirmYesTriggersDeleteCmd(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("ctrl+d"))
 	assert.True(t, m.ConfirmOpen())
 	assert.Equal(t, "alpha", m.PendingTopic())
 
@@ -191,7 +191,7 @@ func TestDelete_ConfirmNoCancels(t *testing.T) {
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("ctrl+d"))
 	require.True(t, m.ConfirmOpen())
 
 	_ = m.Update(keyPress("n"))
@@ -729,10 +729,18 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyRight}
 	case "ctrl+s":
 		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
+	case "ctrl+b":
+		return tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}
 	case "ctrl+d":
 		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
+	case "ctrl+f":
+		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}
 	case "ctrl+u":
 		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
+	case "pgup":
+		return tea.KeyPressMsg{Code: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyPressMsg{Code: tea.KeyPgDown}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

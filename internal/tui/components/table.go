@@ -207,9 +207,9 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 		t.move(+1)
 	case "k", "up":
 		t.move(-1)
-	case "ctrl+d":
+	case "ctrl+f", "pgdown":
 		t.move(+t.pageStep())
-	case "ctrl+u":
+	case "ctrl+b", "pgup":
 		t.move(-t.pageStep())
 	case "G":
 		t.cursor = max(0, len(t.view)-1)
@@ -274,9 +274,9 @@ func (t *Table) move(delta int) {
 
 func (t *Table) pageStep() int {
 	if t.height > 1 {
-		return t.height / 2
+		return t.height - 1
 	}
-	return 5
+	return 1
 }
 
 func (t *Table) clampViewport() {

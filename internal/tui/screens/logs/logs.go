@@ -175,8 +175,8 @@ func (m *Model) bindings() []keymap.Binding {
 		{Keys: []string{"N"}, Label: "previous match", Category: "Search", Hint: true, Handler: m.actPrevMatch},
 		{Keys: []string{"j", "down"}, Label: "scroll down", Category: "Movement", Handler: m.actMoveDown},
 		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: m.actMoveUp},
-		{Keys: []string{"ctrl+d"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
-		{Keys: []string{"ctrl+u"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
+		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
+		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
 		// `gg` is a two-key chord; first `g` arms, second fires.
 		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Hint: true, Handler: m.actChordG},
 		{Keys: []string{"G"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
@@ -261,9 +261,9 @@ func (m *Model) move(delta int) {
 func (m *Model) pageStep() int {
 	h := m.bodyHeight()
 	if h > 1 {
-		return h / 2
+		return h - 1
 	}
-	return 5
+	return 1
 }
 
 func (m *Model) jumpMatch(direction int) {

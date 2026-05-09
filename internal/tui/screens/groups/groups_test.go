@@ -144,7 +144,7 @@ func TestReadOnly_BlocksDestructiveHotkeys(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc, ReadOnly: true})
 	drive(t, m, m.Init())
 
-	for _, k := range []string{"R", "D"} {
+	for _, k := range []string{"R", "ctrl+d"} {
 		_ = m.Update(keyPress(k))
 		assert.False(t, m.ConfirmOpen(), "%s must not open confirm in RO", k)
 		assert.NotEqual(t, groups.ModeReset, m.CurrentMode(), "%s must not enter reset in RO", k)
@@ -158,7 +158,7 @@ func TestDelete_ConfirmYesTriggersDelete(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("ctrl+d"))
 	require.True(t, m.ConfirmOpen())
 	assert.Equal(t, "g1", m.PendingGroup())
 
@@ -175,7 +175,7 @@ func TestDelete_NonEmptyShowsError(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("ctrl+d"))
 	cmd := m.Update(keyPress("y"))
 	drive(t, m, cmd)
 
@@ -191,7 +191,7 @@ func TestDelete_ConfirmNoCancels(t *testing.T) {
 	m := groups.New(groups.Options{Service: svc})
 	drive(t, m, m.Init())
 
-	_ = m.Update(keyPress("D"))
+	_ = m.Update(keyPress("ctrl+d"))
 	require.True(t, m.ConfirmOpen())
 	_ = m.Update(keyPress("n"))
 	assert.False(t, m.ConfirmOpen())
@@ -1355,6 +1355,8 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "shift+r":
 		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModShift}
+	case "ctrl+d":
+		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

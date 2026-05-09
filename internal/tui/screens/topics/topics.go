@@ -289,7 +289,7 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"n"}, Label: "new topic", Category: "Mutating", Hint: true, Handler: m.actNewTopic},
 		{Keys: []string{"y"}, Label: "clone topic", Category: "Mutating", Hint: true, Handler: m.actCloneTopic},
 		{Keys: []string{"p"}, Label: "produce to topic", Category: "Mutating", Hint: true, Handler: m.actProduceTopic},
-		{Keys: []string{"D"}, Label: "delete topic", Category: "Mutating", Hint: true, Handler: m.actDeleteTopic},
+		{Keys: []string{"ctrl+d"}, Label: "delete topic", Category: "Mutating", Hint: true, Handler: m.actDeleteTopic},
 	}
 	if m.readOnly {
 		for i := range mut {

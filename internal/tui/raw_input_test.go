@@ -20,6 +20,7 @@ type fakeScreen struct {
 	hasOverlay     bool
 	closed         int
 	keys           []string
+	filter         string
 }
 
 func (s *fakeScreen) Init() tea.Cmd { return nil }
@@ -43,8 +44,8 @@ func (s *fakeScreen) SetRefreshPaused(bool)          {}
 func (s *fakeScreen) LastRefresh() time.Time         { return time.Time{} }
 func (s *fakeScreen) SupportsRefresh() bool          { return false }
 func (s *fakeScreen) SearchAvailable() bool          { return s.supportsSearch }
-func (s *fakeScreen) SetSearch(string)               {}
-func (s *fakeScreen) ActiveFilter() string           { return "" }
+func (s *fakeScreen) SetSearch(q string)             { s.filter = q }
+func (s *fakeScreen) ActiveFilter() string           { return s.filter }
 func (s *fakeScreen) HasOverlay() bool               { return s.hasOverlay }
 func (s *fakeScreen) Close()                         { s.closed++ }
 
@@ -159,6 +160,23 @@ func TestRender_WrapsBodyInFrameWithTitleAndBreadcrumb(t *testing.T) {
 	assert.Contains(t, out, "╯")
 }
 
+// TestHandleNormalKey_CtrlUInRawInputIsLiteral pins the produce-form
+// contract: when the active screen is a raw-input form, ctrl+u must be
+// forwarded literally instead of triggering the host's clear-filter
+// handler.
+func TestHandleNormalKey_CtrlUInRawInputIsLiteral(t *testing.T) {
+	m := New(Options{Initial: ScreenTopics, Width: 80, Height: 24})
+	fake := &fakeScreen{rawInput: true}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+u"))
+
+	assert.Equal(t, []string{"ctrl+u"}, fake.keys,
+		"raw-input screen must receive ctrl+u as a literal")
+	assert.NotContains(t, m.Render(), "filter already empty",
+		"host must not surface clear-filter toast on raw-input screens")
+}
+
 func TestHandleNormalKey_CtrlCQuitsEvenInRawInput(t *testing.T) {
 	m := New(Options{Initial: ScreenTopics, Width: 80, Height: 24})
 	fake := &fakeScreen{rawInput: true}
@@ -227,6 +245,60 @@ func TestEsc_NoOverlayPopsScreen(t *testing.T) {
 	_, _ = m.Update(keyMsg("esc"))
 
 	assert.Equal(t, 1, m.router.Depth(), "host must pop when no overlay is active")
+}
+
+// TestEsc_ClearsFilterAndPopsInOnePress pins k9s parity: esc with an
+// active filter wipes it AND pops the screen in a single keypress —
+// not the older two-press cascade.
+func TestEsc_ClearsFilterAndPopsInOnePress(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	m.router.Push(ScreenClusters)
+	m.router.Push(ScreenTopics)
+	require.Equal(t, 2, m.router.Depth())
+	fake := &fakeScreen{supportsSearch: true, filter: "foo"}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("esc"))
+
+	assert.Empty(t, fake.filter, "filter must be cleared on the way out")
+	assert.Equal(t, 1, m.router.Depth(), "screen must pop in the same keypress")
+}
+
+// TestCtrlU_ClearsFilterAndStaysOnScreen pins k9s parity at non-root
+// depth: ctrl+u with an active filter wipes it AND keeps the user on
+// the same screen (no pop, unlike esc). Mirror of the esc test above.
+func TestCtrlU_ClearsFilterAndStaysOnScreen(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	m.router.Push(ScreenClusters)
+	m.router.Push(ScreenTopics)
+	require.Equal(t, 2, m.router.Depth())
+	fake := &fakeScreen{supportsSearch: true, filter: "foo"}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+u"))
+
+	assert.Empty(t, fake.filter, "filter must be cleared")
+	assert.Equal(t, 2, m.router.Depth(), "ctrl+u must NOT pop the screen")
+	assert.Empty(t, fake.keys,
+		"ctrl+u with an active filter must be swallowed before forwarding")
+}
+
+// TestCtrlU_EmptyFilterIsNoOp pins the k9s passthrough: ctrl+u with no
+// active filter is silent — no toast, no clear, no pop.
+func TestCtrlU_EmptyFilterIsNoOp(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	m.router.Push(ScreenClusters)
+	m.router.Push(ScreenTopics)
+	require.Equal(t, 2, m.router.Depth())
+	fake := &fakeScreen{supportsSearch: true}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+u"))
+
+	assert.Empty(t, fake.filter)
+	assert.Equal(t, 2, m.router.Depth(), "ctrl+u with no filter must not pop")
+	assert.NotContains(t, m.Render(), "filter already empty",
+		"empty-filter ctrl+u must not surface a toast (k9s parity)")
 }
 
 // TestPushScreen_ClosesPreviousActive pins the lifecycle contract:

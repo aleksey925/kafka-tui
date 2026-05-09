@@ -318,7 +318,7 @@ func (m *Model) listBindings() []keymap.Binding {
 	}
 	mut := []keymap.Binding{
 		{Keys: []string{"R"}, Label: "reset group offsets", Category: "Mutating", Hint: true, Handler: m.openReset},
-		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: m.openDeleteConfirm},
+		{Keys: []string{"ctrl+d"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: m.openDeleteConfirm},
 	}
 	if m.readOnly {
 		for i := range mut {

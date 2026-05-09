@@ -50,15 +50,21 @@ func TestTable_NavigationGGandG(t *testing.T) {
 	assert.Equal(t, 0, tbl.Cursor())
 }
 
-func TestTable_NavigationCtrlDU(t *testing.T) {
+func TestTable_NavigationPaging(t *testing.T) {
 	tbl := components.NewTable(simpleColumns())
 	tbl.SetHeight(10)
 	tbl.SetRows(simpleRows(50))
 
-	tbl, _ = tbl.Update(keyPressMsg("ctrl+d"))
-	assert.Equal(t, 5, tbl.Cursor())
+	tbl, _ = tbl.Update(keyPressMsg("ctrl+f"))
+	assert.Equal(t, 9, tbl.Cursor())
 
-	tbl, _ = tbl.Update(keyPressMsg("ctrl+u"))
+	tbl, _ = tbl.Update(keyPressMsg("ctrl+b"))
+	assert.Equal(t, 0, tbl.Cursor())
+
+	tbl, _ = tbl.Update(keyPressMsg("pgdown"))
+	assert.Equal(t, 9, tbl.Cursor())
+
+	tbl, _ = tbl.Update(keyPressMsg("pgup"))
 	assert.Equal(t, 0, tbl.Cursor())
 }
 
@@ -398,40 +404,33 @@ func reverse(s string) string {
 	return string(r)
 }
 
+var keyPressTable = map[string]tea.KeyPressMsg{
+	"enter":     {Code: tea.KeyEnter},
+	"esc":       {Code: tea.KeyEscape},
+	"backspace": {Code: tea.KeyBackspace},
+	"tab":       {Code: tea.KeyTab},
+	"shift+tab": {Code: tea.KeyTab, Mod: tea.ModShift},
+	"ctrl+a":    {Code: 'a', Mod: tea.ModCtrl},
+	"ctrl+b":    {Code: 'b', Mod: tea.ModCtrl},
+	"ctrl+d":    {Code: 'd', Mod: tea.ModCtrl},
+	"ctrl+f":    {Code: 'f', Mod: tea.ModCtrl},
+	"ctrl+u":    {Code: 'u', Mod: tea.ModCtrl},
+	"pgup":      {Code: tea.KeyPgUp},
+	"pgdown":    {Code: tea.KeyPgDown},
+	"down":      {Code: tea.KeyDown},
+	"up":        {Code: tea.KeyUp},
+	"left":      {Code: tea.KeyLeft},
+	"right":     {Code: tea.KeyRight},
+	"home":      {Code: tea.KeyHome},
+	"end":       {Code: tea.KeyEnd},
+	"delete":    {Code: tea.KeyDelete},
+	" ":         {Code: ' ', Text: " "},
+	"space":     {Code: ' ', Text: " "},
+}
+
 func keyPressMsg(name string) tea.KeyPressMsg {
-	switch name {
-	case "enter":
-		return tea.KeyPressMsg{Code: tea.KeyEnter}
-	case "esc":
-		return tea.KeyPressMsg{Code: tea.KeyEscape}
-	case "backspace":
-		return tea.KeyPressMsg{Code: tea.KeyBackspace}
-	case "tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-	case "ctrl+a":
-		return tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl}
-	case "ctrl+d":
-		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
-	case "ctrl+u":
-		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
-	case "down":
-		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "up":
-		return tea.KeyPressMsg{Code: tea.KeyUp}
-	case "left":
-		return tea.KeyPressMsg{Code: tea.KeyLeft}
-	case "right":
-		return tea.KeyPressMsg{Code: tea.KeyRight}
-	case "home":
-		return tea.KeyPressMsg{Code: tea.KeyHome}
-	case "end":
-		return tea.KeyPressMsg{Code: tea.KeyEnd}
-	case "delete":
-		return tea.KeyPressMsg{Code: tea.KeyDelete}
-	case " ", "space":
-		return tea.KeyPressMsg{Code: ' ', Text: " "}
+	if msg, ok := keyPressTable[name]; ok {
+		return msg
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

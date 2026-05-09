@@ -197,8 +197,8 @@ func (m *ConfigsModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"up", "k"}, Label: "previous", Category: "Topic", Handler: m.actUp},
 		{Keys: []string{"down", "j"}, Label: "next", Category: "Topic", Handler: m.actDown},
-		{Keys: []string{"ctrl+u"}, Label: "page up", Category: "Topic", Handler: m.actPageUp},
-		{Keys: []string{"ctrl+d"}, Label: "page down", Category: "Topic", Handler: m.actPageDown},
+		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Topic", Handler: m.actPageUp},
+		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Topic", Handler: m.actPageDown},
 		{Keys: []string{"enter", "e"}, Label: "edit value", Category: "Topic", Hint: true, Handler: m.actEdit},
 		{Keys: []string{"h"}, Label: "show docs", Category: "Topic", Hint: true, Handler: m.actToggleHelp},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
@@ -269,7 +269,7 @@ func (m *ConfigsModel) actPageDown() tea.Cmd {
 }
 
 func (m *ConfigsModel) pageStep() int {
-	step := m.listHeight() / 2
+	step := m.listHeight() - 1
 	if step < 1 {
 		return 1
 	}

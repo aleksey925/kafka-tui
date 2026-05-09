@@ -320,7 +320,7 @@ func textKey(text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: text}
 }
 
-func TestNavigation_CtrlDPagesDownAndCtrlUPagesUp(t *testing.T) {
+func TestNavigation_CtrlFPagesDownAndCtrlBPagesUp(t *testing.T) {
 	// arrange
 	lines := make([]string, 50)
 	for i := range lines {
@@ -331,19 +331,19 @@ func TestNavigation_CtrlDPagesDownAndCtrlUPagesUp(t *testing.T) {
 	m.SetSize(80, 12) // bodyHeight ≈ 12-2(chrome) -> non-trivial pageStep
 	drive(t, m, m.Init())
 
-	// the viewer starts at the tail; jump to the top first so ctrl+d has
+	// the viewer starts at the tail; jump to the top first so ctrl+f has
 	// somewhere to advance into.
 	for range 2 {
 		_ = m.Update(keyPress("g"))
 	}
 	require.Equal(t, 0, m.Cursor())
 
-	_ = m.Update(ctrlKey('d'))
+	_ = m.Update(ctrlKey('f'))
 	cursorAfterDown := m.Cursor()
-	require.Positive(t, cursorAfterDown, "ctrl+d must move cursor down")
+	require.Positive(t, cursorAfterDown, "ctrl+f must move cursor down")
 
-	_ = m.Update(ctrlKey('u'))
-	assert.Less(t, m.Cursor(), cursorAfterDown, "ctrl+u must move cursor up")
+	_ = m.Update(ctrlKey('b'))
+	assert.Less(t, m.Cursor(), cursorAfterDown, "ctrl+b must move cursor up")
 }
 
 func ctrlKey(r rune) tea.KeyPressMsg {

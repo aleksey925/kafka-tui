@@ -22,8 +22,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // handleNormalKey runs the default-mode pipeline: ctrl+c always quits,
 // raw-input screens get every key as a literal, then global shortcuts,
-// then the esc filter-clear cascade, then forward to the active screen
-// with q/esc fallback only when nothing claimed the key.
+// then k9s-style filter clearing on esc/ctrl+u, then forward to the
+// active screen with q/esc fallback only when nothing claimed the key.
 func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is always global so the user can quit even from inside a form.
 	if key.String() == "ctrl+c" {
@@ -40,12 +40,15 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.handleGlobalShortcut(key) {
 		return m, nil
 	}
-	// esc cascade: when an overlay is open, esc belongs to it; capture the
-	// pre-state so we can suppress the pop after the screen closes its
-	// overlay too.
+	// when an overlay is open, esc belongs to it; capture the pre-state so
+	// we can suppress the pop after the screen closes its overlay too.
 	hadOverlay := m.active != nil && screenHasOverlay(m.active)
 	if key.String() == "esc" && !hadOverlay && m.active != nil && screenActiveFilter(m.active) != "" {
-		// clear the screen-level filter first; next esc will pop.
+		setScreenSearch(m.active, "")
+	}
+	// ctrl+u on an empty filter falls through (k9s' clearCmd passes the
+	// event back when the buffer is inactive).
+	if key.String() == "ctrl+u" && !hadOverlay && m.active != nil && screenSupportsSearch(m.active) && screenActiveFilter(m.active) != "" {
 		setScreenSearch(m.active, "")
 		return m, nil
 	}

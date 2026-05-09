@@ -229,7 +229,7 @@ func (d *DetailModel) bindings() []keymap.Binding {
 	}
 	mut := []keymap.Binding{
 		{Keys: []string{"R"}, Label: d.resetLabel(), Category: "Mutating", Hint: true, Handler: d.actOpenReset},
-		{Keys: []string{"D"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: d.actDelete},
+		{Keys: []string{"ctrl+d"}, Label: "delete group", Category: "Mutating", Hint: true, Handler: d.actDelete},
 	}
 	if d.readOnly {
 		for i := range mut {

@@ -350,31 +350,44 @@ func TestSearch_HistoryIsPerScreen(t *testing.T) {
 		"clusters history is independent from topics history")
 }
 
-// TestEsc_FilterClearedBeforePop verifies the esc cascade: with a filter
-// applied, esc only clears the filter; a second esc then runs the regular
-// pop logic (here: a no-op at root depth).
-func TestEsc_FilterClearedBeforePop(t *testing.T) {
+// TestEsc_AtRootClearsFilterWithoutQuitting verifies the root-depth
+// behavior after the k9s parity change: at the cluster picker, esc
+// with an active filter wipes the filter; the would-be pop is a no-op
+// because the cluster screen is the root, so the app must not quit.
+func TestEsc_AtRootClearsFilterWithoutQuitting(t *testing.T) {
 	m := newClustersHostWith(t, []config.Cluster{
 		{Name: "alpha", Brokers: []string{"a:9092"}},
 		{Name: "beta", Brokers: []string{"b:9092"}},
 	})
 
-	// apply a filter
 	feed(m, "/", 'b')
 	_, _ = m.Update(keyPress("enter"))
 	require.Contains(t, m.Render(), "Clusters [1/2] </b>")
 	require.False(t, m.Quit())
 
-	// first esc clears filter
 	_, _ = m.Update(keyPress("esc"))
 	out := m.Render()
 	assert.NotContains(t, out, "</b>")
 	assert.Contains(t, out, "Clusters [2]")
-	assert.False(t, m.Quit(), "esc must not quit while filter was active")
+	assert.False(t, m.Quit(), "esc at root must never quit the app")
+}
 
-	// at root depth a second esc is a no-op (ctrl+c remains the exit).
-	_, _ = m.Update(keyPress("esc"))
-	assert.False(t, m.Quit(), "esc at root never quits the app")
+// TestCtrlU_ClearsActiveFilter pins the k9s clearCmd contract: with a
+// filter applied, ctrl+u wipes it and stays on the screen — never pops.
+func TestCtrlU_ClearsActiveFilter(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	feed(m, "/", 'b')
+	_, _ = m.Update(keyPress("enter"))
+	require.Contains(t, m.Render(), "Clusters [1/2] </b>")
+
+	_, _ = m.Update(keyPress("ctrl+u"))
+	out := m.Render()
+	assert.NotContains(t, out, "</b>")
+	assert.Contains(t, out, "Clusters [2]")
 }
 
 // TestConfigSnapshot_UpdatesBootAndToastsOnClusters drives an end-to-end
