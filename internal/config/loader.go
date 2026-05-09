@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,30 @@ type Source struct {
 type Sources struct {
 	Config   map[string]Source
 	Clusters map[string]map[string]Source
+}
+
+// ClusterContext returns a human-readable label of which configuration
+// layers contributed at least one field to the named cluster. Single-layer
+// clusters render as "global" / "project" / "explicit"; merged clusters
+// render as "project + global" with project listed first because it
+// overrides. An empty string means no provenance is tracked (typically
+// the --brokers inline cluster), and the caller should fall back.
+func ClusterContext(sources Sources, name string) string {
+	fields := sources.Clusters[name]
+	if len(fields) == 0 {
+		return ""
+	}
+	seen := make(map[Layer]bool, 3)
+	for _, src := range fields {
+		seen[src.Layer] = true
+	}
+	parts := make([]string, 0, 3)
+	for _, l := range []Layer{LayerProject, LayerGlobal, LayerExplicit} {
+		if seen[l] {
+			parts = append(parts, string(l))
+		}
+	}
+	return strings.Join(parts, " + ")
 }
 
 type LoaderOptions struct {

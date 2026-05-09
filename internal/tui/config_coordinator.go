@@ -64,6 +64,7 @@ func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 	m.boot.Loaded = snap.Loaded
 	m.boot.Clusters = list
 	m.boot.CLIName = cli
+	m.refreshHeaderContext()
 	cs, onClusters := m.active.(*clusters.Model)
 	if onClusters {
 		cs.SetClusters(list, cli)
@@ -123,6 +124,18 @@ func (m *Model) reloadClusters(s *clusters.Model) {
 	m.boot.Loaded = loaded
 	m.boot.Clusters = list
 	m.boot.CLIName = cli
+	m.refreshHeaderContext()
 	s.SetClusters(list, cli)
 	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d clusters", len(list)))
+}
+
+// refreshHeaderContext re-derives [layout.HeaderInfo.Context] from the
+// current Sources map. Called after Bootstrap.Loaded is replaced so the
+// chrome reflects layer-membership changes (e.g. a project file was
+// added or removed under the watcher).
+func (m *Model) refreshHeaderContext() {
+	if m.activeClu == "" {
+		return
+	}
+	m.header.Context = m.activeClusterContext(m.activeClu)
 }

@@ -328,6 +328,48 @@ func TestLoad_MissingClusterName_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing 'name'")
 }
 
+func TestClusterContext_UnknownCluster(t *testing.T) {
+	got := config.ClusterContext(config.Sources{}, "missing")
+	assert.Empty(t, got)
+}
+
+func TestClusterContext_SingleLayer(t *testing.T) {
+	cases := []struct {
+		layer    config.Layer
+		expected string
+	}{
+		{config.LayerGlobal, "global"},
+		{config.LayerProject, "project"},
+		{config.LayerExplicit, "explicit"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.layer), func(t *testing.T) {
+			sources := config.Sources{
+				Clusters: map[string]map[string]config.Source{
+					"prod": {
+						"brokers":       {Layer: tc.layer, Path: "x.yaml"},
+						"sasl.username": {Layer: tc.layer, Path: "x.yaml"},
+					},
+				},
+			}
+			assert.Equal(t, tc.expected, config.ClusterContext(sources, "prod"))
+		})
+	}
+}
+
+func TestClusterContext_MergedProjectOverGlobalListsProjectFirst(t *testing.T) {
+	sources := config.Sources{
+		Clusters: map[string]map[string]config.Source{
+			"prod": {
+				"brokers":       {Layer: config.LayerGlobal, Path: "g.yaml"},
+				"color":         {Layer: config.LayerProject, Path: "p.yaml"},
+				"sasl.username": {Layer: config.LayerProject, Path: "p.yaml"},
+			},
+		},
+	}
+	assert.Equal(t, "project + global", config.ClusterContext(sources, "prod"))
+}
+
 // helpers
 
 func setupGlobalLayer(t *testing.T) string {

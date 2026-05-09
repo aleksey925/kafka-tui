@@ -21,7 +21,19 @@ func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool
 		ClusterColor: color,
 		ReadOnly:     readOnly,
 		FromCLI:      fromCLI,
+		Context:      m.activeClusterContext(name),
 	}
+}
+
+// activeClusterContext derives the configuration-source label for the
+// header from the loaded provenance map. Returns "" when no provenance is
+// tracked (CLI inline clusters, or boot wiring missing) — the layout
+// renders "cli" or "—" via its own fallback in that case.
+func (m *Model) activeClusterContext(name string) string {
+	if m.boot == nil || m.boot.Loaded == nil {
+		return ""
+	}
+	return config.ClusterContext(m.boot.Loaded.Sources, name)
 }
 
 // connectCluster dials the named cluster and replaces the topics screen on
