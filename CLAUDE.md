@@ -16,7 +16,8 @@ component wrapper — whatever fits); the rule is that there is exactly one
 implementation and everything goes through it.
 
 Instances of this rule below: **Text input** (one edit contract), **Reserved
-global shortcuts** (one dispatcher), **Paste** (one sanitization point).
+global shortcuts** (one dispatcher), **Paste** (one sanitization point),
+**Handing the terminal off** (one handoff path for full-screen subprocesses).
 
 ## Text input
 
@@ -61,10 +62,18 @@ global is skipped if its action does not apply in that context (e.g.
 `ctrl+r` auto-refresh has nothing to refresh inside a form). The key falls
 through to the overlay instead of firing a no-op global.
 
-## Editor handoff
+## Handing the terminal off
 
-Forms that allow opening the focused field in `$EDITOR` use `ctrl+o` — not
-`ctrl+e`, which is reserved for "move to end of line" everywhere.
+*Applies the single-source rule above: one shared handoff path for any
+full-screen subprocess.*
+
+When the app launches an external full-screen process (editor, pager, etc.),
+it must cleanly release the terminal before that process runs and restore it
+after. Otherwise the user comes back to a corrupted screen — the TUI and the
+child end up fighting over the same tty.
+
+Convention for editor-style handoffs: `ctrl+o` (open) — `ctrl+e` is reserved
+for "move to end of line" everywhere.
 
 ## Paste
 

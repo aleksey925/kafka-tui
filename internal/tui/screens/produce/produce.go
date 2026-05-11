@@ -46,14 +46,31 @@ type Entry struct {
 	Timestamp   time.Time
 }
 
-// PagerOpener opens the value field in $EDITOR.
+// PagerOpener launches an external editor on the value field. Edit returns a
+// [tea.Cmd] (not the edited bytes directly) so the real implementation can
+// route through [tea.ExecProcess] — the only safe way to spawn a full-screen
+// child process from inside bubbletea. A blocking exec.Cmd.Run() corrupts
+// the terminal because the parent's raw mode / alt-screen / mouse tracking
+// are not released, and the child fights bubbletea for stdin.
+//
+// The returned Cmd must eventually post an [EditorEditedMsg] back to the
+// program.
 type PagerOpener interface {
-	Edit(initial []byte) ([]byte, error)
+	Edit(initial []byte) tea.Cmd
 }
 
-type PagerOpenerFunc func(initial []byte) ([]byte, error)
+type PagerOpenerFunc func(initial []byte) tea.Cmd
 
-func (f PagerOpenerFunc) Edit(initial []byte) ([]byte, error) { return f(initial) }
+func (f PagerOpenerFunc) Edit(initial []byte) tea.Cmd { return f(initial) }
+
+// EditorEditedMsg is the result of an external editor invocation. Exactly one
+// of Content / Err is set: Content carries the edited bytes on success, Err
+// carries any failure that occurred at any stage (tmpfile creation, exec
+// failure, tmpfile read-back).
+type EditorEditedMsg struct {
+	Content []byte
+	Err     error
+}
 
 type Action struct {
 	Back bool
@@ -376,7 +393,7 @@ func (m *Model) actFocusPrev() tea.Cmd {
 	return nil
 }
 
-func (m *Model) actEditor() tea.Cmd { m.openEditor(); return nil }
+func (m *Model) actEditor() tea.Cmd { return m.openEditor() }
 
 // actClear yields to an open segmented popup — clearing the form under it
 // would silently wipe both the popup choice and every other field the user
@@ -430,6 +447,9 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case partitionTypeTickMsg:
 		m.handlePartitionTypeTick(msg)
+		return nil
+	case EditorEditedMsg:
+		m.handleEditorResult(msg)
 		return nil
 	case tea.PasteMsg:
 		m.handlePaste(msg)
@@ -926,18 +946,23 @@ func formatHeaderList(headers []kafka.Header) []string {
 	return out
 }
 
-func (m *Model) openEditor() {
+// openEditor produces the handoff Cmd; the result arrives later as
+// [EditorEditedMsg], handled by [handleEditorResult].
+func (m *Model) openEditor() tea.Cmd {
 	if m.pager == nil {
 		m.toasts.Push(components.ToastWarning, "editor: no $EDITOR opener configured")
-		return
+		return nil
 	}
 	val, _ := m.form.Field(fieldValue)
-	edited, err := m.pager.Edit([]byte(val.Value))
-	if err != nil {
-		m.toasts.Push(components.ToastError, "editor: "+err.Error())
+	return m.pager.Edit([]byte(val.Value))
+}
+
+func (m *Model) handleEditorResult(msg EditorEditedMsg) {
+	if msg.Err != nil {
+		m.toasts.Push(components.ToastError, "editor: "+msg.Err.Error())
 		return
 	}
-	m.form.SetValue(fieldValue, string(edited))
+	m.form.SetValue(fieldValue, string(msg.Content))
 	m.form.FocusKey(fieldValue)
 }
 
@@ -1022,41 +1047,52 @@ func produceCmd(svc Service, spec kafka.ProduceSpec, closeAfter bool) tea.Cmd {
 	}
 }
 
-// DefaultPagerOpener runs `$EDITOR <tmpfile>` and reads the result back.
+// DefaultPagerOpener writes the current value into a tmpfile and hands the
+// terminal off to $EDITOR via the contract defined on [PagerOpener].
+//
+// I/O wiring (stdin/stdout/stderr) is intentionally NOT set here — bubbletea
+// fills in the program's own streams when they are unset.
 func DefaultPagerOpener() PagerOpener {
-	return PagerOpenerFunc(func(initial []byte) ([]byte, error) {
+	return PagerOpenerFunc(func(initial []byte) tea.Cmd {
 		editor := strings.TrimSpace(os.Getenv("EDITOR"))
 		if editor == "" {
 			editor = "vi"
 		}
 		tmp, err := os.CreateTemp("", "kafka-tui-produce-*.txt")
 		if err != nil {
-			return nil, fmt.Errorf("editor: create temp: %w", err)
+			return editorErrorCmd(fmt.Errorf("create temp: %w", err))
 		}
 		path := tmp.Name()
-		defer os.Remove(path)
 		if _, werr := tmp.Write(initial); werr != nil {
 			_ = tmp.Close()
-			return nil, fmt.Errorf("editor: write temp: %w", werr)
+			_ = os.Remove(path)
+			return editorErrorCmd(fmt.Errorf("write temp: %w", werr))
 		}
 		if cerr := tmp.Close(); cerr != nil {
-			return nil, fmt.Errorf("editor: close temp: %w", cerr)
+			_ = os.Remove(path)
+			return editorErrorCmd(fmt.Errorf("close temp: %w", cerr))
 		}
 		parts := strings.Fields(editor)
-		args := make([]string, 0, len(parts))
-		args = append(args, parts[1:]...)
+		args := append([]string(nil), parts[1:]...)
 		args = append(args, path)
-		cmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if rerr := cmd.Run(); rerr != nil {
-			return nil, fmt.Errorf("editor: run: %w", rerr)
-		}
-		out, rerr := os.ReadFile(path) //nolint:gosec // path is the tmpfile we just created
-		if rerr != nil {
-			return nil, fmt.Errorf("editor: read result: %w", rerr)
-		}
-		return out, nil
+		execCmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
+		return tea.ExecProcess(execCmd, func(runErr error) tea.Msg {
+			defer os.Remove(path)
+			if runErr != nil {
+				return EditorEditedMsg{Err: fmt.Errorf("run: %w", runErr)}
+			}
+			out, rerr := os.ReadFile(path) //nolint:gosec // path is the tmpfile we just created
+			if rerr != nil {
+				return EditorEditedMsg{Err: fmt.Errorf("read result: %w", rerr)}
+			}
+			return EditorEditedMsg{Content: out}
+		})
 	})
+}
+
+// editorErrorCmd posts an EditorEditedMsg carrying err on the next tick so
+// callers can keep returning a tea.Cmd from preparation paths that failed
+// before exec.
+func editorErrorCmd(err error) tea.Cmd {
+	return func() tea.Msg { return EditorEditedMsg{Err: err} }
 }

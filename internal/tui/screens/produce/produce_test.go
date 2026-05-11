@@ -565,15 +565,18 @@ func TestHistory_AddedAfterSuccessfulSend(t *testing.T) {
 func TestCtrlO_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	svc := newFakeService()
 	calls := 0
-	pager := produce.PagerOpenerFunc(func(initial []byte) ([]byte, error) {
+	pager := produce.PagerOpenerFunc(func(initial []byte) tea.Cmd {
 		calls++
 		assert.Equal(t, []byte("seed"), initial)
-		return []byte("seed-edited"), nil
+		return func() tea.Msg { return produce.EditorEditedMsg{Content: []byte("seed-edited")} }
 	})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 	typeText(m, "value", "seed")
 
-	_ = m.Update(keyPress("ctrl+o"))
+	// ctrl+o returns an async Cmd that posts EditorEditedMsg — drive() runs
+	// it so the result reaches handleEditorResult.
+	cmd := m.Update(keyPress("ctrl+o"))
+	drive(t, m, cmd)
 
 	assert.Equal(t, 1, calls)
 	val, _ := m.Form().Field("value")
@@ -584,7 +587,8 @@ func TestCtrlO_NoPagerEmitsWarning(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
-	_ = m.Update(keyPress("ctrl+o"))
+	cmd := m.Update(keyPress("ctrl+o"))
+	drive(t, m, cmd)
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "no $EDITOR opener configured")
@@ -592,10 +596,13 @@ func TestCtrlO_NoPagerEmitsWarning(t *testing.T) {
 
 func TestCtrlO_EditorErrorSurfacesToast(t *testing.T) {
 	svc := newFakeService()
-	pager := produce.PagerOpenerFunc(func(_ []byte) ([]byte, error) { return nil, errors.New("boom") })
+	pager := produce.PagerOpenerFunc(func(_ []byte) tea.Cmd {
+		return func() tea.Msg { return produce.EditorEditedMsg{Err: errors.New("boom")} }
+	})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 
-	_ = m.Update(keyPress("ctrl+o"))
+	cmd := m.Update(keyPress("ctrl+o"))
+	drive(t, m, cmd)
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "boom")
