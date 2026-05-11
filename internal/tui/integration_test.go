@@ -292,6 +292,40 @@ func TestSearch_CtrlUAndCtrlWClearBuffer(t *testing.T) {
 	}
 }
 
+// TestSearch_PasteInsertsAndAppliesFilter verifies the bracketed-paste path:
+// a tea.PasteMsg arriving while the filter prompt is open must land in the
+// buffer, sanitize newlines, refresh the suggestion, and live-apply the filter.
+func TestSearch_PasteInsertsAndAppliesFilter(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	feed(m, "/")
+	_, _ = m.Update(tea.PasteMsg{Content: "be\ntail"})
+
+	assert.Equal(t, "be tail", m.SearchBuffer(),
+		"paste lands in the buffer and newlines collapse to spaces")
+	// the live-applied filter renders the sanitized buffer in the header
+	// regardless of whether any row matches.
+	assert.Contains(t, m.Render(), "</be tail>")
+}
+
+// TestCommand_PasteInsertsAndRefreshesSuggestion verifies paste into the
+// command bar.
+func TestCommand_PasteInsertsAndRefreshesSuggestion(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha", Brokers: []string{"a:9092"}},
+	})
+
+	feed(m, ":")
+	_, _ = m.Update(tea.PasteMsg{Content: "topi\x1b[31m"})
+
+	// escape sequences must be filtered out before they reach the buffer
+	// (otherwise rendering would inject them and corrupt terminal state).
+	assert.Equal(t, "topi[31m", m.CommandBuffer())
+}
+
 // TestSearch_CtrlW_KillsOnlyLastWord verifies the readline word-boundary
 // semantics: with a multi-word buffer, ctrl+w trims only the trailing word
 // rather than wiping everything (which is ctrl+u's job).

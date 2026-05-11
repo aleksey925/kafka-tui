@@ -699,6 +699,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case FollowErrMsg:
 		m.handleFollowErr(msg)
 		return nil
+	case tea.PasteMsg:
+		// only the seek-input popup has a text buffer that can receive paste —
+		// list/detail views drop it.
+		if m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput {
+			m.seekPopup.form, _ = m.seekPopup.form.Update(msg)
+		}
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -118,6 +119,90 @@ func TestForm_TextareaAltBackspaceKillsWord(t *testing.T) {
 	f, _ = f.Update(keyPressMsg("alt+backspace"))
 	got, _ := f.Field("v")
 	assert.Equal(t, "hello ", got.Value)
+}
+
+func TestForm_PasteIntoTextFieldStripsNewlines(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "a"},
+	})
+	f.FocusKey("k")
+	f, _ = f.Update(tea.PasteMsg{Content: "b\nc"})
+	got, _ := f.Field("k")
+	assert.Equal(t, "ab c", got.Value, "single-line field must replace \\n with space")
+}
+
+func TestForm_PasteIntoTextareaKeepsNewlines(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Label: "Value", Kind: components.FieldTextarea, Value: "a"},
+	})
+	f.FocusKey("v")
+	f, _ = f.Update(tea.PasteMsg{Content: "b\nc"})
+	got, _ := f.Field("v")
+	assert.Equal(t, "ab\nc", got.Value, "textarea must keep \\n")
+}
+
+func TestForm_PasteFiltersControlChars(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+	})
+	f.FocusKey("k")
+	// pasting raw escape sequences must not survive — otherwise a later
+	// View() would inject them into the rendered output.
+	f, _ = f.Update(tea.PasteMsg{Content: "\x1b[31mhi\x1b[0m"})
+	got, _ := f.Field("k")
+	assert.NotContains(t, got.Value, "\x1b", "C0 controls must be filtered out")
+}
+
+func TestForm_PasteIntoDropdownIsNoop(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "d", Label: "D", Kind: components.FieldDropdown, Value: "a", Options: []string{"a", "b"}},
+	})
+	f.FocusKey("d")
+	f, _ = f.Update(tea.PasteMsg{Content: "b"})
+	got, _ := f.Field("d")
+	assert.Equal(t, "a", got.Value, "paste must not change a non-text field")
+}
+
+func TestForm_PasteIntoEmptyListAppendsRow(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList},
+	})
+	f.FocusKey("h")
+	f, _ = f.Update(tea.PasteMsg{Content: "k=v"})
+	got, _ := f.Field("h")
+	assert.Equal(t, []string{"k=v"}, got.List, "paste into empty list must create a row")
+}
+
+func TestForm_PasteMultilineIntoListSplitsRows(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList},
+	})
+	f.FocusKey("h")
+	// the natural source: pasting from another tool that lists headers
+	// one-per-line. Pre-split keeps validators (e.g. validateHeader) happy.
+	f, _ = f.Update(tea.PasteMsg{Content: "a=1\nb=2\nc=3"})
+	got, _ := f.Field("h")
+	assert.Equal(t, []string{"a=1", "b=2", "c=3"}, got.List)
+}
+
+func TestForm_PasteMultilineIntoListPreservesSurroundingText(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "h", Label: "Headers", Kind: components.FieldList, List: []string{"prefix=tail"}},
+	})
+	f.FocusKey("h")
+	// move the entry cursor to the boundary between "prefix=" and "tail" so
+	// the multi-line paste lands at a known offset (initial cursor is at
+	// end-of-entry, then 4× left → between '=' and 't').
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+	f, _ = f.Update(keyPressMsg("left"))
+
+	f, _ = f.Update(tea.PasteMsg{Content: "X\nY"})
+
+	got, _ := f.Field("h")
+	// "prefix=" + "X" stays in row 0; "Y" + "tail" becomes a new row.
+	assert.Equal(t, []string{"prefix=X", "Ytail"}, got.List)
 }
 
 func TestForm_TextFieldEnterIgnoredSinglelineButAddsNewlineForTextarea(t *testing.T) {

@@ -431,10 +431,29 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case partitionTypeTickMsg:
 		m.handlePartitionTypeTick(msg)
 		return nil
+	case tea.PasteMsg:
+		m.handlePaste(msg)
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return nil
+}
+
+// handlePaste injects the pasted text into the focused text field, auto
+// switching from NORMAL to INSERT so the user lands in the field they just
+// pasted into. Non-text fields (segmented) silently drop the paste — its
+// content has no meaning for an option picker.
+func (m *Model) handlePaste(msg tea.PasteMsg) {
+	kind := m.form.FocusedField().Kind
+	if kind != components.FieldText && kind != components.FieldTextarea && kind != components.FieldList {
+		return
+	}
+	f, _ := m.form.Update(msg)
+	m.form = f
+	if m.mode != ModeInsert {
+		m.setMode(ModeInsert)
+	}
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {

@@ -22,6 +22,50 @@ func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handlePaste is the central routing point for bracketed-paste events
+// (tea.PasteMsg). The active mode owns the payload:
+//
+//   - ModeCommand: insert into the command-bar buffer (newlines → space).
+//   - ModeSearch:  insert into the filter buffer + live-apply to the screen.
+//   - ModeHelp:    drop (no text input).
+//   - default:     forward to the active screen, which lets the form route
+//     it to the focused field (see components.Form.Update).
+//
+// All sanitisation happens in [lineedit.InsertText]; this function only
+// dispatches.
+func (m *Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case ModeCommand:
+		state := lineedit.InsertText(lineedit.State{
+			Runes:  []rune(m.command.Buffer),
+			Cursor: m.command.Cursor,
+		}, msg.Content)
+		m.command.Buffer = state.String()
+		m.command.Cursor = state.Cursor
+		m.command.Error = ""
+		m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
+		return m, nil
+	case ModeSearch:
+		state := lineedit.InsertText(lineedit.State{
+			Runes:  []rune(m.search.Buffer),
+			Cursor: m.search.Cursor,
+		}, msg.Content)
+		m.search.Buffer = state.String()
+		m.search.Cursor = state.Cursor
+		if m.active != nil {
+			setScreenSearch(m.active, m.search.Buffer)
+		}
+		m.refreshSearchSuggestions()
+		return m, nil
+	case ModeHelp:
+		return m, nil
+	default:
+		cmd := m.forwardToActive(msg)
+		routeCmd := m.routeActiveAction()
+		return m, teaBatch(cmd, routeCmd)
+	}
+}
+
 // handleNormalKey runs the default-mode pipeline: ctrl+c always quits,
 // raw-input screens get every key as a literal, then global shortcuts,
 // then k9s-style filter clearing on esc/ctrl+u, then forward to the

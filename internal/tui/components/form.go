@@ -255,8 +255,98 @@ func (f *Form) PopupActive() bool {
 	return f.fields[f.focus].popupOpen
 }
 
-// closeFocusedPopup drops popup state on the focused field; the value has
-// already been live-updated as the user navigated.
+// pasteIntoFocused inserts content into the focused text-like field via
+// [lineedit.InsertText]. Non-text fields (segmented / dropdown) are silently
+// skipped — paste has no meaning there. Single-line fields strip newlines to
+// spaces (handled inside InsertText via [lineedit.State.AllowNewline]).
+func (f *Form) pasteIntoFocused(content string) {
+	if len(f.fields) == 0 || content == "" {
+		return
+	}
+	fld := &f.fields[f.focus]
+	switch fld.Kind {
+	case FieldText:
+		state := lineedit.InsertText(lineedit.State{
+			Runes:  []rune(fld.Value),
+			Cursor: fld.textCursor,
+		}, content)
+		fld.Value = state.String()
+		fld.textCursor = state.Cursor
+	case FieldTextarea:
+		state := lineedit.InsertText(lineedit.State{
+			Runes:        []rune(fld.Value),
+			Cursor:       fld.textCursor,
+			AllowNewline: true,
+		}, content)
+		fld.Value = state.String()
+		fld.textCursor = state.Cursor
+	case FieldList:
+		// list semantics: one entry per line. Multi-line paste must split
+		// into separate rows rather than collapse into a single entry —
+		// otherwise validators that parse "key=value" silently swallow
+		// every line after the first.
+		pasteIntoList(fld, content)
+	case FieldDropdown, FieldSegmented:
+		// paste has no meaning on option pickers — silently drop.
+	}
+}
+
+// pasteIntoList splits multi-line content along `\n` and threads it through
+// the focused entry: the first chunk is inserted at the entry cursor (keeping
+// the existing prefix/suffix), and remaining chunks become new entries
+// immediately after. Per-chunk sanitization (control chars, stray \r/\t)
+// still goes through [lineedit.InsertText] in single-line mode.
+func pasteIntoList(fld *Field, content string) {
+	if fld.Kind != FieldList || content == "" {
+		return
+	}
+	lines := strings.Split(content, "\n")
+	if len(fld.List) == 0 {
+		fld.List = append(fld.List, "")
+		fld.listCursor = 0
+		fld.listEntryCursor = 0
+	}
+	// inject the first chunk into the current entry at cursor; this keeps
+	// the prefix and suffix that already lived in the row.
+	i := fld.listCursor
+	state := lineedit.InsertText(lineedit.State{
+		Runes:  []rune(fld.List[i]),
+		Cursor: fld.listEntryCursor,
+	}, lines[0])
+	first := state.String()
+	cursorAfterFirst := state.Cursor
+
+	if len(lines) == 1 {
+		fld.List[i] = first
+		fld.listEntryCursor = cursorAfterFirst
+		return
+	}
+
+	// multi-line: split the current entry at the cursor. Everything before
+	// stays in the original row (extended with line[0]); everything after
+	// rides on the last new row. Lines in between become standalone rows.
+	tail := string([]rune(first)[cursorAfterFirst:])
+	fld.List[i] = string([]rune(first)[:cursorAfterFirst])
+	extras := make([]string, len(lines)-1)
+	for j, line := range lines[1:] {
+		extras[j] = lineedit.InsertText(lineedit.State{}, line).String()
+	}
+	extras[len(extras)-1] += tail
+
+	newList := make([]string, 0, len(fld.List)+len(extras))
+	newList = append(newList, fld.List[:i+1]...)
+	newList = append(newList, extras...)
+	newList = append(newList, fld.List[i+1:]...)
+	fld.List = newList
+	fld.listCursor = i + len(extras)
+	// cursor lands at the boundary between the last pasted line and the
+	// preserved tail — i.e. exactly where the user would continue typing.
+	fld.listEntryCursor = lineedit.RuneLen(extras[len(extras)-1]) - lineedit.RuneLen(tail)
+}
+
+// closeFocusedPopup clears the modal popup flag. No commit is needed —
+// updateSegmented writes the chosen option into fld.Value on every arrow,
+// so the selection is already persisted by the time the popup closes.
 func (f *Form) closeFocusedPopup() {
 	if len(f.fields) == 0 {
 		return
@@ -267,6 +357,10 @@ func (f *Form) closeFocusedPopup() {
 }
 
 func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
+	if paste, ok := msg.(tea.PasteMsg); ok {
+		f.pasteIntoFocused(paste.Content)
+		return f, nil
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return f, nil

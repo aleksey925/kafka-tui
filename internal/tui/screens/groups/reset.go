@@ -298,6 +298,13 @@ func (r *ResetModel) Update(msg tea.Msg) (*ResetModel, tea.Cmd) {
 	case ResetCommittedMsg:
 		r.handleCommitted(msg)
 		return r, nil
+	case tea.PasteMsg:
+		// forward straight to the params form; non-text steps drop it.
+		if r.step == StepParams && r.form != nil {
+			f, _ := r.form.Update(msg)
+			r.form = f
+		}
+		return r, nil
 	case tea.KeyPressMsg:
 		return r.handleKey(msg)
 	}

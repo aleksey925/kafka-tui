@@ -236,6 +236,14 @@ func (m *ConfigEditModel) Update(msg tea.Msg) tea.Cmd {
 	case ConfigAlteredMsg:
 		m.handleAltered(msg)
 		return nil
+	case tea.PasteMsg:
+		if m.saving {
+			// the value is captured at actSave time and the RPC is in flight —
+			// dropping paste matches the keystroke freeze in handleKey.
+			return nil
+		}
+		m.form, m.mode = applyPasteToForm(m.form, m.mode, msg)
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

@@ -367,6 +367,55 @@ func TestCtrlU_NormalClearsAllFields(t *testing.T) {
 	assert.Equal(t, "orders", m.Topic())
 }
 
+func TestPaste_InNormalAutoEntersInsertAndInsertsValue(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	// focus the value field; mode stays NORMAL because we never pressed enter.
+	m.Form().FocusKey("value")
+	require.Equal(t, produce.ModeNormal, m.Mode())
+
+	_ = m.Update(tea.PasteMsg{Content: "payload"})
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "payload", got.Value, "paste must land in the focused value field")
+	assert.Equal(t, produce.ModeInsert, m.Mode(), "paste in NORMAL must auto-transition to INSERT")
+}
+
+func TestPaste_OnSegmentedFieldIsIgnored(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.Form().FocusKey("compression")
+	before, _ := m.Form().Field("compression")
+
+	_ = m.Update(tea.PasteMsg{Content: "snappy"})
+
+	got, _ := m.Form().Field("compression")
+	assert.Equal(t, before.Value, got.Value, "paste must leave a segmented field untouched")
+	assert.Equal(t, produce.ModeNormal, m.Mode(), "paste on non-text field must NOT enter INSERT")
+}
+
+func TestPaste_MultilineIntoValueTextareaKeepsNewlines(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.Form().FocusKey("value")
+
+	_ = m.Update(tea.PasteMsg{Content: "line1\nline2"})
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "line1\nline2", got.Value)
+}
+
+func TestPaste_MultilineIntoKeyStripsNewlines(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.Form().FocusKey("key")
+
+	_ = m.Update(tea.PasteMsg{Content: "a\nb"})
+
+	got, _ := m.Form().Field("key")
+	assert.Equal(t, "a b", got.Value, "single-line field must replace \\n with space")
+}
+
 func TestCtrlU_NoopWhileSegmentedPopupOpen(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})

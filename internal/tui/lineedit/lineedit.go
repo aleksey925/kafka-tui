@@ -10,6 +10,7 @@
 package lineedit
 
 import (
+	"strings"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
@@ -185,7 +186,8 @@ func KillWordBack(s State) State {
 }
 
 // insertText inserts the given text at the cursor and advances the cursor by
-// its rune length.
+// its rune length. The caller is responsible for any sanitization — see
+// [InsertText] for the paste-safe version.
 func insertText(s State, text string) State {
 	if text == "" {
 		return s
@@ -198,6 +200,60 @@ func insertText(s State, text string) State {
 	s.Runes = merged
 	s.Cursor += len(in)
 	return s
+}
+
+// InsertText is the safe public path for injecting arbitrary text (typically
+// clipboard paste) into a buffer. It filters out C0 control characters that
+// could otherwise inject escape sequences into the rendered output and crash
+// or corrupt the terminal state:
+//
+//   - characters < 0x20 are dropped, except \t and \n which are kept under
+//     [State.AllowNewline] (textareas) and stripped to space otherwise;
+//   - \r is dropped (CRLF normalisation);
+//   - DEL (0x7f) is dropped.
+//
+// The cursor is clamped before insertion and advances by the rune length of
+// the sanitized payload.
+func InsertText(s State, text string) State {
+	if text == "" {
+		return s
+	}
+	s = s.Clamp()
+	return insertText(s, sanitizeForInsert(text, s.AllowNewline))
+}
+
+// sanitizeForInsert applies the [InsertText] filtering policy and returns the
+// payload to insert. Empty result means "nothing to do".
+func sanitizeForInsert(text string, allowNewline bool) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == '\n':
+			if allowNewline {
+				b.WriteRune('\n')
+			} else {
+				// keep visual separation between pasted lines.
+				b.WriteRune(' ')
+			}
+		case r == '\t':
+			if allowNewline {
+				b.WriteRune('\t')
+			} else {
+				b.WriteRune(' ')
+			}
+		case r == '\r':
+			// CRLF pasted from Windows clipboards: drop \r so the following
+			// \n produces a single line break instead of two. Bare \r without
+			// a trailing \n is also dropped — too rare to bother emulating
+			// classic-Mac line semantics.
+		case r < 0x20 || r == 0x7f:
+			// other C0 controls and DEL — dropped to keep rendering safe.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Apply dispatches readline-style edit keys against s. When handled is true

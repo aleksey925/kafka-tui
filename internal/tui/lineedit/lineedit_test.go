@@ -292,6 +292,61 @@ func TestApply_unknownKeyDeclines(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestInsertText_SingleLineDropsNewlinesAndTabs(t *testing.T) {
+	s := State{Runes: []rune("a"), Cursor: 1}
+	got := InsertText(s, "b\nc\td")
+	// \n and \t become single spaces; cursor advances by the inserted rune length.
+	assert.Equal(t, "ab c d", got.String())
+	assert.Equal(t, 6, got.Cursor)
+}
+
+func TestInsertText_TextareaKeepsNewlinesAndTabs(t *testing.T) {
+	s := State{Runes: []rune("a"), Cursor: 1, AllowNewline: true}
+	got := InsertText(s, "b\nc\td")
+	assert.Equal(t, "ab\nc\td", got.String())
+	assert.Equal(t, 6, got.Cursor)
+}
+
+func TestInsertText_FiltersControlChars(t *testing.T) {
+	// pasting raw escape sequences from a terminal copy must not survive — if
+	// they do, the next View() would emit them into the rendered output and
+	// could leave the terminal in an inconsistent state.
+	s := State{}
+	got := InsertText(s, "\x1b[31mred\x1b[0m")
+	assert.Equal(t, "[31mred[0m", got.String())
+	// only the escape rune itself is filtered; surrounding printable chars stay.
+}
+
+func TestInsertText_DropsDelAndOtherC0(t *testing.T) {
+	s := State{}
+	got := InsertText(s, "a\x00b\x07c\x7fd")
+	assert.Equal(t, "abcd", got.String())
+}
+
+func TestInsertText_NormalisesCRLF(t *testing.T) {
+	// Windows clipboards emit \r\n; we keep one separator (or space in
+	// single-line mode), never the \r itself.
+	multi := InsertText(State{AllowNewline: true}, "a\r\nb")
+	assert.Equal(t, "a\nb", multi.String())
+
+	single := InsertText(State{}, "a\r\nb")
+	assert.Equal(t, "a b", single.String())
+}
+
+func TestInsertText_EmptyTextIsNoop(t *testing.T) {
+	s := State{Runes: []rune("abc"), Cursor: 2}
+	got := InsertText(s, "")
+	assert.Equal(t, "abc", got.String())
+	assert.Equal(t, 2, got.Cursor)
+}
+
+func TestInsertText_ClampsCursorBeforeInsert(t *testing.T) {
+	s := State{Runes: []rune("ab"), Cursor: 99}
+	got := InsertText(s, "X")
+	assert.Equal(t, "abX", got.String())
+	assert.Equal(t, 3, got.Cursor)
+}
+
 func TestPublicHelpers_TolerateOutOfRangeCursor(t *testing.T) {
 	// pinning the public contract: helpers used outside Apply must not panic
 	// when handed a cursor past the buffer (e.g. stale snapshot, raw caller

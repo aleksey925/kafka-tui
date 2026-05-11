@@ -65,6 +65,10 @@ func (c *CreateForm) clear() *components.Form {
 
 func (c *CreateForm) Update(msg tea.Msg) (*CreateForm, tea.Cmd) {
 	c.err = ""
+	if paste, ok := msg.(tea.PasteMsg); ok {
+		c.form, c.mode = applyPasteToForm(c.form, c.mode, paste)
+		return c, nil
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return c, nil
@@ -215,6 +219,20 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg, 
 	return form, mode
 }
 
+// applyPasteToForm routes a paste event into the focused text-like field and
+// auto-transitions to INSERT (so the user lands in the field they just pasted
+// into). Non-text fields silently drop the paste — its content has no meaning
+// for an option picker.
+func applyPasteToForm(form *components.Form, mode FormMode, paste tea.PasteMsg) (*components.Form, FormMode) {
+	kind := form.FocusedField().Kind
+	if kind != components.FieldText && kind != components.FieldTextarea && kind != components.FieldList {
+		return form, mode
+	}
+	f, _ := form.Update(paste)
+	applyMode(f, FormInsert)
+	return f, FormInsert
+}
+
 func applyMode(form *components.Form, mode FormMode) {
 	form.SetEditing(mode == FormInsert)
 	if mode == FormInsert {
@@ -271,6 +289,10 @@ func (c *CloneForm) clear() *components.Form {
 
 func (c *CloneForm) Update(msg tea.Msg) (*CloneForm, tea.Cmd) {
 	c.err = ""
+	if paste, ok := msg.(tea.PasteMsg); ok {
+		c.form, c.mode = applyPasteToForm(c.form, c.mode, paste)
+		return c, nil
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return c, nil

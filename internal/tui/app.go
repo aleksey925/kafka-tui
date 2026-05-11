@@ -267,6 +267,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newM, cmd := m.handleKey(msg)
 		flashCmd := m.promoteFlash()
 		return newM, teaBatch(cmd, flashCmd)
+	case tea.PasteMsg:
+		newM, cmd := m.handlePaste(msg)
+		flashCmd := m.promoteFlash()
+		return newM, teaBatch(cmd, flashCmd)
+	case tea.PasteStartMsg, tea.PasteEndMsg:
+		// the full content arrives in tea.PasteMsg; the start/end markers
+		// are advisory and ignored.
+		return m, nil
 	case flashTickMsg:
 		flashCmd := m.promoteFlash()
 		return m, flashCmd
