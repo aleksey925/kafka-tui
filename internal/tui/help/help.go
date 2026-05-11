@@ -328,7 +328,7 @@ func GeneralSections() []Section {
 				{Key: "?", Label: "toggle help"},
 				{Key: "q", Label: "back / quit"},
 				{Key: "esc", Label: "back / clear filter"},
-				{Key: "ctrl+u", Label: "clear filter"},
+				{Key: "ctrl+u", Label: "clear filter (on list)"},
 				{Key: "ctrl+c", Label: "force quit"},
 			},
 		},
@@ -342,6 +342,18 @@ func GeneralSections() []Section {
 				{Key: "g / home", Label: "first row"},
 				{Key: "G / end", Label: "last row"},
 				{Key: "enter", Label: "open / drill in"},
+			},
+		},
+		{
+			Title: "Text editing",
+			Hints: []Hint{
+				{Key: "ctrl+a / home", Label: "start of line"},
+				{Key: "ctrl+e / end", Label: "end of line"},
+				{Key: "alt+b / alt+f", Label: "word back / forward"},
+				{Key: "ctrl+u", Label: "kill to start of line"},
+				{Key: "ctrl+k", Label: "kill to end of line"},
+				{Key: "ctrl+w / alt+⌫", Label: "kill word back"},
+				{Key: "ctrl+u (form NORMAL)", Label: "clear form"},
 			},
 		},
 		{

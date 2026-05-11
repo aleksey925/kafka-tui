@@ -6,6 +6,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/filterhistory"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 )
 
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -65,6 +66,10 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // handleGlobalShortcut runs the screen-agnostic shortcut switch
 // (`:` / `/` / `?` / `ctrl+r`). Returns false when the key isn't one of those.
+//
+// Globals whose semantics don't apply inside an overlay (currently `ctrl+r` —
+// a form has nothing to refresh) yield to the overlay by returning false, so
+// the key reaches the active screen instead of silently firing a no-op global.
 func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 	switch key.String() {
 	case ":":
@@ -84,6 +89,9 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 		m.mode = ModeHelp
 		return true
 	case "ctrl+r":
+		if m.active != nil && screenHasOverlay(m.active) {
+			return false
+		}
 		m.SetAutoRefresh(!m.autoRefresh)
 		return true
 	}
@@ -158,28 +166,59 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		next := m.replaceScreen(cmd.Screen, cmd.Arg)
 		return m, next
-	case "tab":
-		if m.command.Suggestion != "" {
-			m.command.Buffer = m.command.Suggestion
-			m.command.Suggestion = ""
-			m.command.Error = ""
-		}
-		return m, nil
-	case "backspace":
-		if n := len(m.command.Buffer); n > 0 {
-			m.command.Buffer = m.command.Buffer[:n-1]
-			m.command.Error = ""
-		}
-		m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
-		return m, nil
-	default:
-		if t := key.Text; t != "" {
-			m.command.Buffer += t
-			m.command.Error = ""
-		}
-		m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
+	}
+	// tab and right-at-end promote the ghost suggestion. ctrl+f is an alias
+	// for right here.
+	if promoted := m.promoteCommandSuggestion(key); promoted {
 		return m, nil
 	}
+	if applied, changed := applyLineEdit(&m.command, key); applied {
+		if changed {
+			m.command.Error = ""
+			m.command.Suggestion = CompletionSuggestion(m.command.Buffer)
+		}
+	}
+	return m, nil
+}
+
+// promoteCommandSuggestion accepts the current ghost suggestion when the user
+// presses tab, or right/ctrl+f at end of buffer. Returns true when consumed.
+func (m *Model) promoteCommandSuggestion(key tea.KeyPressMsg) bool {
+	if m.command.Suggestion == "" {
+		return false
+	}
+	switch key.String() {
+	case "tab":
+	case "right", "ctrl+f":
+		if m.command.Cursor < lineedit.RuneLen(m.command.Buffer) {
+			return false
+		}
+	default:
+		return false
+	}
+	m.command.Buffer = m.command.Suggestion
+	m.command.Cursor = lineedit.RuneLen(m.command.Buffer)
+	m.command.Suggestion = ""
+	m.command.Error = ""
+	return true
+}
+
+// applyLineEdit feeds key through lineedit using bar as the buffer/cursor.
+// Returns (applied, changed) — applied is whether lineedit handled the key,
+// changed is whether the buffer differs after the operation.
+func applyLineEdit(bar *layout.CommandBar, key tea.KeyPressMsg) (bool, bool) {
+	state, ok := lineedit.Apply(lineedit.State{
+		Runes:  []rune(bar.Buffer),
+		Cursor: bar.Cursor,
+	}, key)
+	if !ok {
+		return false, false
+	}
+	newBuf := state.String()
+	changed := newBuf != bar.Buffer
+	bar.Buffer = newBuf
+	bar.Cursor = state.Cursor
+	return true, changed
 }
 
 // openSearchPrompt switches into ModeSearch with an empty buffer; the
@@ -242,12 +281,14 @@ func (m *Model) closeSearchPrompt() {
 }
 
 // handleSearchKey runs the live filter prompt:
-//   - esc            clears the filter and closes (no history push).
-//   - enter / ctrl+e commits the buffer to history; live filter stays applied.
-//   - tab / right / ctrl+f promotes the current ghost suggestion.
-//   - up / down      cycle through suggestion matches (wraps).
-//   - ctrl+u / ctrl+w wipe the buffer.
-//   - backspace / delete drop the last rune.
+//   - esc        clears the filter and closes (no history push).
+//   - enter      commits the buffer to history; live filter stays applied.
+//   - tab        promotes the ghost suggestion; right / ctrl+f do the same
+//     when the cursor is at the end of the buffer, otherwise they move it.
+//   - up / down  cycle through suggestion matches (wraps).
+//
+// All other edit keys (ctrl+a/e/u/k/w, alt+b/f/backspace, arrows, home/end,
+// backspace/delete, text) are delegated to [lineedit.Apply].
 func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc":
@@ -256,7 +297,7 @@ func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.closeSearchPrompt()
 		return m, nil
-	case "enter", "ctrl+e":
+	case "enter":
 		if buf := m.search.Buffer; buf != "" {
 			if hist := m.activeSearchHistory(); hist != nil {
 				hist.Push(buf)
@@ -264,50 +305,48 @@ func (m *Model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.closeSearchPrompt()
 		return m, nil
-	case "tab", "right", "ctrl+f":
-		if m.search.Suggestion == "" {
-			return m, nil
-		}
-		m.search.Buffer = m.search.Suggestion
-		m.searchSuggestions = nil
-		m.searchSuggestionIdx = -1
-		m.search.Suggestion = ""
-		if m.active != nil {
-			setScreenSearch(m.active, m.search.Buffer)
-		}
-		return m, nil
 	case "up":
 		m.cycleSearchSuggestion(1)
 		return m, nil
 	case "down":
 		m.cycleSearchSuggestion(-1)
 		return m, nil
-	case "ctrl+u", "ctrl+w":
-		m.search.Buffer = ""
+	}
+	if m.promoteSearchSuggestion(key) {
 		if m.active != nil {
-			setScreenSearch(m.active, "")
+			setScreenSearch(m.active, m.search.Buffer)
 		}
-		m.refreshSearchSuggestions()
 		return m, nil
-	case "backspace", "delete":
-		if n := len(m.search.Buffer); n > 0 {
-			m.search.Buffer = m.search.Buffer[:n-1]
-		}
+	}
+	if applied, changed := applyLineEdit(&m.search, key); applied && changed {
 		if m.active != nil {
 			setScreenSearch(m.active, m.search.Buffer)
 		}
 		m.refreshSearchSuggestions()
-		return m, nil
-	default:
-		if t := key.Text; t != "" {
-			m.search.Buffer += t
-			if m.active != nil {
-				setScreenSearch(m.active, m.search.Buffer)
-			}
-			m.refreshSearchSuggestions()
-		}
-		return m, nil
 	}
+	return m, nil
+}
+
+// promoteSearchSuggestion mirrors promoteCommandSuggestion for the `/` prompt.
+func (m *Model) promoteSearchSuggestion(key tea.KeyPressMsg) bool {
+	if m.search.Suggestion == "" {
+		return false
+	}
+	switch key.String() {
+	case "tab":
+	case "right", "ctrl+f":
+		if m.search.Cursor < lineedit.RuneLen(m.search.Buffer) {
+			return false
+		}
+	default:
+		return false
+	}
+	m.search.Buffer = m.search.Suggestion
+	m.search.Cursor = lineedit.RuneLen(m.search.Buffer)
+	m.searchSuggestions = nil
+	m.searchSuggestionIdx = -1
+	m.search.Suggestion = ""
+	return true
 }
 
 // cycleSearchSuggestion advances the suggestion index by step

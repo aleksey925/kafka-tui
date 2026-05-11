@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
+	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -65,6 +66,7 @@ type CommandBar struct {
 	Active     bool
 	Prefix     rune // ':' or '/'
 	Buffer     string
+	Cursor     int    // rune offset within Buffer
 	Suggestion string // ghost text shown after the buffer (tab to accept)
 	Error      string
 }
@@ -342,8 +344,11 @@ func CommandLine(s theme.Styles, c CommandBar, width int) string {
 		return ""
 	}
 	prefix := string(c.Prefix)
-	body := s.CommandHL.Render(prefix) + " " + s.Command.Render(c.Buffer)
-	if c.Suggestion != "" {
+	body := s.CommandHL.Render(prefix) + " " + renderBufferWithCursor(s, c.Buffer, c.Cursor)
+	// the ghost suggestion is only meaningful when appended after the buffer —
+	// hide it while the user is editing mid-line so the rendering stays sane.
+	atEnd := c.Cursor >= lineedit.RuneLen(c.Buffer)
+	if c.Suggestion != "" && atEnd {
 		ghost := strings.TrimPrefix(c.Suggestion, strings.ToLower(c.Buffer))
 		if ghost != "" {
 			body += s.CommandGhost.Render(ghost)
@@ -362,6 +367,28 @@ func CommandLine(s theme.Styles, c CommandBar, width int) string {
 		box = box.Width(width - 2)
 	}
 	return box.Render(body)
+}
+
+// renderBufferWithCursor draws the buffer with a reverse-video block cursor at
+// the rune offset cur. When cur sits past the last rune, a trailing space
+// stands in for "past end".
+func renderBufferWithCursor(s theme.Styles, buffer string, cur int) string {
+	runes := []rune(buffer)
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	before := string(runes[:cur])
+	var underCursor, after string
+	if cur >= len(runes) {
+		underCursor = " "
+	} else {
+		underCursor = string(runes[cur])
+		after = string(runes[cur+1:])
+	}
+	return s.Command.Render(before) + s.Cursor.Render(underCursor) + s.Command.Render(after)
 }
 
 func formatDuration(d time.Duration) string {

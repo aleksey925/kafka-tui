@@ -253,6 +253,56 @@ func TestWantsRawInput_TracksFormModes(t *testing.T) {
 	assert.False(t, m.WantsRawInput(), "clone form starts in NORMAL")
 }
 
+func TestCreateForm_CtrlUClearsFormInNormal(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("enter"))
+	for _, r := range "abcd" {
+		_ = m.Update(keyPressRune(r))
+	}
+	// drop back to NORMAL so ctrl+u is interpreted at form level rather than
+	// as the field-level readline kill.
+	_ = m.Update(keyPress("esc"))
+
+	_ = m.Update(keyPress("ctrl+u"))
+
+	got, _ := m.CreateForm().Form().Field("name")
+	assert.Empty(t, got.Value, "name should reset to default after ctrl+u")
+	// partitions/replication_factor have non-empty defaults — they must be
+	// restored, not just cleared, so the form is genuinely back at start.
+	parts, _ := m.CreateForm().Form().Field("partitions")
+	assert.Equal(t, "1", parts.Value)
+}
+
+func TestCreateForm_CtrlUNoopWhilePopupOpen(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("n"))
+	// fill in name, leave to NORMAL.
+	_ = m.Update(keyPress("enter"))
+	for _, r := range "orders" {
+		_ = m.Update(keyPressRune(r))
+	}
+	_ = m.Update(keyPress("esc"))
+	// focus the cleanup_policy segmented field and open its popup via enter.
+	m.CreateForm().Form().FocusKey("cleanup_policy")
+	_ = m.Update(keyPress("enter"))
+	require.True(t, m.CreateForm().Form().PopupActive(), "popup must be open before the assertion")
+
+	_ = m.Update(keyPress("ctrl+u"))
+
+	// popup is a modal sub-state; ctrl+u must yield to it instead of
+	// wiping every field the user already filled in.
+	got, _ := m.CreateForm().Form().Field("name")
+	assert.Equal(t, "orders", got.Value, "name must survive ctrl+u while a popup is open")
+	assert.True(t, m.CreateForm().Form().PopupActive(), "popup must stay open")
+}
+
 func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.New(topics.Options{Service: svc})

@@ -332,25 +332,28 @@ func (m *Model) bindings() []keymap.Binding {
 	return append(m.globalBindings(), m.normalBindings()...)
 }
 
-// globalBindings fire in both NORMAL and INSERT.
+// globalBindings fire in both NORMAL and INSERT. Anything that would conflict
+// with field-level editing (like ctrl+u = kill-line) must live in normalBindings
+// instead.
 func (m *Model) globalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"ctrl+s"}, Label: "send (close form)", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(true) }},
 		{Keys: []string{"ctrl+shift+s"}, Label: "send & keep open", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(false) }},
-		{Keys: []string{"ctrl+e"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
-		{Keys: []string{"ctrl+r"}, Label: "clear form", Category: "Produce", Hint: true, Handler: m.actClear},
+		{Keys: []string{"ctrl+o"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
 		{Keys: []string{"ctrl+p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
 		{Keys: []string{"ctrl+n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 	}
 }
 
 // normalBindings are NOT consulted in INSERT so tab/enter/esc retain
-// their text-editing meaning.
+// their text-editing meaning. ctrl+u lives here too because in INSERT it is
+// the readline kill-to-line-start handled by the lineedit-backed form.
 func (m *Model) normalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"+", "_", "shift++", "shift+-"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
 		{Keys: []string{"tab", "down"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
 		{Keys: []string{"shift+tab", "up"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
+		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
 		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
 		{Keys: []string{"esc"}, Label: "cancel edit / close form", Category: "Form", Hint: true, HandlerMsg: m.handleEscNormal},
 	}
@@ -374,7 +377,17 @@ func (m *Model) actFocusPrev() tea.Cmd {
 }
 
 func (m *Model) actEditor() tea.Cmd { m.openEditor(); return nil }
-func (m *Model) actClear() tea.Cmd  { m.clear(); return nil }
+
+// actClear yields to an open segmented popup — clearing the form under it
+// would silently wipe both the popup choice and every other field the user
+// already filled in. The user can close the popup (esc) and clear after.
+func (m *Model) actClear() tea.Cmd {
+	if m.form.PopupActive() {
+		return nil
+	}
+	m.clear()
+	return nil
+}
 
 func (m *Model) actHistoryOlder() tea.Cmd {
 	m.historyStep(+1)
@@ -913,11 +926,11 @@ func (m *Model) View() string {
 	var hintText string
 	switch {
 	case m.mode == ModeInsert:
-		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  on headers: ctrl+n add row  ctrl+x remove row"
+		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  readline: ctrl+a/e ctrl+u/k ctrl+w  on headers: ctrl+n add row  ctrl+x remove row"
 	case m.fullscreen:
-		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  esc back to split"
+		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+u clear  esc back to split"
 	default:
-		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  esc cancel"
+		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+u clear form  ctrl+o $EDITOR  esc cancel"
 	}
 	hint := m.styles.HintLabel.Render(hintText)
 

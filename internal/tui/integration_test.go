@@ -224,25 +224,26 @@ func TestSearch_RightAndCtrlFPromoteLikeTab(t *testing.T) {
 	}
 }
 
-// TestSearch_CtrlEActsLikeEnter pins the Enter/Ctrl-E parity from k9s.
-func TestSearch_CtrlEActsLikeEnter(t *testing.T) {
+// TestSearch_CtrlE_MovesToEnd verifies that ctrl+e is now a readline
+// move-to-end shortcut (and no longer an enter alias). It should be a no-op
+// here since the cursor already sits at the end of the buffer.
+func TestSearch_CtrlE_MovesToEnd(t *testing.T) {
 	m := newClustersHostWith(t, []config.Cluster{
-		{Name: "alpha", Brokers: []string{"a:9092"}},
 		{Name: "beta", Brokers: []string{"b:9092"}},
 	})
 
-	feed(m, "/", 'b')
+	feed(m, "/", 'b', 'e')
 	_, _ = m.Update(keyPress("ctrl+e"))
 
-	// prompt closed, filter applied, history populated.
-	assert.Equal(t, tui.ModeNormal, m.Mode())
-	assert.Contains(t, m.Render(), "Clusters [1/2] </b>")
-	feed(m, "/")
-	assert.Equal(t, "b", m.SearchSuggestion(), "ctrl+e must push to history")
+	// prompt stays open, buffer untouched.
+	assert.Equal(t, tui.ModeSearch, m.Mode())
+	assert.Equal(t, "be", m.SearchBuffer())
 }
 
-// TestSearch_DeleteActsLikeBackspace pins the Backspace/Delete parity.
-func TestSearch_DeleteActsLikeBackspace(t *testing.T) {
+// TestSearch_DeleteIsForwardOnly verifies the cursor-aware delete semantics:
+// delete with the cursor at end-of-buffer is a no-op (it deletes the rune
+// under the cursor, not the one before — that's backspace's job).
+func TestSearch_DeleteIsForwardOnly(t *testing.T) {
 	m := newClustersHostWith(t, []config.Cluster{
 		{Name: "beta", Brokers: []string{"b:9092"}},
 	})
@@ -250,11 +251,27 @@ func TestSearch_DeleteActsLikeBackspace(t *testing.T) {
 	feed(m, "/", 'b', 'e', 'x')
 	_, _ = m.Update(keyPress("delete"))
 
-	assert.Equal(t, "be", m.SearchBuffer(), "delete drops the last rune")
+	assert.Equal(t, "bex", m.SearchBuffer(), "delete at end is a no-op")
 }
 
-// TestSearch_CtrlUAndCtrlWClearBuffer pins the line-wipe shortcuts. Both
-// keys do the same thing in k9s (full clear, no word-boundary distinction).
+// TestSearch_CtrlA_MovesToStart_DeleteRemovesForward verifies forward delete
+// when the cursor is positioned earlier in the buffer.
+func TestSearch_CtrlA_MovesToStart_DeleteRemovesForward(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "beta", Brokers: []string{"b:9092"}},
+	})
+
+	feed(m, "/", 'b', 'e', 'x')
+	_, _ = m.Update(keyPress("ctrl+a"))
+	_, _ = m.Update(keyPress("delete"))
+
+	assert.Equal(t, "ex", m.SearchBuffer(), "ctrl+a then delete removes first rune")
+}
+
+// TestSearch_CtrlUAndCtrlWClearBuffer pins the readline-style line-wipe
+// shortcuts. ctrl+u kills from the start of the line to the cursor; ctrl+w
+// kills the word back. Both clear a single-word buffer like "be" — the
+// distinction surfaces on multi-word buffers (covered separately).
 func TestSearch_CtrlUAndCtrlWClearBuffer(t *testing.T) {
 	for _, wipe := range []string{"ctrl+u", "ctrl+w"} {
 		t.Run(wipe, func(t *testing.T) {
@@ -273,6 +290,22 @@ func TestSearch_CtrlUAndCtrlWClearBuffer(t *testing.T) {
 			assert.Contains(t, m.Render(), "Clusters [2]")
 		})
 	}
+}
+
+// TestSearch_CtrlW_KillsOnlyLastWord verifies the readline word-boundary
+// semantics: with a multi-word buffer, ctrl+w trims only the trailing word
+// rather than wiping everything (which is ctrl+u's job).
+func TestSearch_CtrlW_KillsOnlyLastWord(t *testing.T) {
+	m := newClustersHostWith(t, []config.Cluster{
+		{Name: "alpha-prod", Brokers: []string{"a:9092"}},
+		{Name: "alpha-staging", Brokers: []string{"s:9092"}},
+	})
+
+	feed(m, "/", 'a', 'l', 'p', 'h', 'a', ' ', 'p', 'r', 'o', 'd')
+	_, _ = m.Update(keyPress("ctrl+w"))
+
+	assert.Equal(t, "alpha ", m.SearchBuffer(),
+		"ctrl+w must kill only the trailing word, leaving the preceding whitespace")
 }
 
 // TestSearch_BackspaceRecomputesSuggestion verifies the live suggestion

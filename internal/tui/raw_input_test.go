@@ -213,6 +213,36 @@ func TestSlash_OpensWhenScreenSupportsSearch(t *testing.T) {
 	assert.Equal(t, ModeSearch, m.mode)
 }
 
+// TestCtrlR_OnOverlayFallsThroughToScreen verifies that the global
+// auto-refresh shortcut yields to the active screen when it reports an
+// overlay (e.g. a produce form): the screen receives ctrl+r and the host's
+// auto-refresh flag is untouched.
+func TestCtrlR_OnOverlayFallsThroughToScreen(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	m.SetAutoRefresh(true)
+	fake := &fakeScreen{hasOverlay: true}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+r"))
+
+	assert.Equal(t, []string{"ctrl+r"}, fake.keys, "ctrl+r must reach the overlay")
+	assert.True(t, m.AutoRefresh(), "auto-refresh flag must not flip while an overlay is active")
+}
+
+// TestCtrlR_NoOverlayTogglesAutoRefresh is the dual: without an overlay the
+// host owns ctrl+r and toggles auto-refresh.
+func TestCtrlR_NoOverlayTogglesAutoRefresh(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	m.SetAutoRefresh(false)
+	fake := &fakeScreen{hasOverlay: false}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+r"))
+
+	assert.True(t, m.AutoRefresh())
+	assert.Empty(t, fake.keys, "ctrl+r must not reach the screen when host owns it")
+}
+
 // TestEsc_OverlayPreservesScreen pins the q/esc fallback contract:
 // when the active screen reports HasOverlay=true (e.g. messages or
 // groups in their detail sub-mode), esc is forwarded to the screen but

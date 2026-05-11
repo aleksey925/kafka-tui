@@ -357,7 +357,9 @@ func TestModel_SearchModeOpensPromptAndForwardsToScreen(t *testing.T) {
 }
 
 func TestModel_HelpToggle(t *testing.T) {
-	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Build: version.BuildInfo{Version: "v0.7.3", Commit: "abcdef0"}, Width: 80})
+	// Height needs to fit the full grid (general / navigation / text editing
+	// / commands) plus the footer line carrying the build version.
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Build: version.BuildInfo{Version: "v0.7.3", Commit: "abcdef0"}, Width: 80, Height: 40})
 
 	updated, _ := m.Update(keyPress("?"))
 	m = updated.(*tui.Model)
@@ -482,47 +484,42 @@ func TestModel_StatusForRefreshMode(t *testing.T) {
 	assert.Contains(t, m.Render(), "paused")
 }
 
+// keyPressTable maps a name to its tea.KeyPressMsg. Literal printable keys
+// also carry msg.Text so handlers that append to a buffer (command bar,
+// search prompt) treat them as input rather than just a keystroke.
+var keyPressTable = map[string]tea.KeyPressMsg{
+	"enter":         {Code: tea.KeyEnter},
+	"esc":           {Code: tea.KeyEscape},
+	"tab":           {Code: tea.KeyTab},
+	"backspace":     {Code: tea.KeyBackspace},
+	"delete":        {Code: tea.KeyDelete},
+	"up":            {Code: tea.KeyUp},
+	"down":          {Code: tea.KeyDown},
+	"right":         {Code: tea.KeyRight},
+	"ctrl+a":        {Code: 'a', Mod: tea.ModCtrl},
+	"ctrl+c":        {Code: 'c', Mod: tea.ModCtrl},
+	"ctrl+e":        {Code: 'e', Mod: tea.ModCtrl},
+	"ctrl+f":        {Code: 'f', Mod: tea.ModCtrl},
+	"ctrl+k":        {Code: 'k', Mod: tea.ModCtrl},
+	"ctrl+o":        {Code: 'o', Mod: tea.ModCtrl},
+	"ctrl+r":        {Code: 'r', Mod: tea.ModCtrl},
+	"ctrl+u":        {Code: 'u', Mod: tea.ModCtrl},
+	"ctrl+w":        {Code: 'w', Mod: tea.ModCtrl},
+	"alt+b":         {Code: 'b', Mod: tea.ModAlt},
+	"alt+f":         {Code: 'f', Mod: tea.ModAlt},
+	"alt+backspace": {Code: tea.KeyBackspace, Mod: tea.ModAlt},
+	":":             {Code: ':', Text: ":"},
+	"/":             {Code: '/', Text: "/"},
+	"?":             {Code: '?', Text: "?"},
+	"q":             {Code: 'q', Text: "q"},
+}
+
 // keyPress builds a tea.KeyPressMsg matching by String(). For literal `:` we
 // also need msg.Text to be set so the command-mode handler appends the rune
 // to its buffer.
 func keyPress(name string) tea.KeyPressMsg {
-	switch name {
-	case "enter":
-		return tea.KeyPressMsg{Code: tea.KeyEnter}
-	case "esc":
-		return tea.KeyPressMsg{Code: tea.KeyEscape}
-	case "tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab}
-	case "backspace":
-		return tea.KeyPressMsg{Code: tea.KeyBackspace}
-	case "delete":
-		return tea.KeyPressMsg{Code: tea.KeyDelete}
-	case "up":
-		return tea.KeyPressMsg{Code: tea.KeyUp}
-	case "down":
-		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "right":
-		return tea.KeyPressMsg{Code: tea.KeyRight}
-	case "ctrl+r":
-		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
-	case "ctrl+c":
-		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
-	case "ctrl+e":
-		return tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl}
-	case "ctrl+f":
-		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}
-	case "ctrl+u":
-		return tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}
-	case "ctrl+w":
-		return tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl}
-	case ":":
-		return tea.KeyPressMsg{Code: ':', Text: ":"}
-	case "/":
-		return tea.KeyPressMsg{Code: '/', Text: "/"}
-	case "?":
-		return tea.KeyPressMsg{Code: '?', Text: "?"}
-	case "q":
-		return tea.KeyPressMsg{Code: 'q', Text: "q"}
+	if msg, ok := keyPressTable[name]; ok {
+		return msg
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

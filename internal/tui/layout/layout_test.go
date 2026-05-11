@@ -81,10 +81,13 @@ func TestKeyHints_EmptyList(t *testing.T) {
 func TestCommandLine_RendersBufferAndError(t *testing.T) {
 	s := theme.DefaultStyles()
 
+	// cursor at end so the buffer renders as one contiguous run plus the
+	// trailing block cursor — easy to grep for in the test.
 	out := layout.CommandLine(s, layout.CommandBar{
 		Active: true,
 		Prefix: ':',
 		Buffer: "topics",
+		Cursor: 6,
 	}, 60)
 	assert.Contains(t, out, ":")
 	assert.Contains(t, out, "topics")
@@ -93,6 +96,7 @@ func TestCommandLine_RendersBufferAndError(t *testing.T) {
 		Active: true,
 		Prefix: ':',
 		Buffer: "foo",
+		Cursor: 3,
 		Error:  "unknown",
 	}, 60)
 	assert.Contains(t, withErr, "unknown")

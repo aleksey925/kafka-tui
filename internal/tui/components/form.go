@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -68,9 +69,9 @@ func NewForm(fields []Field, opts ...FormOption) *Form {
 		editing: true,
 	}
 	for i := range f.fields {
-		f.fields[i].textCursor = runeLen(f.fields[i].Value)
+		f.fields[i].textCursor = lineedit.RuneLen(f.fields[i].Value)
 		if f.fields[i].Kind == FieldList && len(f.fields[i].List) > 0 {
-			f.fields[i].listEntryCursor = runeLen(f.fields[i].List[f.fields[i].listCursor])
+			f.fields[i].listEntryCursor = lineedit.RuneLen(f.fields[i].List[f.fields[i].listCursor])
 		}
 	}
 	for _, opt := range opts {
@@ -119,7 +120,7 @@ func (f *Form) SetValue(key, value string) {
 	for i := range f.fields {
 		if f.fields[i].Key == key {
 			f.fields[i].Value = value
-			f.fields[i].textCursor = runeLen(value)
+			f.fields[i].textCursor = lineedit.RuneLen(value)
 			return
 		}
 	}
@@ -155,7 +156,7 @@ func (f *Form) SetList(key string, entries []string) {
 			f.fields[i].List = append([]string(nil), entries...)
 			f.fields[i].listCursor = 0
 			if len(entries) > 0 {
-				f.fields[i].listEntryCursor = runeLen(entries[0])
+				f.fields[i].listEntryCursor = lineedit.RuneLen(entries[0])
 			} else {
 				f.fields[i].listEntryCursor = 0
 			}
@@ -576,76 +577,13 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 }
 
 func updateText(fld *Field, key tea.KeyPressMsg, allowNewline bool) {
-	runes := []rune(fld.Value)
-	clampCursor(&fld.textCursor, len(runes))
-	if textNavigate(fld, runes, key, allowNewline) {
-		return
-	}
-	textEdit(fld, runes, key, allowNewline)
-}
-
-func textNavigate(fld *Field, runes []rune, key tea.KeyPressMsg, allowNewline bool) bool {
-	n := len(runes)
-	switch key.String() {
-	case "left":
-		if fld.textCursor > 0 {
-			fld.textCursor--
-		}
-	case "right":
-		if fld.textCursor < n {
-			fld.textCursor++
-		}
-	case "home":
-		if allowNewline {
-			fld.textCursor = lineStart(runes, fld.textCursor)
-		} else {
-			fld.textCursor = 0
-		}
-	case "end":
-		if allowNewline {
-			fld.textCursor = lineEnd(runes, fld.textCursor)
-		} else {
-			fld.textCursor = n
-		}
-	case "up":
-		if !allowNewline {
-			return false
-		}
-		fld.textCursor = moveLine(runes, fld.textCursor, -1)
-	case "down":
-		if !allowNewline {
-			return false
-		}
-		fld.textCursor = moveLine(runes, fld.textCursor, +1)
-	default:
-		return false
-	}
-	return true
-}
-
-func textEdit(fld *Field, runes []rune, key tea.KeyPressMsg, allowNewline bool) {
-	n := len(runes)
-	switch key.String() {
-	case "backspace":
-		if fld.textCursor > 0 {
-			fld.Value = string(runes[:fld.textCursor-1]) + string(runes[fld.textCursor:])
-			fld.textCursor--
-		}
-	case "delete":
-		if fld.textCursor < n {
-			fld.Value = string(runes[:fld.textCursor]) + string(runes[fld.textCursor+1:])
-		}
-	case "enter":
-		if allowNewline {
-			fld.Value = string(runes[:fld.textCursor]) + "\n" + string(runes[fld.textCursor:])
-			fld.textCursor++
-		}
-	default:
-		if t := key.Text; t != "" {
-			fld.Value = string(runes[:fld.textCursor]) + t + string(runes[fld.textCursor:])
-			fld.textCursor += len([]rune(t))
-		}
-	}
+	state, _ := lineedit.Apply(lineedit.State{
+		Runes:        []rune(fld.Value),
+		Cursor:       fld.textCursor,
+		AllowNewline: allowNewline,
+	}, key)
+	fld.Value = state.String()
+	fld.textCursor = state.Cursor
 }
 
 func clampCursor(cursor *int, n int) {
@@ -656,54 +594,6 @@ func clampCursor(cursor *int, n int) {
 		*cursor = 0
 	}
 }
-
-func lineStart(runes []rune, cursor int) int {
-	i := cursor
-	for i > 0 && runes[i-1] != '\n' {
-		i--
-	}
-	return i
-}
-
-func lineEnd(runes []rune, cursor int) int {
-	i := cursor
-	for i < len(runes) && runes[i] != '\n' {
-		i++
-	}
-	return i
-}
-
-// moveLine moves cursor by delta lines preserving the visual column.
-// delta = -1 up, +1 down.
-func moveLine(runes []rune, cursor, delta int) int {
-	curStart := lineStart(runes, cursor)
-	col := cursor - curStart
-	if delta < 0 {
-		if curStart == 0 {
-			return cursor
-		}
-		prevEnd := curStart - 1
-		prevStart := lineStart(runes, prevEnd)
-		prevLen := prevEnd - prevStart
-		if col > prevLen {
-			col = prevLen
-		}
-		return prevStart + col
-	}
-	curEnd := lineEnd(runes, cursor)
-	if curEnd >= len(runes) {
-		return cursor
-	}
-	nextStart := curEnd + 1
-	nextEnd := lineEnd(runes, nextStart)
-	nextLen := nextEnd - nextStart
-	if col > nextLen {
-		col = nextLen
-	}
-	return nextStart + col
-}
-
-func runeLen(s string) int { return len([]rune(s)) }
 
 func updateSegmented(fld *Field, key tea.KeyPressMsg) {
 	if len(fld.Options) == 0 {
@@ -767,6 +657,7 @@ func updateDropdown(fld *Field, key tea.KeyPressMsg) {
 
 // updateList handles list-mode editing with a per-entry rune cursor.
 // Up/down move between rows; backspace on an empty entry removes the row.
+// All in-entry text editing is delegated to lineedit.
 func updateList(fld *Field, key tea.KeyPressMsg) {
 	if listStructural(fld, key) {
 		return
@@ -775,12 +666,18 @@ func updateList(fld *Field, key tea.KeyPressMsg) {
 	if i < 0 || i >= len(fld.List) {
 		return
 	}
-	runes := []rune(fld.List[i])
-	clampCursor(&fld.listEntryCursor, len(runes))
-	if listEntryNavigate(fld, runes, key) {
+	// backspace on an empty entry is structural — remove the row instead of
+	// no-oping inside lineedit.
+	if key.String() == "backspace" && fld.List[i] == "" {
+		listRemoveCurrent(fld)
 		return
 	}
-	listEntryEdit(fld, runes, key)
+	state, _ := lineedit.Apply(lineedit.State{
+		Runes:  []rune(fld.List[i]),
+		Cursor: fld.listEntryCursor,
+	}, key)
+	fld.List[i] = state.String()
+	fld.listEntryCursor = state.Cursor
 }
 
 func listStructural(fld *Field, key tea.KeyPressMsg) bool {
@@ -788,64 +685,17 @@ func listStructural(fld *Field, key tea.KeyPressMsg) bool {
 	case "down":
 		if len(fld.List) > 0 {
 			fld.listCursor = (fld.listCursor + 1) % len(fld.List)
-			fld.listEntryCursor = runeLen(fld.List[fld.listCursor])
+			fld.listEntryCursor = lineedit.RuneLen(fld.List[fld.listCursor])
 		}
 	case "up":
 		if len(fld.List) > 0 {
 			fld.listCursor = (fld.listCursor - 1 + len(fld.List)) % len(fld.List)
-			fld.listEntryCursor = runeLen(fld.List[fld.listCursor])
+			fld.listEntryCursor = lineedit.RuneLen(fld.List[fld.listCursor])
 		}
 	default:
 		return false
 	}
 	return true
-}
-
-func listEntryNavigate(fld *Field, runes []rune, key tea.KeyPressMsg) bool {
-	switch key.String() {
-	case "left":
-		if fld.listEntryCursor > 0 {
-			fld.listEntryCursor--
-		}
-	case "right":
-		if fld.listEntryCursor < len(runes) {
-			fld.listEntryCursor++
-		}
-	case "home":
-		fld.listEntryCursor = 0
-	case "end":
-		fld.listEntryCursor = len(runes)
-	default:
-		return false
-	}
-	return true
-}
-
-// listEntryEdit handles edit keys inside the focused entry. Backspace on an
-// empty entry removes the row.
-func listEntryEdit(fld *Field, runes []rune, key tea.KeyPressMsg) {
-	i := fld.listCursor
-	n := len(runes)
-	switch key.String() {
-	case "backspace":
-		if n == 0 {
-			listRemoveCurrent(fld)
-			return
-		}
-		if fld.listEntryCursor > 0 {
-			fld.List[i] = string(runes[:fld.listEntryCursor-1]) + string(runes[fld.listEntryCursor:])
-			fld.listEntryCursor--
-		}
-	case "delete":
-		if fld.listEntryCursor < n {
-			fld.List[i] = string(runes[:fld.listEntryCursor]) + string(runes[fld.listEntryCursor+1:])
-		}
-	default:
-		if t := key.Text; t != "" {
-			fld.List[i] = string(runes[:fld.listEntryCursor]) + t + string(runes[fld.listEntryCursor:])
-			fld.listEntryCursor += len([]rune(t))
-		}
-	}
 }
 
 func listRemoveCurrent(fld *Field) {
@@ -860,7 +710,7 @@ func listRemoveCurrent(fld *Field) {
 	if len(fld.List) == 0 {
 		fld.listEntryCursor = 0
 	} else {
-		fld.listEntryCursor = runeLen(fld.List[fld.listCursor])
+		fld.listEntryCursor = lineedit.RuneLen(fld.List[fld.listCursor])
 	}
 }
 

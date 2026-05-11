@@ -48,6 +48,78 @@ func TestForm_TextFieldEditing(t *testing.T) {
 	assert.Equal(t, "ab", got.Value)
 }
 
+func TestForm_TextFieldReadlineShortcuts(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "hello world"},
+	})
+	f.FocusKey("k")
+
+	// ctrl+a -> start, then insert "X" -> "Xhello world"
+	f, _ = f.Update(keyPressMsg("ctrl+a"))
+	f, _ = f.Update(keyPressRune('X'))
+	got, _ := f.Field("k")
+	assert.Equal(t, "Xhello world", got.Value)
+
+	// ctrl+e -> end, then ctrl+w kills trailing "world"
+	f, _ = f.Update(keyPressMsg("ctrl+e"))
+	f, _ = f.Update(keyPressMsg("ctrl+w"))
+	got, _ = f.Field("k")
+	assert.Equal(t, "Xhello ", got.Value)
+
+	// ctrl+u clears to start of line
+	f, _ = f.Update(keyPressMsg("ctrl+u"))
+	got, _ = f.Field("k")
+	assert.Empty(t, got.Value)
+}
+
+func TestForm_TextFieldCtrlK(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "hello world"},
+	})
+	f.FocusKey("k")
+	// move cursor to position 5 (after "hello")
+	f, _ = f.Update(keyPressMsg("ctrl+a"))
+	for range 5 {
+		f, _ = f.Update(keyPressMsg("right"))
+	}
+	f, _ = f.Update(keyPressMsg("ctrl+k"))
+	got, _ := f.Field("k")
+	assert.Equal(t, "hello", got.Value)
+}
+
+func TestForm_TextFieldAltWordNav(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText, Value: "foo bar baz"},
+	})
+	f.FocusKey("k")
+	// alt+b from end jumps to start of "baz"; insert marker.
+	f, _ = f.Update(keyPressMsg("alt+b"))
+	f, _ = f.Update(keyPressRune('*'))
+	got, _ := f.Field("k")
+	assert.Equal(t, "foo bar *baz", got.Value)
+}
+
+func TestForm_TextareaCtrlU_KillsCurrentLineOnly(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Label: "Value", Kind: components.FieldTextarea, Value: "first line\nsecond"},
+	})
+	f.FocusKey("v")
+	// cursor lands at end of buffer (initialized in NewForm).
+	f, _ = f.Update(keyPressMsg("ctrl+u"))
+	got, _ := f.Field("v")
+	assert.Equal(t, "first line\n", got.Value, "ctrl+u must stop at \\n")
+}
+
+func TestForm_TextareaAltBackspaceKillsWord(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Label: "Value", Kind: components.FieldTextarea, Value: "hello world"},
+	})
+	f.FocusKey("v")
+	f, _ = f.Update(keyPressMsg("alt+backspace"))
+	got, _ := f.Field("v")
+	assert.Equal(t, "hello ", got.Value)
+}
+
 func TestForm_TextFieldEnterIgnoredSinglelineButAddsNewlineForTextarea(t *testing.T) {
 	f := components.NewForm([]components.Field{
 		{Key: "k", Label: "Key", Kind: components.FieldText},

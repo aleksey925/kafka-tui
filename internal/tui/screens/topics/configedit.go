@@ -42,11 +42,12 @@ type ConfigEditOptions struct {
 
 // ConfigEditModel is the topic-level config edit form.
 type ConfigEditModel struct {
-	svc      Service
-	topic    string
-	key      string
-	entry    configcatalog.Entry
-	knownDoc bool
+	svc           Service
+	topic         string
+	key           string
+	entry         configcatalog.Entry
+	knownDoc      bool
+	originalValue string
 
 	form *components.Form
 	mode FormMode
@@ -74,16 +75,27 @@ func NewConfigEditModel(opts ConfigEditOptions) *ConfigEditModel {
 	entry, ok := configcatalog.Lookup(opts.Key)
 	field := buildEditField(entry, ok, opts.CurrentValue)
 	return &ConfigEditModel{
-		svc:      opts.Service,
-		topic:    opts.Topic,
-		key:      opts.Key,
-		entry:    entry,
-		knownDoc: ok,
-		form:     components.NewForm([]components.Field{field}, components.WithFormStyles(styles)),
-		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:      now,
-		styles:   styles,
+		svc:           opts.Service,
+		topic:         opts.Topic,
+		key:           opts.Key,
+		entry:         entry,
+		knownDoc:      ok,
+		originalValue: opts.CurrentValue,
+		form:          components.NewForm([]components.Field{field}, components.WithFormStyles(styles)),
+		toasts:        components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:           now,
+		styles:        styles,
 	}
+}
+
+// clear resets the field to the value loaded from the broker, discarding any
+// in-progress edits.
+func (m *ConfigEditModel) clear() *components.Form {
+	field := buildEditField(m.entry, m.knownDoc, m.originalValue)
+	m.form = components.NewForm([]components.Field{field}, components.WithFormStyles(m.styles))
+	applyMode(m.form, m.mode)
+	m.err = ""
+	return m.form
 }
 
 func buildEditField(entry configcatalog.Entry, known bool, current string) components.Field {
@@ -202,7 +214,7 @@ func (m *ConfigEditModel) actSave() tea.Cmd {
 
 func (m *ConfigEditModel) actEsc(key tea.KeyPressMsg) tea.Cmd {
 	if m.mode == FormInsert || m.form.PopupActive() {
-		m.form, m.mode = updateFormModal(m.form, m.mode, key)
+		m.form, m.mode = updateFormModal(m.form, m.mode, key, m.clear)
 		return nil
 	}
 	if m.saving {
@@ -243,7 +255,7 @@ func (m *ConfigEditModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		// freeze the form until the result lands.
 		return nil
 	}
-	m.form, m.mode = updateFormModal(m.form, m.mode, key)
+	m.form, m.mode = updateFormModal(m.form, m.mode, key, m.clear)
 	return nil
 }
 

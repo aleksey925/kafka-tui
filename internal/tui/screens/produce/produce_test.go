@@ -346,14 +346,17 @@ func TestHeaders_InvalidEntryRejected(t *testing.T) {
 	assert.Contains(t, m.View(), "no-equals-sign")
 }
 
-func TestCtrlR_ClearsAllFields(t *testing.T) {
+func TestCtrlU_NormalClearsAllFields(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
 	typeText(m, "key", "k1")
 	typeText(m, "value", "v1")
+	// clear-form is a NORMAL-only action: in INSERT, ctrl+u is the readline
+	// kill-to-line-start handled by the field. Drop out to NORMAL first.
+	_ = m.Update(keyPress("esc"))
 
-	_ = m.Update(keyPress("ctrl+r"))
+	_ = m.Update(keyPress("ctrl+u"))
 
 	for _, k := range []string{"key", "value"} {
 		got, _ := m.Form().Field(k)
@@ -362,6 +365,46 @@ func TestCtrlR_ClearsAllFields(t *testing.T) {
 	// the topic survives the clear because it lives on the model, not in
 	// the form (it isn't editable from inside the produce screen).
 	assert.Equal(t, "orders", m.Topic())
+}
+
+func TestCtrlU_NoopWhileSegmentedPopupOpen(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	// seed a value the user would lose if the guard regressed.
+	typeText(m, "key", "preserve-me")
+	_ = m.Update(keyPress("esc"))
+	// focus the compression segmented field and open its popup with enter.
+	m.Form().FocusKey("compression")
+	_ = m.Update(keyPress("enter"))
+	require.True(t, m.Form().PopupActive(), "popup must be open for this assertion to be meaningful")
+
+	_ = m.Update(keyPress("ctrl+u"))
+
+	got, _ := m.Form().Field("key")
+	assert.Equal(t, "preserve-me", got.Value, "ctrl+u must yield to an open popup, not wipe the form")
+	assert.True(t, m.Form().PopupActive(), "popup must stay open")
+}
+
+func TestCtrlU_InsertKillsLineNotForm(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+
+	typeText(m, "key", "abcdef")
+	typeText(m, "value", "preserved")
+	// move focus back to key. typeText left the form in INSERT on "value"
+	// and FocusKey doesn't change the mode, so we're now editing "key".
+	m.Form().FocusKey("key")
+	require.Equal(t, produce.ModeInsert, m.Mode())
+
+	// in INSERT, ctrl+u is kill-to-line-start. With the cursor at end of
+	// "abcdef" the whole line dies — but the form-level "clear" must not
+	// fire, so the other field's value is preserved.
+	_ = m.Update(keyPress("ctrl+u"))
+
+	gotKey, _ := m.Form().Field("key")
+	gotVal, _ := m.Form().Field("value")
+	assert.Empty(t, gotKey.Value)
+	assert.Equal(t, "preserved", gotVal.Value, "value field must survive a kill-line on key")
 }
 
 func TestPrefillFromMessage_PopulatesFieldsAndResetsPartition(t *testing.T) {
@@ -470,7 +513,7 @@ func TestHistory_AddedAfterSuccessfulSend(t *testing.T) {
 	assert.Equal(t, []byte("data"), added[0].Value)
 }
 
-func TestCtrlE_OpensEditorAndAppliesEditedValue(t *testing.T) {
+func TestCtrlO_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	svc := newFakeService()
 	calls := 0
 	pager := produce.PagerOpenerFunc(func(initial []byte) ([]byte, error) {
@@ -481,29 +524,29 @@ func TestCtrlE_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 	typeText(m, "value", "seed")
 
-	_ = m.Update(keyPress("ctrl+e"))
+	_ = m.Update(keyPress("ctrl+o"))
 
 	assert.Equal(t, 1, calls)
 	val, _ := m.Form().Field("value")
 	assert.Equal(t, "seed-edited", val.Value)
 }
 
-func TestCtrlE_NoPagerEmitsWarning(t *testing.T) {
+func TestCtrlO_NoPagerEmitsWarning(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
-	_ = m.Update(keyPress("ctrl+e"))
+	_ = m.Update(keyPress("ctrl+o"))
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "no $EDITOR opener configured")
 }
 
-func TestCtrlE_EditorErrorSurfacesToast(t *testing.T) {
+func TestCtrlO_EditorErrorSurfacesToast(t *testing.T) {
 	svc := newFakeService()
 	pager := produce.PagerOpenerFunc(func(_ []byte) ([]byte, error) { return nil, errors.New("boom") })
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 
-	_ = m.Update(keyPress("ctrl+e"))
+	_ = m.Update(keyPress("ctrl+o"))
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "boom")
@@ -998,12 +1041,8 @@ func TestEditSuffix_PreservedAcrossFormRebuilds(t *testing.T) {
 	_ = m.Update(keyPress("enter"))
 	require.Equal(t, produce.ModeInsert, m.Mode())
 
-	// ctrl+r rebuilds the form; mode must stay INSERT and [EDIT] must remain
-	_ = m.Update(keyPress("ctrl+r"))
-	assert.Equal(t, produce.ModeInsert, m.Mode())
-	assert.Contains(t, m.View(), "[EDIT]")
-
-	// ctrl+n past the newest history slot also rebuilds; same invariant
+	// ctrl+n past the newest history slot rebuilds the form; mode must
+	// stay INSERT and [EDIT] must remain.
 	_ = m.Update(keyPress("ctrl+n"))
 	assert.Equal(t, produce.ModeInsert, m.Mode())
 	assert.Contains(t, m.View(), "[EDIT]")
@@ -1120,44 +1159,34 @@ func (h *fakeHistory) Recent(n int) []produce.Entry {
 	return out
 }
 
+var keyPressTable = map[string]tea.KeyPressMsg{
+	"enter":        {Code: tea.KeyEnter},
+	"esc":          {Code: tea.KeyEscape},
+	"backspace":    {Code: tea.KeyBackspace},
+	"tab":          {Code: tea.KeyTab},
+	"shift+tab":    {Code: tea.KeyTab, Mod: tea.ModShift},
+	"down":         {Code: tea.KeyDown},
+	"up":           {Code: tea.KeyUp},
+	"left":         {Code: tea.KeyLeft},
+	"right":        {Code: tea.KeyRight},
+	"ctrl+a":       {Code: 'a', Mod: tea.ModCtrl},
+	"ctrl+e":       {Code: 'e', Mod: tea.ModCtrl},
+	"ctrl+k":       {Code: 'k', Mod: tea.ModCtrl},
+	"ctrl+n":       {Code: 'n', Mod: tea.ModCtrl},
+	"ctrl+o":       {Code: 'o', Mod: tea.ModCtrl},
+	"ctrl+p":       {Code: 'p', Mod: tea.ModCtrl},
+	"ctrl+s":       {Code: 's', Mod: tea.ModCtrl},
+	"ctrl+shift+s": {Code: 's', Mod: tea.ModCtrl | tea.ModShift},
+	"ctrl+u":       {Code: 'u', Mod: tea.ModCtrl},
+	"ctrl+w":       {Code: 'w', Mod: tea.ModCtrl},
+	"ctrl+x":       {Code: 'x', Mod: tea.ModCtrl},
+	"shift++":      {Code: '+', Mod: tea.ModShift},
+	"shift+-":      {Code: '-', Mod: tea.ModShift},
+}
+
 func keyPress(name string) tea.KeyPressMsg {
-	switch name {
-	case "enter":
-		return tea.KeyPressMsg{Code: tea.KeyEnter}
-	case "esc":
-		return tea.KeyPressMsg{Code: tea.KeyEscape}
-	case "backspace":
-		return tea.KeyPressMsg{Code: tea.KeyBackspace}
-	case "tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-	case "down":
-		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "up":
-		return tea.KeyPressMsg{Code: tea.KeyUp}
-	case "ctrl+e":
-		return tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl}
-	case "ctrl+x":
-		return tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl}
-	case "ctrl+n":
-		return tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl}
-	case "ctrl+p":
-		return tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}
-	case "ctrl+r":
-		return tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}
-	case "ctrl+s":
-		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
-	case "ctrl+shift+s":
-		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl | tea.ModShift}
-	case "shift++":
-		return tea.KeyPressMsg{Code: '+', Mod: tea.ModShift}
-	case "shift+-":
-		return tea.KeyPressMsg{Code: '-', Mod: tea.ModShift}
-	case "left":
-		return tea.KeyPressMsg{Code: tea.KeyLeft}
-	case "right":
-		return tea.KeyPressMsg{Code: tea.KeyRight}
+	if msg, ok := keyPressTable[name]; ok {
+		return msg
 	}
 	if len(name) == 1 {
 		r := rune(name[0])

@@ -34,7 +34,16 @@ func NewCreateForm(styles theme.Styles) *CreateForm {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	fields := []components.Field{
+	cf := &CreateForm{
+		form:   components.NewForm(createFormFields(), components.WithFormStyles(styles)),
+		styles: styles,
+	}
+	cf.form.SetEditing(false)
+	return cf
+}
+
+func createFormFields() []components.Field {
+	return []components.Field{
 		{Key: "name", Label: "Name", Kind: components.FieldText},
 		{Key: "partitions", Label: "Partitions", Kind: components.FieldText, Value: "1"},
 		{Key: "replication_factor", Label: "Replication factor", Kind: components.FieldText, Value: "1"},
@@ -42,17 +51,17 @@ func NewCreateForm(styles theme.Styles) *CreateForm {
 		{Key: "retention_ms", Label: "retention.ms", Kind: components.FieldText, Value: ""},
 		{Key: "min_insync_replicas", Label: "min.insync.replicas", Kind: components.FieldText, Value: ""},
 	}
-	cf := &CreateForm{
-		form:   components.NewForm(fields, components.WithFormStyles(styles)),
-		styles: styles,
-	}
-	cf.form.SetEditing(false)
-	return cf
 }
 
 func (c *CreateForm) Form() *components.Form { return c.form }
 
 func (c *CreateForm) Mode() FormMode { return c.mode }
+
+func (c *CreateForm) clear() *components.Form {
+	c.form = components.NewForm(createFormFields(), components.WithFormStyles(c.styles))
+	applyMode(c.form, c.mode)
+	return c.form
+}
 
 func (c *CreateForm) Update(msg tea.Msg) (*CreateForm, tea.Cmd) {
 	c.err = ""
@@ -60,7 +69,7 @@ func (c *CreateForm) Update(msg tea.Msg) (*CreateForm, tea.Cmd) {
 	if !ok {
 		return c, nil
 	}
-	c.form, c.mode = updateFormModal(c.form, c.mode, key)
+	c.form, c.mode = updateFormModal(c.form, c.mode, key, c.clear)
 	return c, nil
 }
 
@@ -138,7 +147,12 @@ func formHintLine(mode FormMode, verb string) string {
 // updateFormModal is the shared NORMAL/INSERT state machine for the
 // create and clone forms; editing flag and focused-suffix are kept in
 // sync as a side effect.
-func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) (*components.Form, FormMode) {
+//
+// clearFn, when non-nil, is invoked on ctrl+u in NORMAL — the form-level
+// "reset to defaults" action. It returns the rebuilt form so the caller can
+// adopt the new pointer. In INSERT ctrl+u stays a field-level kill (handled
+// inside the form via lineedit), so no collision.
+func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg, clearFn func() *components.Form) (*components.Form, FormMode) {
 	if mode == FormInsert {
 		switch key.String() {
 		case keyEsc:
@@ -171,6 +185,17 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg) 
 		return form, mode
 	case "shift+tab", "up", "k":
 		form.FocusPrev()
+		return form, mode
+	case "ctrl+u":
+		// popup is a modal sub-state — defer the form-level clear until it
+		// closes, so the user picking an option doesn't accidentally wipe
+		// every field they already filled in.
+		if form.PopupActive() {
+			return form, mode
+		}
+		if clearFn != nil {
+			form = clearFn()
+		}
 		return form, mode
 	case "enter":
 		// pickers handle enter natively (cycle / open popup); other
@@ -215,18 +240,21 @@ func NewCloneForm(source string, styles theme.Styles) *CloneForm {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	fields := []components.Field{
-		{Key: "destination", Label: "Destination", Kind: components.FieldText, Value: source + "-clone"},
-		{Key: "replication_factor", Label: "Replication factor (0=source)", Kind: components.FieldText, Value: "0"},
-		{Key: "copy_configs", Label: "Copy configs", Kind: components.FieldSegmented, Options: []string{"yes", "no"}, Value: "yes"},
-	}
 	cf := &CloneForm{
 		source: source,
-		form:   components.NewForm(fields, components.WithFormStyles(styles)),
+		form:   components.NewForm(cloneFormFields(source), components.WithFormStyles(styles)),
 		styles: styles,
 	}
 	cf.form.SetEditing(false)
 	return cf
+}
+
+func cloneFormFields(source string) []components.Field {
+	return []components.Field{
+		{Key: "destination", Label: "Destination", Kind: components.FieldText, Value: source + "-clone"},
+		{Key: "replication_factor", Label: "Replication factor (0=source)", Kind: components.FieldText, Value: "0"},
+		{Key: "copy_configs", Label: "Copy configs", Kind: components.FieldSegmented, Options: []string{"yes", "no"}, Value: "yes"},
+	}
 }
 
 func (c *CloneForm) Mode() FormMode { return c.mode }
@@ -235,13 +263,19 @@ func (c *CloneForm) Source() string { return c.source }
 
 func (c *CloneForm) Form() *components.Form { return c.form }
 
+func (c *CloneForm) clear() *components.Form {
+	c.form = components.NewForm(cloneFormFields(c.source), components.WithFormStyles(c.styles))
+	applyMode(c.form, c.mode)
+	return c.form
+}
+
 func (c *CloneForm) Update(msg tea.Msg) (*CloneForm, tea.Cmd) {
 	c.err = ""
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return c, nil
 	}
-	c.form, c.mode = updateFormModal(c.form, c.mode, key)
+	c.form, c.mode = updateFormModal(c.form, c.mode, key, c.clear)
 	return c, nil
 }
 
