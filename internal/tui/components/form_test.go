@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
@@ -840,6 +841,109 @@ func TestForm_SetFocusedSuffixAndEditing(t *testing.T) {
 
 	// suffix appears next to focused field's label.
 	f.SetFocusedSuffix("[EDIT]")
+	assert.Contains(t, f.View(), "[EDIT]")
+}
+
+func TestForm_Reset_RestoresValuesAndPreservesInjectedOptions(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "partition", Label: "Partition", Kind: components.FieldSegmented,
+			Options: []string{"auto"}, Value: "auto"},
+		{Key: "key", Label: "Key", Kind: components.FieldText, Value: ""},
+	})
+
+	// simulate the async-load path: a screen calls SetOptions after some
+	// real data arrives, then the user picks a non-default value.
+	f.SetOptions("partition", []string{"auto", "0", "1", "2", "3"})
+	f.SetValue("partition", "2")
+	f.SetValue("key", "user-typed")
+
+	f.Reset()
+
+	partition, _ := f.Field("partition")
+	assert.Equal(t,
+		[]string{"auto", "0", "1", "2", "3"},
+		partition.Options,
+		"injected options must survive Reset — they are structure, not value",
+	)
+	assert.Equal(t, "auto", partition.Value, "Value returns to construction default")
+
+	key, _ := f.Field("key")
+	assert.Empty(t, key.Value, "text field returns to construction default")
+}
+
+func TestForm_Reset_ClearsListEntriesAndCursor(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "headers", Label: "Headers", Kind: components.FieldList},
+	})
+	f.FocusKey("headers")
+	// add two rows so list/cursor state diverges from construction.
+	f.AppendListRow()
+	f.InsertAtCursor("first")
+	f.AppendListRow()
+	f.InsertAtCursor("second")
+
+	f.Reset()
+
+	got, _ := f.Field("headers")
+	assert.Empty(t, got.List, "list rows must reset to the construction default (empty)")
+	assert.Equal(t, 0, f.ListEntryCursor("headers"), "list entry cursor must reset to construction position")
+}
+
+func TestForm_Reset_MovesFocusBackToFirstField(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "a", Label: "A", Kind: components.FieldText},
+		{Key: "b", Label: "B", Kind: components.FieldText},
+		{Key: "c", Label: "C", Kind: components.FieldText},
+	})
+	f.FocusKey("c")
+	require.Equal(t, 2, f.Focused())
+
+	f.Reset()
+
+	assert.Equal(t, 0, f.Focused())
+}
+
+func TestForm_Reset_RestoresTextCursorToValueEnd(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "K", Kind: components.FieldText, Value: "hello"},
+	})
+	f.FocusKey("k")
+	// move cursor away from the construction position.
+	for range 3 {
+		f, _ = f.Update(keyPressMsg("left"))
+	}
+	require.Equal(t, 2, f.CursorAt("k"))
+
+	f.Reset()
+
+	assert.Equal(t, len("hello"), f.CursorAt("k"), "cursor returns to end of default value")
+}
+
+func TestForm_Reset_ClosesOpenSegmentedPopup(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Options: []string{"none", "gzip"}, Value: "none"},
+	})
+	f.SetSegmentedPopup("c", true)
+	require.True(t, f.PopupActive())
+
+	f.Reset()
+
+	assert.False(t, f.PopupActive(), "Reset returns to clean construction state — no popup")
+}
+
+func TestForm_Reset_LeavesEditingFlagAndSuffixToHost(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "K", Kind: components.FieldText},
+	})
+	f.SetEditing(false)
+	f.SetFocusedSuffix("[EDIT]")
+
+	f.Reset()
+
+	// editing flag and suffix are host-owned (set by the screen's mode-restore
+	// logic after clear). Reset must not stomp them.
+	assert.False(t, f.Editing())
 	assert.Contains(t, f.View(), "[EDIT]")
 }
 

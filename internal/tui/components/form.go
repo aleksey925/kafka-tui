@@ -52,10 +52,16 @@ type Field struct {
 //
 // `editing` controls cursor visibility on text-like fields. Hosting screens
 // implementing modal editing toggle this so the caret is hidden in command mode.
+//
+// `defaults` is a snapshot of the value-side state (Value / List / cursors)
+// captured at construction time. [Form.Reset] restores from it without touching
+// Options injected later via [Form.SetOptions] — see the comment on Reset for
+// the contract.
 type Form struct {
-	fields  []Field
-	focus   int
-	editing bool
+	fields   []Field
+	defaults []Field
+	focus    int
+	editing  bool
 
 	focusedSuffix string
 
@@ -74,10 +80,52 @@ func NewForm(fields []Field, opts ...FormOption) *Form {
 			f.fields[i].listEntryCursor = lineedit.RuneLen(f.fields[i].List[f.fields[i].listCursor])
 		}
 	}
+	f.defaults = snapshotDefaults(f.fields)
 	for _, opt := range opts {
 		opt(f)
 	}
 	return f
+}
+
+// snapshotDefaults captures the value-side state of each field at construction
+// time. List is deep-copied so later in-place mutations (AppendListRow,
+// listRemoveCurrent) can't bleed back into the snapshot.
+func snapshotDefaults(fields []Field) []Field {
+	out := make([]Field, len(fields))
+	for i, fld := range fields {
+		out[i] = Field{
+			Value:           fld.Value,
+			List:            append([]string(nil), fld.List...),
+			textCursor:      fld.textCursor,
+			listCursor:      fld.listCursor,
+			listEntryCursor: fld.listEntryCursor,
+		}
+	}
+	return out
+}
+
+// Reset restores every field's Value, List and cursor positions to the state
+// captured at construction time and moves focus back to the first field.
+// Options injected later via [Form.SetOptions] survive — they are field
+// structure, not value, so a screen that loaded async data (e.g. partition
+// lists) does not lose it on reset. Kind, Label, Key and Validator are also
+// preserved. Any open segmented popup is closed.
+//
+// The host-owned visual state (editing flag, focused-suffix) is intentionally
+// not touched: the host re-applies it as part of its own mode-restore logic
+// (see [Form.SetEditing] / [Form.SetFocusedSuffix]).
+func (f *Form) Reset() {
+	for i := range f.fields {
+		d := f.defaults[i]
+		f.fields[i].Value = d.Value
+		f.fields[i].List = append([]string(nil), d.List...)
+		f.fields[i].textCursor = d.textCursor
+		f.fields[i].listCursor = d.listCursor
+		f.fields[i].listEntryCursor = d.listEntryCursor
+		f.fields[i].popupOpen = false
+		f.fields[i].popupOriginal = ""
+	}
+	f.focus = 0
 }
 
 type FormOption func(*Form)

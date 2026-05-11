@@ -91,8 +91,7 @@ func NewConfigEditModel(opts ConfigEditOptions) *ConfigEditModel {
 // clear resets the field to the value loaded from the broker, discarding any
 // in-progress edits.
 func (m *ConfigEditModel) clear() *components.Form {
-	field := buildEditField(m.entry, m.knownDoc, m.originalValue)
-	m.form = components.NewForm([]components.Field{field}, components.WithFormStyles(m.styles))
+	m.form.Reset()
 	applyMode(m.form, m.mode)
 	m.err = ""
 	return m.form

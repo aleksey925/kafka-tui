@@ -58,7 +58,7 @@ func (c *CreateForm) Form() *components.Form { return c.form }
 func (c *CreateForm) Mode() FormMode { return c.mode }
 
 func (c *CreateForm) clear() *components.Form {
-	c.form = components.NewForm(createFormFields(), components.WithFormStyles(c.styles))
+	c.form.Reset()
 	applyMode(c.form, c.mode)
 	return c.form
 }
@@ -282,7 +282,7 @@ func (c *CloneForm) Source() string { return c.source }
 func (c *CloneForm) Form() *components.Form { return c.form }
 
 func (c *CloneForm) clear() *components.Form {
-	c.form = components.NewForm(cloneFormFields(c.source), components.WithFormStyles(c.styles))
+	c.form.Reset()
 	applyMode(c.form, c.mode)
 	return c.form
 }

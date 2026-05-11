@@ -870,8 +870,9 @@ func (m *Model) recordHistory(spec kafka.ProduceSpec) {
 }
 
 func (m *Model) clear() {
-	m.form = m.buildForm()
+	m.form.Reset()
 	m.setMode(m.mode)
+	m.resetPartitionTypeBuf()
 	m.err = ""
 	m.histPos = -1
 	m.histBuf = nil
@@ -896,8 +897,10 @@ func (m *Model) historyStep(delta int) {
 	}
 	m.histPos = pos
 	if pos < 0 {
-		// stepped past the newest — reset to an empty form.
-		m.form = m.buildForm()
+		// stepped past the newest — reset to a clean form. Reset keeps
+		// dynamically-loaded partition options so the picker doesn't
+		// collapse to {auto} every time the user walks off the end.
+		m.form.Reset()
 		m.setMode(m.mode)
 		return
 	}

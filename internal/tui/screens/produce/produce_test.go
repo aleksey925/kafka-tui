@@ -367,6 +367,49 @@ func TestCtrlU_NormalClearsAllFields(t *testing.T) {
 	assert.Equal(t, "orders", m.Topic())
 }
 
+// Regression: ctrl+u in NORMAL must keep the partition options that were
+// loaded asynchronously for the current topic. Previously clear() rebuilt
+// the form from scratch and collapsed the picker back to {auto}, leaving
+// the user no way to re-select a specific partition without switching
+// topics and back.
+func TestCtrlU_NormalPreservesLoadedPartitionOptions(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2, 3)
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	drive(t, m, m.Init())
+
+	typeText(m, "key", "k1")
+	_ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("ctrl+u"))
+
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, []string{"auto", "0", "1", "2", "3"}, got.Options)
+	assert.Equal(t, "auto", got.Value, "value falls back to the construction default")
+}
+
+// Regression: ctrl+n stepping past the newest history entry resets the form
+// the same way ctrl+u does. The partition options must be preserved too —
+// before the fix, this path also rebuilt the form and dropped the picker
+// to {auto}.
+func TestHistoryStep_PastNewestPreservesLoadedPartitionOptions(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1, 2)
+	hist := newFakeHistory()
+	hist.entries = []produce.Entry{
+		{Topic: "orders", Partition: 1, Compression: kafka.CompressionNone, Key: []byte("k"), Value: []byte("v")},
+	}
+	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
+	drive(t, m, m.Init())
+
+	// ctrl+p lands on the newest entry; ctrl+n then walks off the end and
+	// triggers the past-newest "reset to clean form" branch.
+	_ = m.Update(keyPress("ctrl+p"))
+	_ = m.Update(keyPress("ctrl+n"))
+
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, []string{"auto", "0", "1", "2"}, got.Options)
+}
+
 func TestPaste_InNormalAutoEntersInsertAndInsertsValue(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
