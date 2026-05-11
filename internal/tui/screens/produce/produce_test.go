@@ -209,7 +209,7 @@ func TestPartition_RapidTopicTogglePreservesOptionsAfterReturn(t *testing.T) {
 	svc := newFakeService()
 	svc.setPartitions(0, 1, 2)
 	hist := newFakeHistory()
-	// histBuf[0] is newest; ctrl+p walks toward older entries.
+	// histBuf[0] is newest; `p` walks toward older entries.
 	hist.entries = []produce.Entry{
 		{Topic: "topic-a", Partition: 0, Compression: kafka.CompressionNone},
 		{Topic: "topic-b", Partition: 0, Compression: kafka.CompressionNone},
@@ -217,19 +217,19 @@ func TestPartition_RapidTopicTogglePreservesOptionsAfterReturn(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "topic-a", History: hist})
 	drive(t, m, m.Init())
 
-	// ctrl+p onto the topic-a entry — same topic, no reload expected.
-	_ = m.Update(keyPress("ctrl+p"))
+	// `p` onto the topic-a entry — same topic, no reload expected.
+	_ = m.Update(keyPress("p"))
 
-	// ctrl+p onto the topic-b entry — options are wiped and a load for
+	// `p` onto the topic-b entry — options are wiped and a load for
 	// topic-b is emitted. Intentionally do NOT drive that cmd: we want to
 	// model the case where the user moves away before topic-b's metadata
 	// arrives.
-	_ = m.Update(keyPress("ctrl+p"))
+	_ = m.Update(keyPress("p"))
 
-	// ctrl+n back to the topic-a entry. The picker must re-issue a fetch
+	// `n` back to the topic-a entry. The picker must re-issue a fetch
 	// for topic-a (the prior wipe to [auto] cleared its options).
-	cmd := m.Update(keyPress("ctrl+n"))
-	require.NotNil(t, cmd, "ctrl+n back to topic-a must re-fetch its partitions")
+	cmd := m.Update(keyPress("n"))
+	require.NotNil(t, cmd, "n back to topic-a must re-fetch its partitions")
 	drive(t, m, cmd)
 
 	got, ok := m.Form().Field("partition")
@@ -387,8 +387,8 @@ func TestCtrlU_NormalPreservesLoadedPartitionOptions(t *testing.T) {
 	assert.Equal(t, "auto", got.Value, "value falls back to the construction default")
 }
 
-// Regression: ctrl+n stepping past the newest history entry resets the form
-// the same way ctrl+u does. The partition options must be preserved too —
+// Regression: stepping past the newest history entry resets the form the
+// same way ctrl+u does. The partition options must be preserved too —
 // before the fix, this path also rebuilt the form and dropped the picker
 // to {auto}.
 func TestHistoryStep_PastNewestPreservesLoadedPartitionOptions(t *testing.T) {
@@ -401,10 +401,10 @@ func TestHistoryStep_PastNewestPreservesLoadedPartitionOptions(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
 	drive(t, m, m.Init())
 
-	// ctrl+p lands on the newest entry; ctrl+n then walks off the end and
+	// `p` lands on the newest entry; `n` then walks off the end and
 	// triggers the past-newest "reset to clean form" branch.
-	_ = m.Update(keyPress("ctrl+p"))
-	_ = m.Update(keyPress("ctrl+n"))
+	_ = m.Update(keyPress("p"))
+	_ = m.Update(keyPress("n"))
 
 	got, _ := m.Form().Field("partition")
 	assert.Equal(t, []string{"auto", "0", "1", "2"}, got.Options)
@@ -542,7 +542,7 @@ func TestHistoryPrefill_TopOpensWithLastEntry(t *testing.T) {
 	assert.Equal(t, "gzip", cmp.Value)
 }
 
-func TestCtrlP_StepsThroughHistory(t *testing.T) {
+func TestP_StepsThroughHistory(t *testing.T) {
 	svc := newFakeService()
 	hist := newFakeHistory()
 	hist.Add(produce.Entry{Topic: "orders", Value: []byte("oldest"), Partition: kafka.PartitionAuto})
@@ -554,33 +554,33 @@ func TestCtrlP_StepsThroughHistory(t *testing.T) {
 	val, _ := m.Form().Field("value")
 	assert.Equal(t, "newest", val.Value, "fresh open prefills with newest entry for topic")
 
-	// ctrl+p walks back into older entries.
-	_ = m.Update(keyPress("ctrl+p"))
+	// `p` walks back into older entries.
+	_ = m.Update(keyPress("p"))
 	val, _ = m.Form().Field("value")
-	assert.Equal(t, "newest", val.Value, "first ctrl+p selects pos 0 (newest)")
+	assert.Equal(t, "newest", val.Value, "first p selects pos 0 (newest)")
 
-	_ = m.Update(keyPress("ctrl+p"))
+	_ = m.Update(keyPress("p"))
 	val, _ = m.Form().Field("value")
 	assert.Equal(t, "middle", val.Value)
 
-	_ = m.Update(keyPress("ctrl+p"))
+	_ = m.Update(keyPress("p"))
 	val, _ = m.Form().Field("value")
 	assert.Equal(t, "oldest", val.Value)
 
-	// ctrl+n steps forward.
-	_ = m.Update(keyPress("ctrl+n"))
+	// `n` steps forward.
+	_ = m.Update(keyPress("n"))
 	val, _ = m.Form().Field("value")
 	assert.Equal(t, "middle", val.Value)
 }
 
-func TestCtrlN_PastNewestResetsForm(t *testing.T) {
+func TestN_PastNewestResetsForm(t *testing.T) {
 	svc := newFakeService()
 	hist := newFakeHistory()
 	hist.Add(produce.Entry{Topic: "orders", Value: []byte("only"), Partition: kafka.PartitionAuto})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
 
-	_ = m.Update(keyPress("ctrl+p")) // pos 0 (newest)
-	_ = m.Update(keyPress("ctrl+n")) // pos -1: empty form
+	_ = m.Update(keyPress("p")) // pos 0 (newest)
+	_ = m.Update(keyPress("n")) // pos -1: empty form
 
 	val, _ := m.Form().Field("value")
 	assert.Empty(t, val.Value)
@@ -605,7 +605,7 @@ func TestHistory_AddedAfterSuccessfulSend(t *testing.T) {
 	assert.Equal(t, []byte("data"), added[0].Value)
 }
 
-func TestCtrlO_OpensEditorAndAppliesEditedValue(t *testing.T) {
+func TestE_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	svc := newFakeService()
 	calls := 0
 	pager := produce.PagerOpenerFunc(func(initial []byte) tea.Cmd {
@@ -615,10 +615,13 @@ func TestCtrlO_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 	typeText(m, "value", "seed")
+	// typeText leaves the form in INSERT; back to NORMAL so `e` is a binding,
+	// not a literal letter into the textarea.
+	_ = m.Update(keyPress("esc"))
 
-	// ctrl+o returns an async Cmd that posts EditorEditedMsg — drive() runs
+	// `e` returns an async Cmd that posts EditorEditedMsg — drive() runs
 	// it so the result reaches handleEditorResult.
-	cmd := m.Update(keyPress("ctrl+o"))
+	cmd := m.Update(keyPress("e"))
 	drive(t, m, cmd)
 
 	assert.Equal(t, 1, calls)
@@ -626,25 +629,25 @@ func TestCtrlO_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	assert.Equal(t, "seed-edited", val.Value)
 }
 
-func TestCtrlO_NoPagerEmitsWarning(t *testing.T) {
+func TestE_NoPagerEmitsWarning(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
-	cmd := m.Update(keyPress("ctrl+o"))
+	cmd := m.Update(keyPress("e"))
 	drive(t, m, cmd)
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "no $EDITOR opener configured")
 }
 
-func TestCtrlO_EditorErrorSurfacesToast(t *testing.T) {
+func TestE_EditorErrorSurfacesToast(t *testing.T) {
 	svc := newFakeService()
 	pager := produce.PagerOpenerFunc(func(_ []byte) tea.Cmd {
 		return func() tea.Msg { return produce.EditorEditedMsg{Err: errors.New("boom")} }
 	})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 
-	cmd := m.Update(keyPress("ctrl+o"))
+	cmd := m.Update(keyPress("e"))
 	drive(t, m, cmd)
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
@@ -1059,15 +1062,11 @@ func TestHeadersInsert_PlusUnderscoreAreLiterals(t *testing.T) {
 	assert.Equal(t, []string{"x_user=a+b"}, got.List, "+ and _ must be insertable in header values")
 }
 
-func TestHeadersInsert_CtrlNOverridesGlobalHistory(t *testing.T) {
-	// On non-list fields ctrl+n is "history step (newer)". On Headers in
-	// INSERT it must be intercepted as "add row" before the global handler.
+func TestHeadersInsert_CtrlNAddsRowAfterTyping(t *testing.T) {
 	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
 	m.Form().FocusKey("headers")
 	_ = m.Update(keyPress("enter")) // INSERT, empty row
 
-	// type something so the row is non-empty, then ctrl+n must add a new
-	// row (not jump to history).
 	for _, r := range "k=v" {
 		_ = m.Update(keyPressRune(r))
 	}
@@ -1128,23 +1127,6 @@ func TestEditSuffix_ShownNextToFocusedFieldInInsert(t *testing.T) {
 	_ = m.Update(keyPress("esc"))
 	out = m.View()
 	assert.NotContains(t, out, "[EDIT]")
-}
-
-func TestEditSuffix_PreservedAcrossFormRebuilds(t *testing.T) {
-	hist := newFakeHistory()
-	hist.Add(produce.Entry{Topic: "orders", Value: []byte("v1")})
-	m := produce.New(produce.Options{
-		Service: newFakeService(), Topic: "orders", History: hist,
-	})
-	m.Form().FocusKey("key")
-	_ = m.Update(keyPress("enter"))
-	require.Equal(t, produce.ModeInsert, m.Mode())
-
-	// ctrl+n past the newest history slot rebuilds the form; mode must
-	// stay INSERT and [EDIT] must remain.
-	_ = m.Update(keyPress("ctrl+n"))
-	assert.Equal(t, produce.ModeInsert, m.Mode())
-	assert.Contains(t, m.View(), "[EDIT]")
 }
 
 // ----- helpers -----
@@ -1272,8 +1254,6 @@ var keyPressTable = map[string]tea.KeyPressMsg{
 	"ctrl+e":       {Code: 'e', Mod: tea.ModCtrl},
 	"ctrl+k":       {Code: 'k', Mod: tea.ModCtrl},
 	"ctrl+n":       {Code: 'n', Mod: tea.ModCtrl},
-	"ctrl+o":       {Code: 'o', Mod: tea.ModCtrl},
-	"ctrl+p":       {Code: 'p', Mod: tea.ModCtrl},
 	"ctrl+s":       {Code: 's', Mod: tea.ModCtrl},
 	"ctrl+shift+s": {Code: 's', Mod: tea.ModCtrl | tea.ModShift},
 	"ctrl+u":       {Code: 'u', Mod: tea.ModCtrl},

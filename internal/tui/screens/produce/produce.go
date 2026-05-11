@@ -28,7 +28,7 @@ type Service interface {
 	TopicPartitions(ctx context.Context, topic string) ([]kafka.PartitionDetail, error)
 }
 
-// History persists past produces for prefill / ctrl+p / ctrl+n.
+// History persists past produces for prefill / p / n.
 type History interface {
 	LastForTopic(topic string) (Entry, bool)
 	Recent(n int) []Entry
@@ -349,28 +349,30 @@ func (m *Model) bindings() []keymap.Binding {
 	return append(m.globalBindings(), m.normalBindings()...)
 }
 
-// globalBindings fire in both NORMAL and INSERT. Anything that would conflict
-// with field-level editing (like ctrl+u = kill-line) must live in normalBindings
-// instead.
+// globalBindings fire in both NORMAL and INSERT — kept minimal so that letters
+// remain available for text input. Send lives here so the user can dispatch
+// without leaving INSERT; the heavy ctrl+s combo is the safety net against
+// accidental sends.
 func (m *Model) globalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"ctrl+s"}, Label: "send (close form)", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(true) }},
 		{Keys: []string{"ctrl+shift+s"}, Label: "send & keep open", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(false) }},
-		{Keys: []string{"ctrl+o"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
-		{Keys: []string{"ctrl+p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
-		{Keys: []string{"ctrl+n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 	}
 }
 
 // normalBindings are NOT consulted in INSERT so tab/enter/esc retain
-// their text-editing meaning. ctrl+u lives here too because in INSERT it is
-// the readline kill-to-line-start handled by the lineedit-backed form.
+// their text-editing meaning. Letter shortcuts (e/p/n) live here because in
+// INSERT they are literal text; ctrl+u lives here too because in INSERT it
+// is the readline kill-to-line-start handled by the lineedit-backed form.
 func (m *Model) normalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"+", "_", "shift++", "shift+-"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
 		{Keys: []string{"tab", "down"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
 		{Keys: []string{"shift+tab", "up"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
+		{Keys: []string{"e"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
+		{Keys: []string{"p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
+		{Keys: []string{"n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
 		{Keys: []string{"esc"}, Label: "cancel edit / close form", Category: "Form", Hint: true, HandlerMsg: m.handleEscNormal},
 	}
@@ -480,8 +482,8 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-	// list shortcuts on Headers in INSERT win over globals: ctrl+n means
-	// "add row" here, not "history next".
+	// list shortcuts (ctrl+n add row, ctrl+x remove row) live only on the
+	// Headers list in INSERT.
 	if m.mode == ModeInsert && m.form.FocusedField().Kind == components.FieldList {
 		if m.handleInsertListShortcut(key) {
 			return nil
@@ -715,7 +717,7 @@ func (m *Model) handleInsertEnter(key tea.KeyPressMsg) tea.Cmd {
 }
 
 // handleInsertListShortcut covers the headers-only ctrl+n (new row) and
-// ctrl+x (cut) in INSERT; takes priority over the global history shortcut.
+// ctrl+x (cut) in INSERT.
 func (m *Model) handleInsertListShortcut(key tea.KeyPressMsg) (consumed bool) {
 	switch key.String() {
 	case "ctrl+n":
@@ -864,7 +866,7 @@ func (m *Model) recordHistory(spec kafka.ProduceSpec) {
 	if m.hist != nil {
 		m.hist.Add(entry)
 	}
-	// invalidate the in-memory cursor so the next ctrl+p refetches.
+	// invalidate the in-memory cursor so the next `p` refetches.
 	m.histBuf = nil
 	m.histPos = -1
 }
@@ -878,7 +880,7 @@ func (m *Model) clear() {
 	m.histBuf = nil
 }
 
-// historyStep: +1 = older (ctrl+p), -1 = newer (ctrl+n). Lazy-loads.
+// historyStep: +1 = older (p), -1 = newer (n). Lazy-loads.
 func (m *Model) historyStep(delta int) {
 	if m.hist == nil {
 		m.toasts.Push(components.ToastInfo, "history disabled")
@@ -975,9 +977,9 @@ func (m *Model) View() string {
 	case m.mode == ModeInsert:
 		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  readline: ctrl+a/e ctrl+u/k ctrl+w  on headers: ctrl+n add row  ctrl+x remove row"
 	case m.fullscreen:
-		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+u clear  esc back to split"
+		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+u clear  e $EDITOR  p/n history  esc back to split"
 	default:
-		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+u clear form  ctrl+o $EDITOR  esc cancel"
+		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+u clear form  e $EDITOR  p/n history  esc cancel"
 	}
 	hint := m.styles.HintLabel.Render(hintText)
 
@@ -1033,7 +1035,7 @@ func (m *Model) renderTabs() string {
 // ----- Messages -----
 
 // ProduceResultMsg.Close is true for ctrl+s (send & close), false for
-// ctrl+shift+s (send & keep).
+// ctrl+shift+s (send & keep open).
 type ProduceResultMsg struct {
 	Spec   kafka.ProduceSpec
 	Result kafka.ProduceResult

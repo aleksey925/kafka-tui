@@ -65,11 +65,10 @@ type Bootstrap struct {
 	// MessagesViewState persists per-(cluster, topic) seek state. nil
 	// disables persistence; the screen always starts at `latest`.
 	MessagesViewState messages.ViewStateRepository
-	// Pager opens the produce value field in $EDITOR. nil disables ctrl+e.
-	Pager           produce.PagerOpener
-	StartupWarnings []string
-	ReadOnly        bool
-	Now             func() time.Time
+	Pager             produce.PagerOpener
+	StartupWarnings   []string
+	ReadOnly          bool
+	Now               func() time.Time
 	// ConfigReloader re-reads config files from disk. nil disables manual reload.
 	ConfigReloader func() (*config.Loaded, []config.Cluster, string, error)
 	// ConfigSnapshots is the channel emitted by [config.Watcher]. nil

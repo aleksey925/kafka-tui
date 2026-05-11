@@ -1,5 +1,14 @@
 # Design decisions
 
+## Reference UX: k9s
+
+The app's UX is largely modeled on k9s — navigation flow, modal browsing, and
+shortcut conventions. Where a k9s shortcut maps cleanly to a Kafka concept, we
+reuse it; where there is no direct analogue, we follow the same shape
+(single-letter actions in browse contexts, capitals for mutating variants,
+`ctrl+` only when a modifier is genuinely needed) rather than invent a new
+style.
+
 ## Single source of behavior
 
 When a behavior must be uniform across the app (edit semantics, paste
@@ -72,8 +81,8 @@ it must cleanly release the terminal before that process runs and restore it
 after. Otherwise the user comes back to a corrupted screen — the TUI and the
 child end up fighting over the same tty.
 
-Convention for editor-style handoffs: `ctrl+o` (open) — `ctrl+e` is reserved
-for "move to end of line" everywhere.
+Convention for editor-style handoffs: `e` (open). `ctrl+e` must never be used
+— it is reserved for "move to end of line" in text input.
 
 ## Paste
 
