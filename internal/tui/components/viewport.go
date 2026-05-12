@@ -140,9 +140,9 @@ func (v *Viewport) HScrollBy(delta int) {
 	v.clamp()
 }
 
-func (v *Viewport) PageDown() { v.ScrollBy(v.pageStep()) }
+func (v *Viewport) PageDown() { v.ScrollBy(v.PageStep()) }
 
-func (v *Viewport) PageUp() { v.ScrollBy(-v.pageStep()) }
+func (v *Viewport) PageUp() { v.ScrollBy(-v.PageStep()) }
 
 func (v *Viewport) ScrollToTop() {
 	v.scrollTop = 0
@@ -219,12 +219,12 @@ func (v *Viewport) HandleKey(key tea.KeyPressMsg) bool {
 		return true
 	case "h", "left":
 		if !v.wrap {
-			v.HScrollBy(-v.hStep())
+			v.HScrollBy(-v.HStep())
 			return true
 		}
 	case "l", "right":
 		if !v.wrap {
-			v.HScrollBy(+v.hStep())
+			v.HScrollBy(+v.HStep())
 			return true
 		}
 	case "w":
@@ -262,14 +262,21 @@ func (v *Viewport) View() string {
 	return strings.Join(out, "\n")
 }
 
-func (v *Viewport) pageStep() int {
+// PageStep is the vertical jump used by PageDown / PageUp — one screenful
+// minus one line so the user keeps a row of context across the boundary.
+// Exposed for screens that build their own scroll commands instead of using
+// HandleKey.
+func (v *Viewport) PageStep() int {
 	if v.height <= 1 {
 		return 1
 	}
 	return v.height - 1
 }
 
-func (v *Viewport) hStep() int {
+// HStep is the horizontal jump used by HScrollBy bindings — a quarter of
+// the viewport width, with a floor of 1 cell so narrow terminals can still
+// pan one column at a time.
+func (v *Viewport) HStep() int {
 	if v.width <= 4 {
 		return 1
 	}
@@ -290,7 +297,10 @@ func (v *Viewport) clamp() {
 	if v.hScroll < 0 {
 		v.hScroll = 0
 	}
-	if v.width > 0 {
+	// hScroll==0 is the common case (wrap mode, or no panning yet); skip the
+	// O(N) StringWidth scan over every line for it. Large log buffers (10k+
+	// lines) clamp on every append; the scan would dominate.
+	if v.hScroll > 0 && v.width > 0 {
 		maxW := maxLineWidth(v.lines)
 		if maxW > 0 && v.hScroll > maxW-v.width {
 			if maxW > v.width {

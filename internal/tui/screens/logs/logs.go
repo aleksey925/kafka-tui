@@ -47,7 +47,7 @@ type Model struct {
 	readOff  int64
 	follow   bool
 	cursor   int
-	viewport int
+	viewport *components.Viewport
 
 	search      string
 	matches     []int
@@ -81,6 +81,7 @@ func New(opts Options) *Model {
 		followInterval: interval,
 		maxLines:       opts.MaxLines,
 		toasts:         components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		viewport:       components.NewViewport(),
 		styles:         styles,
 		now:            now,
 	}
@@ -145,7 +146,7 @@ func (m *Model) SetSearch(query string) {
 	m.matchCursor = 0
 	if len(m.matches) > 0 {
 		m.cursor = m.matches[0]
-		m.clampViewport()
+		m.syncViewport()
 	}
 }
 
@@ -153,7 +154,20 @@ func (m *Model) ActiveFilter() string { return m.search }
 
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
-	m.clampViewport()
+	m.syncViewport()
+}
+
+// syncViewport pushes the current lines/cursor/size into the bounded scroller.
+// SetCursor calls EnsureCursorVisible, so the scrollTop tracks the selected
+// row automatically — the legacy clampViewport logic now lives in there.
+func (m *Model) syncViewport() {
+	m.viewport.SetSize(m.width, m.bodyHeight())
+	m.viewport.SetLines(m.lines)
+	if len(m.lines) == 0 {
+		m.viewport.ClearCursor()
+		return
+	}
+	m.viewport.SetCursor(m.cursor)
 }
 
 func (m *Model) KeyHints() []layout.KeyHint {
@@ -194,7 +208,7 @@ func (m *Model) actPageDown() tea.Cmd  { m.move(+m.pageStep()); return nil }
 func (m *Model) actPageUp() tea.Cmd    { m.move(-m.pageStep()); return nil }
 func (m *Model) actScrollBottom() tea.Cmd {
 	m.cursor = max(0, len(m.lines)-1)
-	m.clampViewport()
+	m.syncViewport()
 	return nil
 }
 
@@ -202,7 +216,7 @@ func (m *Model) actChordG() tea.Cmd {
 	if m.gPrimed {
 		m.gPrimed = false
 		m.cursor = 0
-		m.clampViewport()
+		m.syncViewport()
 		return nil
 	}
 	m.gPrimed = true
@@ -235,7 +249,7 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		m.gPrimed = false
 		if key.String() == "g" {
 			m.cursor = 0
-			m.clampViewport()
+			m.syncViewport()
 			return nil
 		}
 	}
@@ -255,7 +269,7 @@ func (m *Model) move(delta int) {
 		return
 	}
 	m.cursor = clamp(m.cursor+delta, 0, len(m.lines)-1)
-	m.clampViewport()
+	m.syncViewport()
 }
 
 func (m *Model) pageStep() int {
@@ -272,7 +286,7 @@ func (m *Model) jumpMatch(direction int) {
 	}
 	m.matchCursor = (m.matchCursor + direction + len(m.matches)) % len(m.matches)
 	m.cursor = m.matches[m.matchCursor]
-	m.clampViewport()
+	m.syncViewport()
 }
 
 func (m *Model) recomputeMatches() {
@@ -297,34 +311,6 @@ func (m *Model) bodyHeight() int {
 		return 1
 	}
 	return body
-}
-
-func (m *Model) clampViewport() {
-	if len(m.lines) == 0 {
-		m.cursor = 0
-		m.viewport = 0
-		return
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor > len(m.lines)-1 {
-		m.cursor = len(m.lines) - 1
-	}
-	h := m.bodyHeight()
-	if h <= 0 || h >= len(m.lines) {
-		m.viewport = 0
-		return
-	}
-	if m.cursor < m.viewport {
-		m.viewport = m.cursor
-	}
-	if m.cursor >= m.viewport+h {
-		m.viewport = m.cursor - h + 1
-	}
-	if m.viewport < 0 {
-		m.viewport = 0
-	}
 }
 
 func (m *Model) toggleFollow() tea.Cmd {
@@ -356,7 +342,7 @@ func (m *Model) handleLoaded(msg LoadedMsg) {
 	m.trimLines()
 	m.cursor = max(0, len(m.lines)-1)
 	m.recomputeMatches()
-	m.clampViewport()
+	m.syncViewport()
 }
 
 func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {
@@ -373,7 +359,7 @@ func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {
 			m.cursor = len(m.lines) - 1
 		}
 		m.recomputeMatches()
-		m.clampViewport()
+		m.syncViewport()
 	}
 	if msg.Truncated {
 		// log rotation: restart from the beginning
@@ -422,12 +408,12 @@ func (m *Model) renderBody() string {
 	if len(m.lines) == 0 {
 		return m.styles.StatusInfo.Render("(empty)")
 	}
+	// sync first so scroll position reflects any cursor moves since the last
+	// frame; renderBody is the single consumer of viewport state in logs.
+	m.syncViewport()
 	h := m.bodyHeight()
-	start := m.viewport
-	end := start + h
-	if h <= 0 || end > len(m.lines) {
-		end = len(m.lines)
-	}
+	start := m.viewport.ScrollOffset()
+	end := min(start+h, len(m.lines))
 	out := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		out = append(out, m.renderLine(i))

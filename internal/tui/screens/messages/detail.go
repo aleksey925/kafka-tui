@@ -14,9 +14,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
@@ -84,14 +84,8 @@ type DetailModel struct {
 	now       func() time.Time
 
 	width, height int
-	wrap          bool
-	vScroll       int
-	hScroll       int
+	viewport      *components.Viewport
 	gPrimed       bool
-	// cached layout geometry refreshed by [layout]; consumed by scroll math
-	// so jumps work without first calling View().
-	totalLines   int
-	maxLineWidth int
 }
 
 func NewDetailModel(opts DetailOptions) *DetailModel {
@@ -120,6 +114,9 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		idx = len(opts.Messages) - 1
 	}
 	idx = max(idx, 0)
+	vp := components.NewViewport()
+	vp.SetWrap(opts.Wrap)
+	vp.ClearCursor() // detail is a pure viewer — no row cursor.
 	return &DetailModel{
 		messages:  append([]kafka.Message(nil), opts.Messages...),
 		index:     idx,
@@ -131,29 +128,31 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		view:      ViewAuto,
 		styles:    styles,
 		now:       now,
-		wrap:      opts.Wrap,
+		viewport:  vp,
 	}
 }
 
 func (d *DetailModel) SetSize(w, h int) {
 	d.width, d.height = w, h
-	d.layout()
+	d.viewport.SetSize(w, h)
+	d.refresh()
 }
 
-func (d *DetailModel) Wrap() bool { return d.wrap }
+func (d *DetailModel) Wrap() bool { return d.viewport.Wrap() }
 
-func (d *DetailModel) ScrollOffset() int { return d.vScroll }
+func (d *DetailModel) ScrollOffset() int { return d.viewport.ScrollOffset() }
 
-func (d *DetailModel) HScrollOffset() int { return d.hScroll }
+func (d *DetailModel) HScrollOffset() int { return d.viewport.HScrollOffset() }
 
 // ScrollSummary returns 1-based first/last visible line plus total. ok=false
 // when geometry is unknown.
 func (d *DetailModel) ScrollSummary() (first, last, total int, ok bool) {
-	if d.totalLines == 0 || d.height <= 0 {
+	total = d.viewport.TotalLines()
+	if total == 0 || d.height <= 0 {
 		return 0, 0, 0, false
 	}
-	last = min(d.vScroll+d.height, d.totalLines)
-	return d.vScroll + 1, last, d.totalLines, true
+	last = min(d.viewport.ScrollOffset()+d.height, total)
+	return d.viewport.ScrollOffset() + 1, last, total, true
 }
 
 func (d *DetailModel) Action() DetailAction { return d.action }
@@ -238,31 +237,27 @@ func (d *DetailModel) actSaveFull() tea.Cmd   { d.saveFullJSON(); return nil }
 func (d *DetailModel) actEditor() tea.Cmd     { d.openEditor(); return nil }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
 
-func (d *DetailModel) actScrollDown() tea.Cmd   { d.scrollBy(+1); return nil }
-func (d *DetailModel) actScrollUp() tea.Cmd     { d.scrollBy(-1); return nil }
-func (d *DetailModel) actPageDown() tea.Cmd     { d.scrollBy(+d.pageStep()); return nil }
-func (d *DetailModel) actPageUp() tea.Cmd       { d.scrollBy(-d.pageStep()); return nil }
-func (d *DetailModel) actScrollBottom() tea.Cmd { d.scrollBottom(); return nil }
-func (d *DetailModel) actScrollTop() tea.Cmd    { d.scrollTop(); return nil }
+func (d *DetailModel) actScrollDown() tea.Cmd   { d.viewport.ScrollBy(+1); return nil }
+func (d *DetailModel) actScrollUp() tea.Cmd     { d.viewport.ScrollBy(-1); return nil }
+func (d *DetailModel) actPageDown() tea.Cmd     { d.viewport.PageDown(); return nil }
+func (d *DetailModel) actPageUp() tea.Cmd       { d.viewport.PageUp(); return nil }
+func (d *DetailModel) actScrollBottom() tea.Cmd { d.viewport.ScrollToBottom(); return nil }
+func (d *DetailModel) actScrollTop() tea.Cmd    { d.viewport.ScrollToTop(); return nil }
 
 func (d *DetailModel) actHScrollLeft() tea.Cmd {
-	if !d.wrap {
-		d.hScrollBy(-d.hStep())
-	}
+	d.viewport.HScrollBy(-d.viewport.HStep())
 	return nil
 }
 
 func (d *DetailModel) actHScrollRight() tea.Cmd {
-	if !d.wrap {
-		d.hScrollBy(+d.hStep())
-	}
+	d.viewport.HScrollBy(+d.viewport.HStep())
 	return nil
 }
 
 func (d *DetailModel) actChordG() tea.Cmd {
 	if d.gPrimed {
 		d.gPrimed = false
-		d.scrollTop()
+		d.viewport.ScrollToTop()
 		return nil
 	}
 	d.gPrimed = true
@@ -287,8 +282,8 @@ func (d *DetailModel) move(delta int) {
 		return
 	}
 	d.index = clampInt(d.index+delta, 0, len(d.messages)-1)
-	d.resetScroll()
-	d.layout()
+	d.viewport.Reset()
+	d.refresh()
 }
 
 func (d *DetailModel) setView(v ValueView) {
@@ -296,86 +291,28 @@ func (d *DetailModel) setView(v ValueView) {
 		return
 	}
 	d.view = v
-	d.resetScroll()
-	d.layout()
+	d.viewport.Reset()
+	d.refresh()
 }
 
 func (d *DetailModel) toggleWrap() {
-	d.wrap = !d.wrap
-	// hScroll is meaningless in wrap mode; vScroll is normalised by clamp.
-	d.hScroll = 0
-	d.layout()
+	d.viewport.SetWrap(!d.viewport.Wrap())
+	d.refresh()
 }
 
-// layout produces visible lines and refreshes cached geometry in lock-step
-// so a subsequent scroll key sees the same numbers the next frame renders.
-func (d *DetailModel) layout() []string {
+// refresh rebuilds the visual line list and pushes it into the viewport.
+// Wrap mode is consulted on the viewport so the toggle stays in one place.
+// Idempotent — safe to call on every render.
+func (d *DetailModel) refresh() {
 	if len(d.messages) == 0 {
-		d.totalLines, d.maxLineWidth = 0, 0
-		return nil
-	}
-	lines := d.layoutLines(d.renderFullBody())
-	d.totalLines = len(lines)
-	d.maxLineWidth = 0
-	for _, line := range lines {
-		if w := ansi.StringWidth(line); w > d.maxLineWidth {
-			d.maxLineWidth = w
-		}
-	}
-	d.clampScroll()
-	return lines
-}
-
-func (d *DetailModel) resetScroll() {
-	d.vScroll = 0
-	d.hScroll = 0
-}
-
-func (d *DetailModel) pageStep() int {
-	if d.height <= 1 {
-		return 1
-	}
-	return d.height - 1
-}
-
-func (d *DetailModel) hStep() int {
-	if d.width <= 4 {
-		return 1
-	}
-	return d.width / 4
-}
-
-func (d *DetailModel) scrollBy(delta int) {
-	d.vScroll += delta
-	d.clampScroll()
-}
-
-func (d *DetailModel) hScrollBy(delta int) {
-	d.hScroll += delta
-	d.clampScroll()
-}
-
-func (d *DetailModel) scrollTop() {
-	d.vScroll = 0
-}
-
-func (d *DetailModel) scrollBottom() {
-	if d.totalLines <= d.height || d.height <= 0 {
-		d.vScroll = 0
+		d.viewport.SetLines(nil)
 		return
 	}
-	d.vScroll = d.totalLines - d.height
-}
-
-func (d *DetailModel) clampScroll() {
-	d.vScroll = max(d.vScroll, 0)
-	if d.totalLines > 0 && d.height > 0 && d.vScroll > d.totalLines-d.height {
-		d.vScroll = max(d.totalLines-d.height, 0)
+	logical := strings.Split(d.renderFullBody(), "\n")
+	if d.viewport.Wrap() && d.width > 0 {
+		logical = components.WrapLines(logical, d.width)
 	}
-	d.hScroll = max(d.hScroll, 0)
-	if d.width > 0 && d.maxLineWidth > 0 && d.hScroll > d.maxLineWidth-d.width {
-		d.hScroll = max(d.maxLineWidth-d.width, 0)
-	}
+	d.viewport.SetLines(logical)
 }
 
 func (d *DetailModel) copyRecord() {
@@ -468,30 +405,10 @@ func (d *DetailModel) resend() {
 
 func (d *DetailModel) View() string {
 	if len(d.messages) == 0 {
-		d.layout()
 		return d.styles.StatusInfo.Render("(no message)")
 	}
-	lines := d.layout()
-	start := d.vScroll
-	end := len(lines)
-	if d.height > 0 && start+d.height < end {
-		end = start + d.height
-	}
-
-	visible := lines[start:end]
-	if !d.wrap && d.width > 0 {
-		out := make([]string, len(visible))
-		for i, line := range visible {
-			s := line
-			if d.hScroll > 0 {
-				s = ansi.TruncateLeft(s, d.hScroll, "")
-			}
-			s = ansi.Truncate(s, d.width, "")
-			out[i] = s
-		}
-		visible = out
-	}
-	return strings.Join(visible, "\n")
+	d.refresh()
+	return d.viewport.View()
 }
 
 // ANSI styling is baked in here so downstream wrap/truncate must be ANSI-aware.
@@ -504,23 +421,6 @@ func (d *DetailModel) renderFullBody() string {
 	valueLabel := fmt.Sprintf("Value · %s · %d bytes", view, len(cur.Value))
 	valueBlock := d.renderBlock(valueLabel, FormatValue(d.view, cur.Value))
 	return strings.Join([]string{header, "", keyBlock, "", headersBlock, "", valueBlock}, "\n")
-}
-
-func (d *DetailModel) layoutLines(body string) []string {
-	logical := strings.Split(body, "\n")
-	if !d.wrap || d.width <= 0 {
-		return logical
-	}
-	out := make([]string, 0, len(logical))
-	for _, line := range logical {
-		if line == "" {
-			out = append(out, "")
-			continue
-		}
-		wrapped := ansi.Hardwrap(line, d.width, false)
-		out = append(out, strings.Split(wrapped, "\n")...)
-	}
-	return out
 }
 
 func (d *DetailModel) renderHeader(cur kafka.Message) string {
