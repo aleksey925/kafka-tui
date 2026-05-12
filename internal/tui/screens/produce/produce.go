@@ -122,6 +122,12 @@ type Model struct {
 	partitionTypeBuf string
 	partitionTypeGen int
 
+	// width/height of the area the host gives this screen, propagated to
+	// the form so bounded fields (Value textarea, Headers list) can size
+	// their viewports against the terminal instead of relying on a hardcoded
+	// row count.
+	width, height int
+
 	action Action
 
 	now    func() time.Time
@@ -331,7 +337,9 @@ func (m *Model) WantsRawInput() bool { return m.mode == ModeInsert }
 // form's own esc handler raises action.Back to close cleanly.
 func (m *Model) HasOverlay() bool { return true }
 
-func (m *Model) SetSize(_, _ int) {}
+func (m *Model) SetSize(w, h int) {
+	m.width, m.height = w, h
+}
 
 func (m *Model) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(m.bindings())
@@ -517,13 +525,22 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 	}
 	// segmented fields are interactive without INSERT — left/right/hjkl
 	// cycle the value live.
-	if m.form.FocusedField().Kind == components.FieldSegmented {
+	kind := m.form.FocusedField().Kind
+	if kind == components.FieldSegmented {
 		if cmd, handled := m.handlePartitionTypeJump(key); handled {
 			return cmd
 		}
 		f, cmd := m.form.Update(key)
 		m.form = f
 		return cmd
+	}
+	// bounded fields: in NORMAL the viewport keymap (j/k/pgup/pgdn/g/G/...)
+	// pans the visible window without entering INSERT. tab/up/down keep
+	// their field-nav meaning because normalBindings ran first.
+	if kind == components.FieldTextarea || kind == components.FieldList {
+		if m.form.HandleViewportKey(key) {
+			return nil
+		}
 	}
 	return nil
 }
@@ -982,6 +999,25 @@ func (m *Model) View() string {
 		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+u clear form  e $EDITOR  p/n history  esc cancel"
 	}
 	hint := m.styles.HintLabel.Render(hintText)
+
+	chromeAbove := 0
+	if m.err != "" {
+		chromeAbove++
+	}
+	if m.sending {
+		chromeAbove++
+	}
+	// chrome below the body: blank line + hint line.
+	const chromeBelow = 2
+	formHeight := max(m.height-chromeAbove-chromeBelow, 1)
+	// fullscreen draws its own tab row + spacer above the focused field; the
+	// form area shrinks by 2 so the single rendered field gets accurate
+	// elastic height (tabs are part of the screen chrome, not the form).
+	if m.fullscreen {
+		m.form.SetSize(m.width, formHeight-2)
+	} else {
+		m.form.SetSize(m.width, formHeight)
+	}
 
 	var parts []string
 	if m.err != "" {

@@ -57,6 +57,11 @@ type Field struct {
 // captured at construction time. [Form.Reset] restores from it without touching
 // Options injected later via [Form.SetOptions] — see the comment on Reset for
 // the contract.
+//
+// `viewports` are bounded scrollable regions for textarea / list fields,
+// lazily allocated per field key. They survive Reset (scroll position is
+// cleared, content is owned by the field) so a screen that holds the same
+// Form pointer keeps its bounded rendering across clears.
 type Form struct {
 	fields   []Field
 	defaults []Field
@@ -64,6 +69,9 @@ type Form struct {
 	editing  bool
 
 	focusedSuffix string
+
+	width, height int
+	viewports     map[string]*Viewport
 
 	styles theme.Styles
 }
@@ -124,6 +132,9 @@ func (f *Form) Reset() {
 		f.fields[i].listEntryCursor = d.listEntryCursor
 		f.fields[i].popupOpen = false
 		f.fields[i].popupOriginal = ""
+	}
+	for _, v := range f.viewports {
+		v.Reset()
 	}
 	f.focus = 0
 }
@@ -285,6 +296,55 @@ func (f *Form) FocusPrev() {
 	f.focus = (f.focus - 1 + len(f.fields)) % len(f.fields)
 }
 
+// SetSize records the area the form has been allotted by its host. Bounded
+// fields (textarea, list) use it to derive their visible-row counts; any
+// non-positive component (default zero, or an explicit 0 / negative) reverts
+// to natural-height rendering. Hosts should call this from their own SetSize
+// so the form re-flows on terminal resize.
+func (f *Form) SetSize(w, h int) {
+	f.width = w
+	f.height = h
+}
+
+func (f *Form) Width() int { return f.width }
+
+func (f *Form) Height() int { return f.height }
+
+// fieldViewport returns (creating if needed) the bounded scroller backing a
+// textarea or list field. Returns nil for non-bounded kinds so callers can
+// gate on it.
+func (f *Form) fieldViewport(key string, kind FieldKind) *Viewport {
+	if kind != FieldTextarea && kind != FieldList {
+		return nil
+	}
+	if f.viewports == nil {
+		f.viewports = make(map[string]*Viewport)
+	}
+	v, ok := f.viewports[key]
+	if !ok {
+		v = NewViewport()
+		f.viewports[key] = v
+	}
+	return v
+}
+
+// HandleViewportKey forwards a scroll-class key to the focused field's
+// viewport, returning true when the key was consumed. Hosts call this in
+// NORMAL mode after their own bindings have had a chance to claim the key —
+// it lets the user pan around a long textarea / headers list without entering
+// INSERT. No-op (returns false) when the focused field is not bounded.
+func (f *Form) HandleViewportKey(key tea.KeyPressMsg) bool {
+	if len(f.fields) == 0 {
+		return false
+	}
+	fld := f.fields[f.focus]
+	v := f.fieldViewport(fld.Key, fld.Kind)
+	if v == nil {
+		return false
+	}
+	return v.HandleKey(key)
+}
+
 // SetEditing toggles whether text-like fields render their caret.
 func (f *Form) SetEditing(on bool) { f.editing = on }
 
@@ -441,11 +501,19 @@ func (f *Form) Update(msg tea.Msg) (*Form, tea.Cmd) {
 }
 
 // RenderField renders a single field by key. Returns "" if missing. Used by
-// screens that own their own layout instead of stacking via View().
+// screens that own their own layout instead of stacking via View() — most
+// notably fullscreen field views in the produce screen, where the focused
+// field gets the entire form area.
 func (f *Form) RenderField(key string) string {
 	for i, fld := range f.fields {
 		if fld.Key == key {
-			return f.renderField(fld, i == f.focus)
+			// in standalone-field mode the body gets everything except the
+			// 1-line label; 0 falls back to natural rendering when unsized.
+			bodyHeight := 0
+			if f.height > 1 {
+				bodyHeight = f.height - 1
+			}
+			return f.renderField(fld, i == f.focus, bodyHeight)
 		}
 	}
 	return ""
@@ -526,15 +594,90 @@ func (f *Form) View() string {
 	if len(f.fields) == 0 {
 		return ""
 	}
+	bodyHeights := f.allocateBodyHeights()
 	parts := make([]string, 0, len(f.fields))
 	for i, fld := range f.fields {
 		focused := i == f.focus
-		parts = append(parts, f.renderField(fld, focused))
+		parts = append(parts, f.renderField(fld, focused, bodyHeights[i]))
 	}
 	return strings.Join(parts, "\n")
 }
 
-func (f *Form) renderField(fld Field, focused bool) string {
+// allocateBodyHeights distributes the form's allotted height across its
+// fields. Returns 0 for every entry when SetSize hasn't been called — that's
+// the signal to fall back to natural unbounded rendering (legacy behavior).
+//
+// Policy when sized: textarea is the elastic field and gets the remainder.
+// Lists are bounded by max(3, totalHeight/3) visible rows so a long
+// headers list can't crowd out the textarea. Fixed-row fields (text,
+// dropdown, segmented) take their natural footprint.
+func (f *Form) allocateBodyHeights() []int {
+	out := make([]int, len(f.fields))
+	if f.height <= 0 || f.width <= 0 {
+		return out
+	}
+	// one label line per field; everything else is "body".
+	available := max(f.height-len(f.fields), 0)
+
+	listCap := max(3, f.height/3)
+	elasticIdx := -1
+	for i, fld := range f.fields {
+		switch fld.Kind {
+		case FieldTextarea:
+			elasticIdx = i
+		case FieldList:
+			visible := len(fld.List)
+			if visible == 0 {
+				visible = 1 // "(empty)" placeholder
+				if i == f.focus {
+					visible++ // + "press enter to add a row" hint
+				}
+			} else {
+				if visible > listCap {
+					visible = listCap
+				}
+				if i == f.focus {
+					visible++ // shortcut hint line below the rows
+				}
+			}
+			out[i] = visible
+			available -= visible
+		default:
+			h := naturalBodyHeight(fld)
+			out[i] = h
+			available -= h
+		}
+	}
+	if elasticIdx >= 0 {
+		h := available
+		const minTextareaHeight = 3
+		if h < minTextareaHeight {
+			h = minTextareaHeight // clip rather than refuse to render
+		}
+		out[elasticIdx] = h
+	}
+	return out
+}
+
+func naturalBodyHeight(fld Field) int {
+	switch fld.Kind {
+	case FieldDropdown:
+		if len(fld.Options) == 0 {
+			return 1
+		}
+		return len(fld.Options)
+	case FieldSegmented:
+		if fld.popupOpen {
+			return len(fld.Options) + 1 // options + hint
+		}
+		return 1
+	case FieldText, FieldTextarea, FieldList:
+		return 1
+	}
+	return 1
+}
+
+func (f *Form) renderField(fld Field, focused bool, bodyHeight int) string {
 	label := fld.Label
 	if focused {
 		label = "▸ " + label
@@ -556,15 +699,80 @@ func (f *Form) renderField(fld Field, focused bool) string {
 	case FieldText:
 		body = renderTextValue(f.styles, fld.Value, fld.textCursor, focused, caretOn, false)
 	case FieldTextarea:
-		body = renderTextValue(f.styles, fld.Value, fld.textCursor, focused, caretOn, true)
+		body = f.renderTextarea(fld, focused, caretOn, bodyHeight)
 	case FieldDropdown:
 		body = renderDropdown(f.styles, fld, focused)
 	case FieldSegmented:
 		body = renderSegmented(f.styles, fld, focused)
 	case FieldList:
-		body = renderList(f.styles, fld, focused, caretOn)
+		body = f.renderListField(fld, focused, caretOn, bodyHeight)
 	}
 	return header + "\n" + body
+}
+
+// renderTextarea is the viewport-aware textarea body renderer. When the form
+// hasn't been sized (bodyHeight == 0) it delegates to the legacy unbounded
+// renderer so screens that don't propagate SetSize keep their old behavior.
+// Otherwise content is wrapped to width-4 (leaving room for the indent
+// prefix) and sliced through a per-field viewport: in INSERT the cursor's
+// visual line is auto-followed, in NORMAL the scroll position persists so
+// the user's reading spot survives mode flips.
+func (f *Form) renderTextarea(fld Field, focused, caretOn bool, bodyHeight int) string {
+	if bodyHeight <= 0 {
+		return renderTextValue(f.styles, fld.Value, fld.textCursor, focused, caretOn, true)
+	}
+	if (!focused || !caretOn) && fld.Value == "" {
+		return "    " + f.styles.HintLabel.Render("—")
+	}
+	lines, cursorLine := buildTextareaVisualLines(f.styles, fld.Value, fld.textCursor, caretOn, f.width)
+	if len(lines) <= bodyHeight {
+		return strings.Join(lines, "\n")
+	}
+	v := f.fieldViewport(fld.Key, FieldTextarea)
+	v.SetSize(f.width, bodyHeight)
+	v.SetLines(lines)
+	if caretOn {
+		v.SetCursor(cursorLine)
+	} else {
+		v.ClearCursor()
+	}
+	return v.View()
+}
+
+// renderListField is the viewport-aware list body renderer. Same fallback
+// rule as renderTextarea — unsized form uses the legacy unbounded path so
+// existing screens keep their behavior. When sized, rows are sliced through
+// a viewport that follows listCursor; the focused-only shortcut hint sits
+// below the viewport's window so the user always sees it.
+func (f *Form) renderListField(fld Field, focused, caretOn bool, bodyHeight int) string {
+	if bodyHeight <= 0 {
+		return renderList(f.styles, fld, focused, caretOn)
+	}
+	if len(fld.List) == 0 {
+		hint := "    " + f.styles.StatusInfo.Render("(empty)")
+		if focused {
+			hint += "\n    " + f.styles.HintLabel.Render("press enter to add a row")
+		}
+		return hint
+	}
+	rows := buildListRowLines(f.styles, fld, focused, caretOn)
+	rowsHeight := bodyHeight
+	if focused {
+		rowsHeight = max(bodyHeight-1, 1) // reserve a line for the shortcut hint
+	}
+	v := f.fieldViewport(fld.Key, FieldList)
+	v.SetSize(f.width, rowsHeight)
+	v.SetLines(rows)
+	if focused {
+		v.SetCursor(fld.listCursor)
+	} else {
+		v.ClearCursor()
+	}
+	out := v.View()
+	if focused {
+		out += "\n    " + f.styles.HintLabel.Render("enter or ctrl+n — add row    ctrl+x — remove row    backspace on empty — remove")
+	}
+	return out
 }
 
 func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn, multiline bool) string {
@@ -615,6 +823,57 @@ func renderTextValue(s theme.Styles, value string, cursor int, focused, caretOn,
 		out[i] = "    " + renderLineWithCursor(s, s.Command, "", lr, col)
 	}
 	return strings.Join(out, "\n")
+}
+
+// buildTextareaVisualLines builds the wrapped, indented, ANSI-styled visual
+// lines that back a viewport-bounded textarea body. Returns the visual line
+// of the cursor (or -1 when caretOn is false). When width is non-positive,
+// wrapping is skipped — the caller falls back to legacy rendering anyway in
+// that case, but this keeps the helper safe to call standalone.
+func buildTextareaVisualLines(s theme.Styles, value string, runeCursor int, caretOn bool, width int) ([]string, int) {
+	runes := []rune(value)
+	if runeCursor > len(runes) {
+		runeCursor = len(runes)
+	}
+	if runeCursor < 0 {
+		runeCursor = 0
+	}
+
+	cursorLineIdx, cursorCol := 0, 0
+	if caretOn {
+		lineStart := 0
+		for i := range runeCursor {
+			if runes[i] == '\n' {
+				cursorLineIdx++
+				lineStart = i + 1
+			}
+		}
+		cursorCol = runeCursor - lineStart
+	}
+
+	logical := strings.Split(value, "\n")
+	styledLogical := make([]string, len(logical))
+	for i, line := range logical {
+		if caretOn && i == cursorLineIdx {
+			lr := []rune(line)
+			c := min(cursorCol, len(lr))
+			styledLogical[i] = renderLineWithCursor(s, s.Command, "", lr, c)
+		} else {
+			styledLogical[i] = s.Command.Render(line)
+		}
+	}
+
+	contentWidth := width - 4
+	visual := WrapLines(styledLogical, contentWidth)
+	for i := range visual {
+		visual[i] = "    " + visual[i]
+	}
+
+	cursorVisual := -1
+	if caretOn {
+		cursorVisual = CursorVisualLine(logical, cursorLineIdx, cursorCol, contentWidth, true)
+	}
+	return visual, cursorVisual
 }
 
 // renderLineWithCursor renders a line with a reverse-video block cursor at
@@ -688,7 +947,19 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 		}
 		return hint
 	}
-	parts := make([]string, 0, len(fld.List)+1)
+	parts := buildListRowLines(s, fld, focused, caretOn)
+	if focused {
+		parts = append(parts, "    "+s.HintLabel.Render("enter or ctrl+n — add row    ctrl+x — remove row    backspace on empty — remove"))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// buildListRowLines renders each list entry into a single styled visual line,
+// including the row marker and any validator error suffix. The focused-only
+// shortcut hint is NOT included — callers append it after the viewport's
+// window so it always sits below the visible rows.
+func buildListRowLines(s theme.Styles, fld Field, focused, caretOn bool) []string {
+	parts := make([]string, 0, len(fld.List))
 	for i, entry := range fld.List {
 		isCurrent := focused && i == fld.listCursor
 		prefix := "  - "
@@ -712,10 +983,7 @@ func renderList(s theme.Styles, fld Field, focused, caretOn bool) string {
 		}
 		parts = append(parts, "  "+style.Render(prefix+entry)+marker)
 	}
-	if focused {
-		parts = append(parts, "    "+s.HintLabel.Render("enter or ctrl+n — add row    ctrl+x — remove row    backspace on empty — remove"))
-	}
-	return strings.Join(parts, "\n")
+	return parts
 }
 
 func updateText(fld *Field, key tea.KeyPressMsg, allowNewline bool) {

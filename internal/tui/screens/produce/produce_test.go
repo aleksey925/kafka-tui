@@ -387,6 +387,113 @@ func TestCtrlU_NormalPreservesLoadedPartitionOptions(t *testing.T) {
 	assert.Equal(t, "auto", got.Value, "value falls back to the construction default")
 }
 
+// Regression: a pasted multi-line value used to render every line directly,
+// blowing past the terminal height with no way to scroll. After the viewport
+// integration the textarea body is bounded by the form's allotted height —
+// no matter how long the value is, View() emits at most that many rows.
+func TestTextarea_LongValueBoundedByFormHeight(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	m.Form().FocusKey("value")
+
+	var value strings.Builder
+	for range 100 {
+		value.WriteString("line\n")
+	}
+	_ = m.Update(tea.PasteMsg{Content: value.String()})
+	_ = m.Update(keyPress("esc"))
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	assert.LessOrEqual(t, len(lines), 24, "rendered output must fit the allotted terminal height")
+}
+
+// Regression: in INSERT, the cursor at the end of a long value used to be
+// offscreen with no scroll. Now the viewport follows the cursor — and the
+// early lines have correspondingly scrolled out of view, proving it's the
+// viewport, not just an unbounded render.
+func TestTextarea_CursorFollowKeepsLastLineVisible(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	m.Form().FocusKey("value")
+
+	var value strings.Builder
+	for i := range 80 {
+		value.WriteString("FIRST_MARKER_")
+		value.WriteString(strings.Repeat("x", i))
+		value.WriteByte('\n')
+	}
+	value.WriteString("CURSOR_TARGET")
+	_ = m.Update(tea.PasteMsg{Content: value.String()})
+	require.Equal(t, produce.ModeInsert, m.Mode(), "paste auto-enters INSERT on the focused textarea")
+
+	out := m.View()
+	assert.Contains(t, out, "CURSOR_TARGET",
+		"cursor's logical line must be in the visible window after a long paste")
+	assert.NotContains(t, out, "FIRST_MARKER_xxxxx\n",
+		"early lines must have scrolled out — otherwise the viewport isn't actually bounded")
+}
+
+// Regression: when focused on a long textarea in NORMAL, `j` must scroll the
+// viewport down rather than be dropped. This is the read-only navigation
+// affordance — the user can pan around a long value without entering INSERT.
+// Regression: a Headers list with many rows used to render every row,
+// crowding the textarea out of the screen. Now the list is bounded by a
+// fraction of the form height; listCursor still scrolls into view.
+func TestHeaders_LongListBoundedAndCursorFollows(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	m.Form().FocusKey("headers")
+
+	var headers strings.Builder
+	for i := range 40 {
+		headers.WriteString("h")
+		headers.WriteString(strings.Repeat("x", 1))
+		headers.WriteByte(byte('a' + i%10))
+		headers.WriteString("=v\n")
+	}
+	headers.WriteString("LAST_HEADER=v")
+	_ = m.Update(tea.PasteMsg{Content: headers.String()})
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	assert.LessOrEqual(t, len(lines), 24, "headers list must not push the screen past terminal height")
+	// paste lands listCursor on the final pasted row; cursor-follow must
+	// bring it into the viewport's window.
+	assert.Contains(t, out, "LAST_HEADER", "the row under listCursor must be visible after a long paste")
+}
+
+func TestTextarea_NormalModeScrollKeysPanViewport(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 20)
+	m.Form().FocusKey("value")
+
+	var value strings.Builder
+	for range 60 {
+		value.WriteString("FILLER\n")
+	}
+	value.WriteString("LAST_ROW")
+	_ = m.Update(tea.PasteMsg{Content: value.String()})
+	_ = m.Update(keyPress("esc")) // NORMAL on Value field
+
+	// pre-condition: after esc the cursor went away (caret cleared) so the
+	// viewport stays where it was last (scrolled to bottom from cursor-follow
+	// during paste). Scroll up to top, then G must scroll back down.
+	_ = m.Update(keyPress("g"))
+	_ = m.Update(keyPress("g"))
+	out := m.View()
+	assert.NotContains(t, out, "LAST_ROW", "gg in NORMAL must scroll to top first")
+
+	_ = m.Update(keyPress("G"))
+	out = m.View()
+	assert.Contains(t, out, "LAST_ROW",
+		"G in NORMAL on a textarea must scroll the viewport to the bottom")
+}
+
 // Regression: stepping past the newest history entry resets the form the
 // same way ctrl+u does. The partition options must be preserved too —
 // before the fix, this path also rebuilt the form and dropped the picker
