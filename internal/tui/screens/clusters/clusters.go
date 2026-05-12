@@ -4,7 +4,6 @@ package clusters
 import (
 	"context"
 	"fmt"
-	"image/color"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,21 +40,6 @@ func (s ConnectionStatus) Icon() string {
 		return "✗"
 	default:
 		return "?"
-	}
-}
-
-func statusColor(s theme.Styles, st ConnectionStatus) color.Color {
-	switch st {
-	case StatusOK:
-		return s.Palette.StatusOK
-	case StatusFailed:
-		return s.Palette.StatusError
-	case StatusChecking:
-		return s.Palette.StatusWarn
-	case StatusUnknown:
-		return s.Palette.Muted
-	default:
-		return s.Palette.Muted
 	}
 }
 
@@ -566,9 +550,10 @@ func (m *Model) refreshTable() {
 }
 
 func (m *Model) rowValues(c config.Cluster) []string {
-	// leading dot reflects connectivity status, not the cluster color.
-	statusDot := lipgloss.NewStyle().
-		Foreground(statusColor(m.styles, m.statuses[c.Name])).
+	// leading dot reflects the configured cluster color; the Status column
+	// shows live connectivity.
+	colorDot := lipgloss.NewStyle().
+		Foreground(m.styles.Palette.ClusterColor(c.Color)).
 		Render("●")
 	name := c.Name
 	flags := []string{}
@@ -579,7 +564,7 @@ func (m *Model) rowValues(c config.Cluster) []string {
 		flags = append(flags, "(cli)")
 	}
 	return []string{
-		statusDot,
+		colorDot,
 		name,
 		strings.Join(c.Brokers, ","),
 		strings.Join(flags, " "),
