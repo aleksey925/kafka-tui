@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
@@ -81,8 +82,10 @@ func TestPreviewLine_CompactsJSON(t *testing.T) {
 func TestPreviewLine_TruncatesWithEllipsis(t *testing.T) {
 	in := []byte(strings.Repeat("x", 100))
 	out := messages.PreviewLine(in, 20)
-	assert.Len(t, []rune(out), 20)
-	assert.True(t, strings.HasSuffix(out, "..."))
+	// width counts visual cells (the canonical truncation behavior); the
+	// single-char "…" is 1 cell — total visual width must fit the budget.
+	assert.Equal(t, 20, ansi.StringWidth(out))
+	assert.True(t, strings.HasSuffix(out, "…"))
 }
 
 func TestPreviewLine_StripsNewlines(t *testing.T) {

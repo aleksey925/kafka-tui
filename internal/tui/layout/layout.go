@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
@@ -151,9 +151,7 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 	for _, r := range rows {
 		key := keyStyle.Render(padRight(r.key+":", 9))
 		line := " " + key + " " + r.val
-		if lipgloss.Width(line) > contentWidth {
-			line = ansi.Truncate(line, contentWidth, "…")
-		}
+		line = components.TruncateText(line, contentWidth)
 		lines = append(lines, padLine(line, width))
 	}
 	for len(lines) < HeaderRows {

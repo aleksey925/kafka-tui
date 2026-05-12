@@ -89,6 +89,22 @@ func TestViewport_FollowTail_AppendSlidesWhenAtBottom(t *testing.T) {
 	assert.Equal(t, []string{"c", "d", "e"}, strings.Split(v.View(), "\n"))
 }
 
+func TestViewport_AppendLines_DoesNotAutoScrollWithoutFollowTail(t *testing.T) {
+	// follow-tail is opt-in: a viewer that didn't ask for it keeps its
+	// scroll position when content grows underneath, even when the user
+	// happens to be sitting at the bottom.
+	v := components.NewViewport()
+	v.SetSize(40, 3)
+	v.SetLines([]string{"a", "b", "c"})
+	require.True(t, v.IsAtBottom())
+
+	v.AppendLines([]string{"d", "e"})
+
+	assert.Equal(t, 0, v.ScrollOffset(),
+		"without SetFollowTail(true), append must not slide the window")
+	assert.Equal(t, []string{"a", "b", "c"}, strings.Split(v.View(), "\n"))
+}
+
 func TestViewport_FollowTail_DoesNotDisturbScrolledReader(t *testing.T) {
 	v := components.NewViewport()
 	v.SetSize(40, 3)
@@ -114,6 +130,36 @@ func TestViewport_Reset_ClearsScrollState(t *testing.T) {
 
 	assert.Equal(t, 0, v.ScrollOffset())
 	assert.Equal(t, []string{"a", "b", "c"}, strings.Split(v.View(), "\n"), "content survives Reset")
+}
+
+func TestViewport_HScrollBy_NoOpWhenWrapOn(t *testing.T) {
+	// horizontal scroll is meaningless once wrap is on (every visual line
+	// already fits the width by definition). Guarding here prevents stale
+	// hScroll from leaking back when the user later toggles wrap off.
+	v := components.NewViewport()
+	v.SetSize(10, 3)
+	v.SetLines([]string{"abcdefghij"})
+	require.True(t, v.Wrap())
+
+	v.HScrollBy(+5)
+
+	assert.Equal(t, 0, v.HScrollOffset(), "HScrollBy must no-op while wrap is on")
+}
+
+func TestViewport_ClearCursor_DisablesFollowAndIsObservable(t *testing.T) {
+	v := components.NewViewport()
+	v.SetSize(10, 3)
+	v.SetLines([]string{"a", "b", "c", "d", "e"})
+	v.SetCursor(4)
+	require.Equal(t, 4, v.Cursor())
+
+	v.ClearCursor()
+
+	assert.Equal(t, -1, v.Cursor())
+	// EnsureCursorVisible must be a no-op once the cursor is cleared.
+	v.ScrollToTop()
+	v.EnsureCursorVisible()
+	assert.Equal(t, 0, v.ScrollOffset(), "cleared cursor must not yank scroll back")
 }
 
 func TestViewport_NoWrap_HScroll_TruncatesAndShifts(t *testing.T) {

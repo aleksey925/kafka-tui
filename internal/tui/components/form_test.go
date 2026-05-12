@@ -2,6 +2,8 @@ package components_test
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -945,6 +947,90 @@ func TestForm_Reset_LeavesEditingFlagAndSuffixToHost(t *testing.T) {
 	// logic after clear). Reset must not stomp them.
 	assert.False(t, f.Editing())
 	assert.Contains(t, f.View(), "[EDIT]")
+}
+
+// TestForm_Reset_RewindsTextareaViewportScroll verifies the second half of
+// the Form.Reset contract: not only Value/List/cursors restore, but per-field
+// viewport scroll state zeros out too. Without this, a screen that scrolled
+// a long textarea, hit ctrl+u, and refilled the same content would see the
+// viewport stuck where it last sat.
+func TestForm_Reset_RewindsTextareaViewportScroll(t *testing.T) {
+	// build 50 distinct lines so we can see which window the viewport is on.
+	var sb strings.Builder
+	for i := range 50 {
+		fmt.Fprintf(&sb, "LINE_%d\n", i)
+	}
+	bigDefault := strings.TrimRight(sb.String(), "\n")
+
+	f := components.NewForm([]components.Field{
+		{Key: "v", Label: "V", Kind: components.FieldTextarea, Value: bigDefault},
+		{Key: "k", Label: "K", Kind: components.FieldText},
+	})
+	f.SetSize(40, 14)
+	// editing=false → no cursor-follow on render, so the viewport's scrollTop
+	// is observable directly. Otherwise SetCursor would pull it to the end of
+	// content every frame and mask whatever Reset did.
+	f.SetEditing(false)
+	f.FocusKey("v")
+	f.View() // populate the viewport with content
+
+	f.HandleViewportKey(keyPressMsg("G")) // scroll to bottom
+	bottom := f.View()
+	require.Contains(t, bottom, "LINE_49", "G must scroll to the bottom")
+	require.NotContains(t, bottom, "LINE_0", "top must have scrolled off")
+
+	f.Reset()
+
+	rewound := f.View()
+	assert.Contains(t, rewound, "LINE_0", "Reset must rewind the viewport to scrollTop=0")
+}
+
+func TestForm_HandleViewportKey_BoundedFieldConsumesScrollKey(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "v", Label: "V", Kind: components.FieldTextarea, Value: strings.Repeat("x\n", 50)},
+	})
+	f.SetSize(40, 8)
+	f.SetEditing(false)
+	f.FocusKey("v")
+	f.View() // populate viewport before key dispatch
+
+	consumed := f.HandleViewportKey(keyPressMsg("j"))
+
+	assert.True(t, consumed, "scroll keys on a focused textarea must be claimed by its viewport")
+}
+
+func TestForm_HandleViewportKey_NonBoundedFieldRejectsKey(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "K", Kind: components.FieldText},
+	})
+	f.FocusKey("k")
+
+	consumed := f.HandleViewportKey(keyPressMsg("j"))
+
+	assert.False(t, consumed, "non-bounded fields have no viewport — host must get the key back to handle elsewhere")
+}
+
+// TestForm_AllocateBodyHeights_HandlesSegmentedPopupExpansion: when a
+// segmented field's popup opens, its natural body height grows (options +
+// hint). The elastic textarea must absorb that extra height without
+// overflowing the form's allotted area.
+func TestForm_AllocateBodyHeights_HandlesSegmentedPopupExpansion(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "C", Kind: components.FieldSegmented,
+			Options: []string{"a", "b", "c", "d"}, Value: "a"},
+		{Key: "v", Label: "V", Kind: components.FieldTextarea, Value: strings.Repeat("X\n", 60)},
+	})
+	f.SetSize(40, 20)
+	f.SetSegmentedPopup("c", true)
+
+	out := f.View()
+	totalLines := strings.Count(out, "\n") + 1
+	assert.LessOrEqual(t, totalLines, 20,
+		"opening the popup must not push the form past its allotted height — textarea shrinks to absorb")
+	// popup itself must still be visible (the user is interacting with it).
+	for _, opt := range []string{"a", "b", "c", "d"} {
+		assert.Contains(t, out, opt, "popup option %q must render even when textarea is elastic", opt)
+	}
 }
 
 func TestForm_WithFormStyles_OverridesPalette(t *testing.T) {

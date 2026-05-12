@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -494,6 +495,46 @@ func TestTable_TruncateCellsLongerThanColumnWidth(t *testing.T) {
 	out := tbl.View()
 	// truncated cell ends with the ellipsis rune.
 	assert.Contains(t, out, "…")
+}
+
+// Regression: a styled cell that overflowed used to bail out of truncation
+// (the legacy code refused to cut content containing ANSI escapes), letting
+// the row shift the entire table to the right. The shared TruncateText
+// helper is ANSI-aware, so styled cells now truncate just like plain ones.
+func TestTable_TruncatesStyledCells(t *testing.T) {
+	cols := []components.Column{{Title: "name", Width: 8}}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "x", Values: []string{"\x1b[31mvery-long-styled-value\x1b[0m"}},
+	})
+
+	out := tbl.View()
+	assert.Contains(t, out, "…", "styled cells must truncate, not pass through")
+}
+
+// Regression: wide runes (CJK / emoji) can't be split by the column boundary.
+// Without the pad-after-truncate guard, TruncateText returns one cell short
+// when a wide rune doesn't fit the post-ellipsis budget, leaving the next
+// column visually shifted left.
+func TestTable_AlignsTruncatedWideCharCells(t *testing.T) {
+	// two narrow columns: the first holds wide-char overflow, the second
+	// holds a sentinel we can position-check.
+	cols := []components.Column{
+		{Title: "a", Width: 4},
+		{Title: "b", Width: 3},
+	}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "x", Values: []string{"漢字漢字", "OK!"}},
+	})
+
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+	require.GreaterOrEqual(t, len(lines), 2, "expected at least header + 1 row")
+	// gutter (2) + col-a (4) + separator (2) + col-b (3) = 11 cells.
+	const expected = 11
+	assert.Equal(t, expected, ansi.StringWidth(lines[1]),
+		"wide-char overflow in col-a must pad to the full column width so col-b stays aligned")
 }
 
 func TestTable_WithStyles_ConstructsWithoutPanic(t *testing.T) {

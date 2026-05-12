@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 )
 
 // ValueView is the rendered display mode for a record value.
@@ -67,7 +68,9 @@ func FormatValue(v ValueView, value []byte) string {
 	}
 }
 
-// PreviewLine renders a one-line preview, truncated to maxWidth runes.
+// PreviewLine renders a one-line preview, truncated to fit maxWidth visual
+// cells. CJK / emoji-width is counted correctly via the shared truncate
+// helper, so wide characters don't silently overflow the column.
 func PreviewLine(value []byte, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
@@ -87,24 +90,7 @@ func PreviewLine(value []byte, maxWidth int) string {
 			return r
 		}, rawText(value))
 	}
-	return truncateRunes(line, maxWidth)
-}
-
-func truncateRunes(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	const ellipsis = "..."
-	if utf8.RuneCountInString(s) <= maxRunes {
-		return s
-	}
-	if maxRunes <= len(ellipsis) {
-		runes := []rune(s)
-		return string(runes[:maxRunes])
-	}
-	keep := maxRunes - len(ellipsis)
-	runes := []rune(s)
-	return string(runes[:keep]) + ellipsis
+	return components.TruncateText(line, maxWidth)
 }
 
 // HexDump renders bytes in `hexdump -C`-style layout.

@@ -26,7 +26,9 @@ implementation and everything goes through it.
 
 Instances of this rule below: **Text input** (one edit contract), **Reserved
 global shortcuts** (one dispatcher), **Paste** (one sanitization point),
-**Handing the terminal off** (one handoff path for full-screen subprocesses).
+**Handing the terminal off** (one handoff path for full-screen subprocesses),
+**Bounded display** (one viewport for vertical overflow, one truncate helper
+for horizontal).
 
 ## Text input
 
@@ -100,3 +102,31 @@ truncated. Non-text controls (dropdowns, segmented selectors) ignore paste.
 Deviation: in modal forms, paste auto-transitions NORMAL → INSERT when the
 focused field is text-like — the only implicit mode crossing. Without it the
 user would paste into a field they haven't entered.
+
+## Bounded display
+
+*Applies the single-source rule above: content that can exceed its allotted
+space is handled in one of two canonical ways — neither is reinvented per
+screen.*
+
+Long content is bounded along the dimension it overflows on:
+
+- **Vertical overflow** (textareas, message detail, log tail, multi-row
+  lists) — rendered through a bounded viewport with a single scroll keymap:
+  `j` / `k`, `pgup` / `pgdn`, `ctrl+b` / `ctrl+f`, `g` / `G`, `home` /
+  `end`, plus `w` to toggle wrap. When a cursor is present (INSERT in
+  forms, the selected row in logs) the window auto-follows it; otherwise
+  it stays put and responds to explicit scroll keys.
+- **Horizontal overflow** (table cells, frame chrome, single-line previews
+  like message-list values) — clipped with a single trailing `…`, never
+  `...`. Truncation is ANSI-aware so styled cells fit their column without
+  bleeding into the next.
+
+New screens don't add their own ellipsis style or their own scroll keymap:
+bounding happens by content shape, not per screen.
+
+Deviation: the row-based table component has its own row-cursor scroll
+(filter / sort / select are baked into the row model), so its vertical
+scroll math isn't the shared viewport. Its **cell content** still routes
+through the shared truncate helper, so visually the table participates in
+the rule even though its scroll path is separate.

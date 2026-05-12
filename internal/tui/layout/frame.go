@@ -5,6 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -86,13 +87,23 @@ func frameTopLine(s theme.Styles, title string, inner int) string {
 		border.Render(strings.Repeat("─", right))
 }
 
-// padOrTruncate pads with spaces when shorter; wider content is returned
-// as-is (truncating styled output safely is non-trivial — screens are
-// responsible for sizing themselves).
+// padOrTruncate fits content to exactly width cells: pads with spaces when
+// narrower, truncates with an ellipsis via [components.TruncateText] when
+// wider. Wide runes that don't fit the post-ellipsis budget can leave the
+// truncated result one cell short — the extra pad below catches that so the
+// border on the next line lines up. Before this helper truncated at all,
+// overflowing styled content shifted the entire right border of the frame.
 func padOrTruncate(content string, width int) string {
 	w := lipgloss.Width(content)
-	if w >= width {
+	if w == width {
 		return content
+	}
+	if w > width {
+		out := components.TruncateText(content, width)
+		if ow := lipgloss.Width(out); ow < width {
+			out += strings.Repeat(" ", width-ow)
+		}
+		return out
 	}
 	return content + strings.Repeat(" ", width-w)
 }

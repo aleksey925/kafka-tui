@@ -54,3 +54,22 @@ func TestFrame_DropsTitleWhenTooNarrow(t *testing.T) {
 	top := strings.Split(out, "\n")[0]
 	assert.NotContains(t, top, "very-long-title")
 }
+
+// Regression: a body row wider than the frame used to pass through unchanged,
+// shifting the right border off-axis. padOrTruncate now routes through the
+// shared TruncateText so overflowing content lands within the border and the
+// frame stays a rectangle.
+func TestFrame_TruncatesBodyRowWiderThanFrame(t *testing.T) {
+	s := theme.DefaultStyles()
+	opts := layout.FrameOpts{Width: 12, Height: 3}
+
+	// body row is 50 cells; inner area is 10 cells (frame width minus borders).
+	out := layout.Frame(s, opts, strings.Repeat("x", 50))
+
+	lines := strings.Split(out, "\n")
+	require.Len(t, lines, 3)
+	for _, l := range lines {
+		assert.Equal(t, 12, lipgloss.Width(l), "every frame line stays exactly the frame width")
+	}
+	assert.Contains(t, lines[1], "…", "overflowing body must end in the canonical ellipsis")
+}

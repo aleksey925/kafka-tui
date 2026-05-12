@@ -603,7 +603,14 @@ func padCell(s string, width int, align lipgloss.Position) string {
 		return s
 	}
 	if w > width {
-		return truncateCell(s, width)
+		out := TruncateText(s, width)
+		// wide runes (CJK, emoji) can't be split by the column boundary, so
+		// TruncateText may stop one cell short of the budget. Right-pad the
+		// remainder so the next column stays aligned.
+		if ow := lipgloss.Width(out); ow < width {
+			out += strings.Repeat(" ", width-ow)
+		}
+		return out
 	}
 	pad := strings.Repeat(" ", width-w)
 	switch align {
@@ -615,26 +622,6 @@ func padCell(s string, width int, align lipgloss.Position) string {
 	default:
 		return s + pad
 	}
-}
-
-// truncateCell shortens s to fit within width, appending an ellipsis. Styled
-// content (containing ANSI escapes) is returned as-is to avoid corrupting
-// escape sequences.
-func truncateCell(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if strings.ContainsRune(s, '\x1b') {
-		return s
-	}
-	if width == 1 {
-		return "…"
-	}
-	runes := []rune(s)
-	if len(runes) <= width {
-		return s
-	}
-	return string(runes[:width-1]) + "…"
 }
 
 func clamp(v, lo, hi int) int {
