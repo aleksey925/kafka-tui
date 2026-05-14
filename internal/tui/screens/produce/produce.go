@@ -19,6 +19,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/recordfmt"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -217,7 +218,7 @@ func (m *Model) buildForm() *components.Form {
 			Value:   string(kafka.CompressionNone),
 		},
 		{Key: fieldKey, Label: "Key", Kind: components.FieldText},
-		{Key: fieldHeaders, Label: "Headers (key=value)", Kind: components.FieldList, Validator: validateHeader},
+		{Key: fieldHeaders, Label: "Headers (key=value)", Kind: components.FieldList, Validator: recordfmt.ValidateHeaderRow},
 		{Key: fieldValue, Label: "Value", Kind: components.FieldTextarea},
 	}
 	return components.NewForm(fields, components.WithFormStyles(m.styles))
@@ -808,9 +809,9 @@ func (m *Model) spec() (kafka.ProduceSpec, error) {
 	}
 
 	headersField, _ := m.form.Field(fieldHeaders)
-	headers, err := parseHeaders(headersField.List)
+	headers, err := recordfmt.ParseHeaderRows(headersField.List)
 	if err != nil {
-		return kafka.ProduceSpec{}, err
+		return kafka.ProduceSpec{}, fmt.Errorf("headers: %w", err)
 	}
 
 	keyField, _ := m.form.Field(fieldKey)
@@ -843,37 +844,6 @@ func parsePartition(raw string) (int32, error) {
 		return 0, fmt.Errorf("partition out of int32 range (got %d)", n)
 	}
 	return int32(n), nil //nolint:gosec // bounded above
-}
-
-func parseHeaders(entries []string) ([]kafka.Header, error) {
-	out := make([]kafka.Header, 0, len(entries))
-	for _, e := range entries {
-		entry := strings.TrimSpace(e)
-		if entry == "" {
-			continue
-		}
-		if err := validateHeader(entry); err != nil {
-			return nil, err
-		}
-		idx := strings.IndexByte(entry, '=')
-		out = append(out, kafka.Header{
-			Key:   strings.TrimSpace(entry[:idx]),
-			Value: []byte(entry[idx+1:]),
-		})
-	}
-	return out, nil
-}
-
-func validateHeader(entry string) error {
-	trimmed := strings.TrimSpace(entry)
-	idx := strings.IndexByte(trimmed, '=')
-	if idx < 0 {
-		return errors.New("must be key=value")
-	}
-	if strings.TrimSpace(trimmed[:idx]) == "" {
-		return errors.New("key is empty")
-	}
-	return nil
 }
 
 func (m *Model) recordHistory(spec kafka.ProduceSpec) {
@@ -988,12 +958,12 @@ func (m *Model) openEditor() tea.Cmd {
 	keyFld, _ := m.form.Field(fieldKey)
 	headersFld, _ := m.form.Field(fieldHeaders)
 	valFld, _ := m.form.Field(fieldValue)
-	headers, err := parseHeaders(headersFld.List)
+	headers, err := recordfmt.ParseHeaderRows(headersFld.List)
 	if err != nil {
 		m.toasts.Push(components.ToastError, "editor: invalid header: "+err.Error())
 		return nil
 	}
-	buf := encodeEditorBuffer(keyFld.Value, headers, []byte(valFld.Value))
+	buf := recordfmt.Encode(keyFld.Value, headers, []byte(valFld.Value))
 	return m.pager.Edit(buf)
 }
 
@@ -1002,7 +972,7 @@ func (m *Model) handleEditorResult(msg EditorEditedMsg) {
 		m.toasts.Push(components.ToastError, "editor: "+msg.Err.Error())
 		return
 	}
-	key, headers, value, err := parseEditorBuffer(msg.Content)
+	key, headers, value, err := recordfmt.Parse(msg.Content)
 	if err != nil {
 		m.toasts.Push(components.ToastError, "editor: parse failed: "+err.Error())
 		return

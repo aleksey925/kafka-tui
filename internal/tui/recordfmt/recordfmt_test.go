@@ -1,15 +1,17 @@
-package produce
+package recordfmt_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/recordfmt"
 )
 
-func TestEditorBuffer_RoundtripASCII(t *testing.T) {
+func TestEncode_RoundtripASCII(t *testing.T) {
 	// arrange
 	key := "order-42"
 	headers := []kafka.Header{
@@ -19,8 +21,8 @@ func TestEditorBuffer_RoundtripASCII(t *testing.T) {
 	value := []byte("{\n  \"id\": 42\n}\n")
 
 	// act
-	buf := encodeEditorBuffer(key, headers, value)
-	gotKey, gotHeaders, gotValue, err := parseEditorBuffer(buf)
+	buf := recordfmt.Encode(key, headers, value)
+	gotKey, gotHeaders, gotValue, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -29,10 +31,10 @@ func TestEditorBuffer_RoundtripASCII(t *testing.T) {
 	assert.Equal(t, value, gotValue)
 }
 
-func TestEditorBuffer_RoundtripAllEmpty(t *testing.T) {
+func TestEncode_RoundtripAllEmpty(t *testing.T) {
 	// arrange / act
-	buf := encodeEditorBuffer("", nil, nil)
-	key, headers, value, err := parseEditorBuffer(buf)
+	buf := recordfmt.Encode("", nil, nil)
+	key, headers, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -41,16 +43,16 @@ func TestEditorBuffer_RoundtripAllEmpty(t *testing.T) {
 	assert.Empty(t, value)
 }
 
-func TestEditorBuffer_EncodeEmptyKey_OmitsContentLine(t *testing.T) {
+func TestEncode_EmptyKey_OmitsContentLine(t *testing.T) {
 	// arrange / act
-	buf := encodeEditorBuffer("", nil, []byte("v"))
+	buf := recordfmt.Encode("", nil, []byte("v"))
 
 	// assert
 	expected := "# Key\n\n# Headers\n\n# Value\nv"
 	assert.Equal(t, expected, string(buf))
 }
 
-func TestEditorBuffer_EncodeWithHeaders(t *testing.T) {
+func TestEncode_WithHeaders(t *testing.T) {
 	// arrange
 	headers := []kafka.Header{
 		{Key: "a", Value: []byte("1")},
@@ -58,31 +60,92 @@ func TestEditorBuffer_EncodeWithHeaders(t *testing.T) {
 	}
 
 	// act
-	buf := encodeEditorBuffer("k", headers, []byte("body"))
+	buf := recordfmt.Encode("k", headers, []byte("body"))
 
 	// assert
 	expected := "# Key\nk\n\n# Headers\na=1\nb=2=extra\n\n# Value\nbody"
 	assert.Equal(t, expected, string(buf))
 }
 
-func TestParseEditorBuffer_MultilineValuePreserved(t *testing.T) {
+func TestEncodeWithMetadata_LiteralBytes(t *testing.T) {
+	// arrange
+	meta := recordfmt.Metadata{
+		Topic:     "orders",
+		Partition: 3,
+		Offset:    1234,
+		Timestamp: time.Date(2026, 5, 14, 12, 34, 56, 0, time.UTC),
+	}
+	headers := []kafka.Header{{Key: "source", Value: []byte("web")}}
+
+	// act
+	buf := recordfmt.EncodeWithMetadata("order-42", headers, []byte("body"), meta)
+
+	// assert
+	expected := "# topic: orders\n" +
+		"# partition: 3\n" +
+		"# offset: 1234\n" +
+		"# timestamp: 2026-05-14T12:34:56Z\n" +
+		"\n" +
+		"# Key\norder-42\n\n# Headers\nsource=web\n\n# Value\nbody"
+	assert.Equal(t, expected, string(buf))
+}
+
+func TestEncodeWithMetadata_RoundtripsThroughParse(t *testing.T) {
+	// arrange
+	meta := recordfmt.Metadata{
+		Topic:     "orders",
+		Partition: 7,
+		Offset:    999,
+		Timestamp: time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC),
+	}
+	headers := []kafka.Header{{Key: "x", Value: []byte("y")}}
+
+	// act
+	buf := recordfmt.EncodeWithMetadata("k", headers, []byte("body"), meta)
+	key, gotHeaders, value, err := recordfmt.Parse(buf)
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "k", key)
+	assert.Equal(t, headers, gotHeaders)
+	assert.Equal(t, []byte("body"), value)
+}
+
+func TestEncodeWithMetadata_ZeroValues(t *testing.T) {
+	// arrange
+	meta := recordfmt.Metadata{}
+
+	// act
+	buf := recordfmt.EncodeWithMetadata("", nil, nil, meta)
+
+	// assert
+	expected := "# topic: \n" +
+		"# partition: 0\n" +
+		"# offset: 0\n" +
+		"# timestamp: 0001-01-01T00:00:00Z\n" +
+		"\n" +
+		"# Key\n\n# Headers\n\n# Value\n"
+	assert.Equal(t, expected, string(buf))
+}
+
+func TestParse_MultilineValuePreserved(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\nk\n\n# Headers\n\n# Value\nline1\nline2\n\nline4\n")
 
 	// act
-	_, _, value, err := parseEditorBuffer(buf)
+	_, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
 	assert.Equal(t, []byte("line1\nline2\n\nline4\n"), value)
 }
 
-func TestParseEditorBuffer_ValueContainingHeadersMarker_Preserved(t *testing.T) {
+func TestParse_ValueContainingHeadersMarker_Preserved(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\nk\n\n# Headers\nfoo=bar\n\n# Value\n# Headers\nnot a marker\n")
 
 	// act
-	_, headers, value, err := parseEditorBuffer(buf)
+	_, headers, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -90,24 +153,24 @@ func TestParseEditorBuffer_ValueContainingHeadersMarker_Preserved(t *testing.T) 
 	assert.Equal(t, []byte("# Headers\nnot a marker\n"), value)
 }
 
-func TestParseEditorBuffer_ValueBeginningWithBlankLine_Preserved(t *testing.T) {
+func TestParse_ValueBeginningWithBlankLine_Preserved(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\nk\n\n# Headers\n\n# Value\n\nactual body\n")
 
 	// act
-	_, _, value, err := parseEditorBuffer(buf)
+	_, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
 	assert.Equal(t, []byte("\nactual body\n"), value)
 }
 
-func TestParseEditorBuffer_CRLFLineEndings(t *testing.T) {
+func TestParse_CRLFLineEndings(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\r\nk\r\n\r\n# Headers\r\na=1\r\n\r\n# Value\r\nbody\r\n")
 
 	// act
-	key, headers, value, err := parseEditorBuffer(buf)
+	key, headers, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -117,12 +180,12 @@ func TestParseEditorBuffer_CRLFLineEndings(t *testing.T) {
 	assert.Equal(t, []byte("body\r\n"), value)
 }
 
-func TestParseEditorBuffer_UTF8BOMStripped(t *testing.T) {
+func TestParse_UTF8BOMStripped(t *testing.T) {
 	// arrange
 	buf := append([]byte{0xEF, 0xBB, 0xBF}, "# Key\nk\n\n# Headers\n\n# Value\nv"...)
 
 	// act
-	key, _, value, err := parseEditorBuffer(buf)
+	key, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -130,12 +193,12 @@ func TestParseEditorBuffer_UTF8BOMStripped(t *testing.T) {
 	assert.Equal(t, []byte("v"), value)
 }
 
-func TestParseEditorBuffer_CaseInsensitiveMarkers(t *testing.T) {
+func TestParse_CaseInsensitiveMarkers(t *testing.T) {
 	// arrange
 	buf := []byte("# key\nk\n\n#HEADERS\na=1\n\n#  Value\nv")
 
 	// act
-	key, headers, value, err := parseEditorBuffer(buf)
+	key, headers, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -144,48 +207,48 @@ func TestParseEditorBuffer_CaseInsensitiveMarkers(t *testing.T) {
 	assert.Equal(t, []byte("v"), value)
 }
 
-func TestParseEditorBuffer_ValueSectionEmpty(t *testing.T) {
+func TestParse_ValueSectionEmpty(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\nk\n\n# Headers\n\n# Value\n")
 
 	// act
-	_, _, value, err := parseEditorBuffer(buf)
+	_, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
 	assert.Empty(t, value)
 }
 
-func TestParseEditorBuffer_ValueMarkerWithoutTrailingNewline(t *testing.T) {
+func TestParse_ValueMarkerWithoutTrailingNewline(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\n\n# Headers\n\n# Value")
 
 	// act
-	_, _, value, err := parseEditorBuffer(buf)
+	_, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
 	assert.Empty(t, value)
 }
 
-func TestParseEditorBuffer_HeaderCommentLinesSkipped(t *testing.T) {
+func TestParse_HeaderCommentLinesSkipped(t *testing.T) {
 	// arrange
 	buf := []byte("# Key\nk\n\n# Headers\n# disabled=true\nactive=1\n\n# Value\nv")
 
 	// act
-	_, headers, _, err := parseEditorBuffer(buf)
+	_, headers, _, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
 	assert.Equal(t, []kafka.Header{{Key: "active", Value: []byte("1")}}, headers)
 }
 
-func TestParseEditorBuffer_PreambleAllowsBlankAndComment(t *testing.T) {
-	// arrange
-	buf := []byte("\n# random banner\n\n# Key\nk\n\n# Headers\n\n# Value\nv")
+func TestParse_PreambleAllowsBlankAndComment(t *testing.T) {
+	// arrange — metadata-like preamble (the shape EncodeWithMetadata produces).
+	buf := []byte("# topic: orders\n# partition: 0\n# offset: 1\n\n# Key\nk\n\n# Headers\n\n# Value\nv")
 
 	// act
-	key, _, value, err := parseEditorBuffer(buf)
+	key, _, value, err := recordfmt.Parse(buf)
 
 	// assert
 	require.NoError(t, err)
@@ -193,7 +256,7 @@ func TestParseEditorBuffer_PreambleAllowsBlankAndComment(t *testing.T) {
 	assert.Equal(t, []byte("v"), value)
 }
 
-func TestParseEditorBuffer_Errors(t *testing.T) {
+func TestParse_Errors(t *testing.T) {
 	tests := []struct {
 		name string
 		buf  string
@@ -258,9 +321,36 @@ func TestParseEditorBuffer_Errors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := parseEditorBuffer([]byte(tc.buf))
+			_, _, _, err := recordfmt.Parse([]byte(tc.buf))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestValidateHeaderRow(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+		ok    bool
+	}{
+		{name: "well-formed", entry: "a=1", ok: true},
+		{name: "value with =", entry: "a=1=2", ok: true},
+		{name: "empty value allowed", entry: "a=", ok: true},
+		{name: "whitespace key trimmed", entry: "  a  =1", ok: true},
+		{name: "no =", entry: "no-eq", ok: false},
+		{name: "empty key", entry: "=v", ok: false},
+		{name: "whitespace-only key", entry: "   =v", ok: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := recordfmt.ValidateHeaderRow(tc.entry)
+			if tc.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
 		})
 	}
 }

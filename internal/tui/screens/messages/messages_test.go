@@ -2,6 +2,7 @@ package messages_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"strconv"
@@ -1508,10 +1509,20 @@ func TestDetail_CopyRecordUsesClipboard(t *testing.T) {
 	assert.Contains(t, cb.payloads[0], `"topic": "orders"`)
 }
 
-func TestDetail_SaveValueWritesFile(t *testing.T) {
+func TestDetail_SaveRecordWritesFile(t *testing.T) {
 	fw := &fakeWriter{}
+	ts := time.Date(2026, 5, 14, 12, 34, 56, 0, time.UTC)
+	msg := kafka.Message{
+		Topic:     "orders",
+		Partition: 1,
+		Offset:    7,
+		Timestamp: ts,
+		Key:       []byte("order-42"),
+		Value:     []byte("hello"),
+		Headers:   []kafka.Header{{Key: "source", Value: []byte("web")}},
+	}
 	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{{Topic: "orders", Partition: 1, Offset: 7, Value: []byte("hello")}},
+		Messages:   []kafka.Message{msg},
 		Index:      0,
 		FileWriter: fw,
 		OutputDir:  "/tmp",
@@ -1520,7 +1531,76 @@ func TestDetail_SaveValueWritesFile(t *testing.T) {
 	_, _ = model.Update(keyPressRune('s'))
 
 	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p1-o7-value.txt", fw.writes[0].path)
+	assert.Equal(t, "/tmp/orders-p1-o7-record.txt", fw.writes[0].path)
+	expected := "# topic: orders\n" +
+		"# partition: 1\n" +
+		"# offset: 7\n" +
+		"# timestamp: 2026-05-14T12:34:56Z\n" +
+		"\n" +
+		"# Key\norder-42\n\n# Headers\nsource=web\n\n# Value\nhello"
+	assert.Equal(t, expected, string(fw.writes[0].data))
+}
+
+func TestDetail_SaveRecordOmittedFieldsRenderEmpty(t *testing.T) {
+	fw := &fakeWriter{}
+	msg := kafka.Message{
+		Topic:     "orders",
+		Partition: 0,
+		Offset:    0,
+		Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Value:     []byte("body"),
+	}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages:   []kafka.Message{msg},
+		Index:      0,
+		FileWriter: fw,
+		OutputDir:  "/tmp",
+	})
+
+	_, _ = model.Update(keyPressRune('s'))
+
+	require.Len(t, fw.writes, 1)
+	body := string(fw.writes[0].data)
+	// markers present in order even when key / headers are empty.
+	assert.Contains(t, body, "# Key\n\n")
+	assert.Contains(t, body, "# Headers\n\n")
+	assert.Contains(t, body, "# Value\nbody")
+	// metadata block present.
+	assert.Contains(t, body, "# topic: orders\n")
+	assert.Contains(t, body, "# timestamp: 2026-01-01T00:00:00Z\n")
+}
+
+func TestDetail_SaveJSONWritesFile(t *testing.T) {
+	fw := &fakeWriter{}
+	msg := kafka.Message{
+		Topic:     "orders",
+		Partition: 1,
+		Offset:    7,
+		Timestamp: time.Date(2026, 5, 14, 12, 34, 56, 0, time.UTC),
+		Key:       []byte("order-42"),
+		Value:     []byte(`{"a":1}`),
+		Headers:   []kafka.Header{{Key: "source", Value: []byte("web")}},
+	}
+	model := messages.NewDetailModel(messages.DetailOptions{
+		Messages:   []kafka.Message{msg},
+		Index:      0,
+		FileWriter: fw,
+		OutputDir:  "/tmp",
+	})
+
+	_, _ = model.Update(keyPressRune('S'))
+
+	require.Len(t, fw.writes, 1)
+	assert.Equal(t, "/tmp/orders-p1-o7-record.json", fw.writes[0].path)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(fw.writes[0].data, &parsed))
+	assert.Equal(t, "orders", parsed["topic"])
+	assert.EqualValues(t, 1, parsed["partition"])
+	assert.EqualValues(t, 7, parsed["offset"])
+	assert.NotNil(t, parsed["timestamp"])
+	assert.NotNil(t, parsed["key"])
+	assert.NotNil(t, parsed["value"])
+	assert.NotNil(t, parsed["headers"])
 }
 
 func TestDetail_OpenEditorInvokesPager(t *testing.T) {

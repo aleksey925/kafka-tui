@@ -20,6 +20,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/recordfmt"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -220,8 +221,8 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"l", "right"}, Label: "scroll right (no-wrap)", Category: "Movement", Handler: d.actHScrollRight},
 
 		{Keys: []string{"y"}, Label: "copy record", Category: "Export", Hint: true, Handler: d.actCopy},
-		{Keys: []string{"s"}, Label: "save value to file", Category: "Export", Hint: true, Handler: d.actSaveValue},
-		{Keys: []string{"S"}, Label: "save full JSON", Category: "Export", Handler: d.actSaveFull},
+		{Keys: []string{"s"}, Label: "save record to file", Category: "Export", Hint: true, Handler: d.actSaveRecord},
+		{Keys: []string{"S"}, Label: "save record as JSON", Category: "Export", Handler: d.actSaveJSON},
 		{Keys: []string{"e"}, Label: "open in $EDITOR", Category: "Export", Handler: d.actEditor},
 	}
 	// `R` stays bound in read-only mode so resend() can warn explicitly
@@ -247,8 +248,8 @@ func (d *DetailModel) actViewRaw() tea.Cmd    { d.setView(ViewRaw); return nil }
 func (d *DetailModel) actViewHex() tea.Cmd    { d.setView(ViewHex); return nil }
 func (d *DetailModel) actToggleWrap() tea.Cmd { d.toggleWrap(); return nil }
 func (d *DetailModel) actCopy() tea.Cmd       { d.copyRecord(); return nil }
-func (d *DetailModel) actSaveValue() tea.Cmd  { d.saveValue(); return nil }
-func (d *DetailModel) actSaveFull() tea.Cmd   { d.saveFullJSON(); return nil }
+func (d *DetailModel) actSaveRecord() tea.Cmd { d.saveRecord(); return nil }
+func (d *DetailModel) actSaveJSON() tea.Cmd   { d.saveJSON(); return nil }
 func (d *DetailModel) actEditor() tea.Cmd     { return d.openEditor() }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
 
@@ -357,18 +358,28 @@ func (d *DetailModel) copy(payload, label string) {
 	d.action.Toast = "copied " + label + " (" + strconv.Itoa(len(payload)) + " bytes)"
 }
 
-func (d *DetailModel) saveValue() {
+func (d *DetailModel) saveRecord() {
 	cur := d.Current()
-	name := defaultSaveName(cur, "value", "")
+	meta := recordfmt.Metadata{
+		Topic:     cur.Topic,
+		Partition: cur.Partition,
+		Offset:    cur.Offset,
+		Timestamp: cur.Timestamp,
+	}
+	blob := recordfmt.EncodeWithMetadata(string(cur.Key), cur.Headers, cur.Value, meta)
+	// extension is always .txt: the section frame is plain text;
+	// value bytes (possibly binary) flow verbatim into it. Machine-
+	// readable archival lives on `S` (.json).
+	name := defaultSaveName(cur, "record", ".txt")
 	path := filepath.Join(d.outputDir, name)
-	if err := d.writer.Write(path, cur.Value); err != nil {
+	if err := d.writer.Write(path, blob); err != nil {
 		d.action.Warn = "save: " + err.Error()
 		return
 	}
 	d.action.Toast = "saved " + path
 }
 
-func (d *DetailModel) saveFullJSON() {
+func (d *DetailModel) saveJSON() {
 	cur := d.Current()
 	blob, err := json.MarshalIndent(toExportable(cur), "", "  ")
 	if err != nil {
