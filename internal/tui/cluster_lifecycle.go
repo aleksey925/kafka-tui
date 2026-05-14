@@ -8,7 +8,6 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
-	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 )
 
 func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool) {
@@ -48,10 +47,19 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	}
 	client, err := m.boot.Dialer.Dial(*clu)
 	if err != nil {
-		if cs, ok := m.active.(*clusters.Model); ok {
-			cs.Toasts().Push(components.ToastError, fmt.Sprintf("connect %q failed: %v", name, err))
+		// surface the failure wherever the user is. when the active screen
+		// has no toast queue (e.g. configsrc), bounce back to the clusters
+		// picker so the error has somewhere to land instead of vanishing.
+		msg := fmt.Sprintf("connect %q failed: %v", name, err)
+		if q, ok := activeToastQueue(m.active); ok {
+			q.Push(components.ToastError, msg)
+			return nil
 		}
-		return nil
+		next := m.replaceScreen(ScreenClusters, "")
+		if q, ok := activeToastQueue(m.active); ok {
+			q.Push(components.ToastError, msg)
+		}
+		return next
 	}
 	if m.client != nil {
 		m.client.Close()

@@ -420,6 +420,66 @@ func TestClient_Follow__kfake(t *testing.T) {
 	assert.Equal(t, []string{"x", "y"}, values)
 }
 
+// Regression: FollowSession.Close used to nil-out the client pointer after
+// the first call. Calling Close twice (e.g. caller + a t.Cleanup) was fine,
+// but canceling the parent ctx and THEN calling Close double-closed the
+// underlying kgo.Client. sync.Once now guards both paths.
+func TestClient_FollowSession_CloseIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	require.NoError(t, c.CreateTopic(ctx, CreateTopicSpec{
+		Name:              "live-close-twice",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+
+	session, err := c.Follow(ctx, "live-close-twice", nil)
+	require.NoError(t, err)
+
+	// double Close must not panic.
+	assert.NotPanics(t, session.Close)
+	assert.NotPanics(t, session.Close)
+}
+
+// Regression: when the parent context was canceled, the streaming
+// goroutine returned but the kgo.Client was never released — the doc
+// claimed parent-ctx cancellation was equivalent to Close, but only the
+// goroutine cleaned up. The goroutine's deferred shutdownClient now
+// closes the client, and a subsequent Close from the caller is a no-op.
+func TestClient_FollowSession_ParentCtxCancelClosesClient(t *testing.T) {
+	t.Parallel()
+
+	c := newKfakeClient(t)
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	t.Cleanup(parentCancel)
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(setupCancel)
+	require.NoError(t, c.CreateTopic(setupCtx, CreateTopicSpec{
+		Name:              "live-parent-cancel",
+		Partitions:        1,
+		ReplicationFactor: 1,
+	}))
+
+	session, err := c.Follow(parentCtx, "live-parent-cancel", nil)
+	require.NoError(t, err)
+
+	// act — cancel the parent ctx, then wait for the streamer to drain.
+	parentCancel()
+	select {
+	case <-session.Messages:
+	case <-time.After(5 * time.Second):
+		t.Fatal("streaming goroutine did not return after parent ctx cancellation")
+	}
+
+	// subsequent Close from a t.Cleanup-style caller must be a no-op.
+	assert.NotPanics(t, session.Close)
+}
+
 func TestClient_Follow__noPartitions__error(t *testing.T) {
 	t.Parallel()
 

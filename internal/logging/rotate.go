@@ -87,7 +87,9 @@ func (w *RotatingWriter) Close() error {
 }
 
 func (w *RotatingWriter) open() error {
-	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// 0o600: logs can contain broker addresses, cluster names, and any
+	// context written at debug — keep them user-private on shared hosts.
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("logging: open %s: %w", w.path, err)
 	}

@@ -93,12 +93,29 @@ func (o *OSC52) acquireWriterLocked() (io.Writer, error) {
 		return o.writer, nil
 	}
 	// If /dev/tty is unavailable (Windows, sandboxed CI, redirected
-	// stdin), fall back to stderr. Stderr usually shares the terminal
-	// and OSC sequences are silently consumed by the terminal emulator.
+	// stdin), fall back to stderr — but only when stderr is itself a
+	// terminal. Writing the OSC52 escape + base64 payload into a
+	// redirected stderr (e.g. `kafka-tui 2>err.log`) would leak the
+	// copied content into a regular file where anyone with read access
+	// could decode it.
 	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
 		// unknown failure mode — surface it
 		return nil, fmt.Errorf("clipboard: open /dev/tty: %w", err)
 	}
+	if !isTerminal(os.Stderr) {
+		return nil, errors.New("clipboard: no tty available for osc52")
+	}
 	o.writer = os.Stderr
 	return o.writer, nil
+}
+
+// isTerminal reports whether f points at a character device — enough of a
+// TTY check for our purposes. Avoids pulling in golang.org/x/term just for
+// this single guard.
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
 }

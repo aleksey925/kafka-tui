@@ -31,6 +31,14 @@ func main() {
 		return
 	}
 
+	// --version doesn't read config and shouldn't depend on placeholder
+	// resolution — handle it before ResolveAll so a stranded ${vault:...}
+	// on an unrelated flag doesn't block debugging the binary itself.
+	if flags.ShowVersion {
+		_, _ = fmt.Fprintln(os.Stdout, version.NewBuildInfo(ver).Display())
+		return
+	}
+
 	// ResolveAll runs env+file then asserts no placeholders remain, so a
 	// stranded ${vault:...} on a CLI flag (e.g. --sasl-password) fails at
 	// startup instead of silently propagating the literal placeholder string.
@@ -40,9 +48,6 @@ func main() {
 	}
 
 	switch {
-	case flags.ShowVersion:
-		_, _ = fmt.Fprintln(os.Stdout, version.NewBuildInfo(ver).Display())
-		return
 	case flags.ShowLogsDir:
 		path, err := resolveLogPath(flags)
 		if err != nil {
@@ -80,7 +85,6 @@ func run(flags *cli.Flags) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	defer func() { _ = watcher.Close() }()
 
 	logger, err := logging.Init(logging.Options{
 		Level:     loaded.Config.Logging.Level,
@@ -89,9 +93,13 @@ func run(flags *cli.Flags) error {
 		MaxFiles:  loaded.Config.Logging.MaxFiles,
 	})
 	if err != nil {
+		_ = watcher.Close()
 		return fmt.Errorf("init logging: %w", err)
 	}
+	// logger.Close must be deferred LAST so all other tear-down (watcher,
+	// state store, etc.) can still log on shutdown — defers fire LIFO.
 	defer func() { _ = logger.Close() }()
+	defer func() { _ = watcher.Close() }()
 	slog.SetDefault(logger.Logger)
 
 	store, err := state.Open(context.Background(), "")

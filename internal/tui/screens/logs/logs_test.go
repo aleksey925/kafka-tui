@@ -148,6 +148,70 @@ func TestFollowTick_TruncationTriggersReload(t *testing.T) {
 	assert.Equal(t, []string{"INFO fresh"}, m.Lines())
 }
 
+// Regression: handleLoaded used to return nil, so the rotation reload
+// path (Truncated → loadCmd → LoadedMsg) terminated the follow tick chain
+// even though m.follow stayed true. The LIVE indicator was on but no new
+// lines arrived until the user toggled follow off and on.
+func TestRotation_KeepsFollowTickAlive(t *testing.T) {
+	// arrange — start with enough content that a shrink is detectable.
+	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\n")
+	m := logs.New(logs.Options{Path: path, FollowInterval: time.Millisecond})
+	drive(t, m, m.Init())
+	_ = m.Update(keyPress("f"))
+	require.NoError(t, os.WriteFile(path, []byte("X\n"), 0o600))
+
+	// act — manually walk the rotation chain so we can inspect the last cmd
+	// returned by handleLoaded, which the bug used to make nil.
+	tickCmd := m.Update(logs.FollowTickMsg{})
+	require.NotNil(t, tickCmd)
+	appended, ok := tickCmd().(logs.AppendedMsg)
+	require.True(t, ok)
+	require.True(t, appended.Truncated, "shrunken file must produce Truncated AppendedMsg")
+
+	reloadCmd := m.Update(appended)
+	require.NotNil(t, reloadCmd)
+	loaded, ok := reloadCmd().(logs.LoadedMsg)
+	require.True(t, ok)
+
+	next := m.Update(loaded)
+
+	// assert
+	require.NotNil(t, next,
+		"handleLoaded must schedule the next tick while follow is on — otherwise rotation kills the chain")
+	_, isTick := next().(logs.FollowTickMsg)
+	assert.True(t, isTick, "expected a FollowTickMsg to keep LIVE mode alive after rotation")
+}
+
+// Regression: handleLoaded used to unconditionally snap the cursor to the
+// bottom of the new content on every reload — so a user reading mid-file
+// while not following would be yanked to the end every time a LoadedMsg
+// arrived (e.g. the race window where follow is toggled off between
+// loadCmd and its message).
+func TestHandleLoaded_PreservesCursorWhenNotFollowing(t *testing.T) {
+	// arrange
+	path := writeLog(t, "1\n2\n3\n4\n5\n")
+	m := logs.New(logs.Options{Path: path})
+	m.SetSize(80, 10)
+	drive(t, m, m.Init())
+	require.Equal(t, 4, m.Cursor(), "initial load should snap to bottom")
+	// scroll up to a middle row.
+	for range 2 {
+		_ = m.Update(keyPress("k"))
+	}
+	require.Equal(t, 2, m.Cursor())
+
+	// act — directly inject a reload with fresh content (simulating the
+	// rotation path arriving while follow is off).
+	_ = m.Update(logs.LoadedMsg{
+		Lines:      []string{"a", "b", "c", "d", "e"},
+		NextOffset: 10,
+	})
+
+	// assert
+	assert.Equal(t, 2, m.Cursor(),
+		"cursor index must be preserved across reload when not following")
+}
+
 func TestSearch_FindsMatchingLine(t *testing.T) {
 	// arrange
 	path := writeLog(t, "INFO alpha\nINFO bravo\nINFO charlie\n")

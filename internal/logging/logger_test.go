@@ -179,6 +179,31 @@ func TestInit__createsFileAndWritesAtConfiguredLevel(t *testing.T) {
 	assert.Contains(t, body, "error-line")
 }
 
+// Regression: log files can contain broker addresses, cluster names,
+// and any context written at debug. The default 0o644 file mode let
+// other accounts on shared hosts read those logs.
+func TestInit__restrictsFilePermissions(t *testing.T) {
+	// arrange
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "logs", "kafka-tui.log")
+
+	// act
+	lg, err := Init(Options{Level: "info", File: logPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lg.Close() })
+
+	// assert — parent dir 0o700, log file 0o600.
+	dirInfo, err := os.Stat(filepath.Dir(logPath))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(),
+		"log directory must be user-private (0o700)")
+
+	fileInfo, err := os.Stat(logPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fileInfo.Mode().Perm(),
+		"log file must be user-private (0o600)")
+}
+
 func TestInit__defaultRotationParams(t *testing.T) {
 	// arrange
 	dir := t.TempDir()

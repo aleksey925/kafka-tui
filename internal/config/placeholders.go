@@ -182,15 +182,19 @@ func scanPlaceholders(s string) ([]placeholder, error) {
 				break
 			}
 			if s[j] == '$' && j+1 < len(s) && s[j+1] == '{' {
+				// don't echo s — the surrounding text may contain
+				// a partially-typed secret that the user is still
+				// resolving (a half-closed ${vault:...}).
 				return nil, fmt.Errorf(
-					"config: nested placeholder at offset %d in %q (placeholders cannot be nested)",
-					start, s,
+					"config: nested placeholder at offset %d (placeholders cannot be nested)",
+					start,
 				)
 			}
 			j++
 		}
 		if end < 0 {
-			return nil, fmt.Errorf("config: unclosed placeholder at offset %d in %q", start, s)
+			// same reason as above: do not embed the raw value in the error.
+			return nil, fmt.Errorf("config: unclosed placeholder at offset %d (length %d)", start, len(s)-start)
 		}
 		raw := s[start : end+1]
 		body := s[start+2 : end]

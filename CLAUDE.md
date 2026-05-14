@@ -73,6 +73,18 @@ global is skipped if its action does not apply in that context (e.g.
 `ctrl+r` auto-refresh has nothing to refresh inside a form). The key falls
 through to the overlay instead of firing a no-op global.
 
+## Filter clear
+
+When a screen has an applied filter (the `/` prompt is closed and rows are
+filtered), `esc` both clears the filter and pops the screen in the same
+keypress; `ctrl+u` clears the filter and stays on the screen.
+
+Why: this matches k9s, where `esc` on a filtered view is a single "clear
+and go back" action and `ctrl+u` is the readline-style "wipe the buffer
+without navigating". Splitting `esc` into a two-press cascade would lose
+the muscle memory users bring from k9s, so the asymmetry between `esc`
+and `ctrl+u` here is deliberate, not a forgotten early return.
+
 ## Handing the terminal off
 
 *Applies the single-source rule above: one shared handoff path for any

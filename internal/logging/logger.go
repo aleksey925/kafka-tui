@@ -75,7 +75,9 @@ func Init(opts Options) (*Logger, error) {
 		maxFiles = DefaultMaxFiles
 	}
 
-	if mkErr := os.MkdirAll(filepath.Dir(resolved), 0o755); mkErr != nil {
+	// 0o700 keeps the log directory user-private (logs themselves are
+	// opened 0o600 in RotatingWriter.open).
+	if mkErr := os.MkdirAll(filepath.Dir(resolved), 0o700); mkErr != nil {
 		return nil, fmt.Errorf("logging: create log dir: %w", mkErr)
 	}
 

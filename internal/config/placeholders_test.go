@@ -213,6 +213,22 @@ func TestResolveString__nestedPlaceholder__error(t *testing.T) {
 	assert.Contains(t, err.Error(), "nested placeholder")
 }
 
+// Regression: error messages used to echo the raw input string, which
+// could leak the leading literal of a half-typed secret (e.g. a YAML
+// value with a half-closed `${vault:...}`) into stderr / CI logs.
+func TestResolveString__nestedPlaceholder__doesNotEchoRawInput(t *testing.T) {
+	// arrange
+	const secretLiteral = "supersecretprefix"
+
+	// act
+	_, err := config.EnvFileResolvers().ResolveString(secretLiteral + "${env:${env:VAR}}")
+
+	// assert
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secretLiteral,
+		"error must not embed the raw input (potential secret leak)")
+}
+
 func TestResolveString__unclosedPlaceholder__error(t *testing.T) {
 	// act
 	_, err := config.EnvFileResolvers().ResolveString("${env:USER")
@@ -220,6 +236,19 @@ func TestResolveString__unclosedPlaceholder__error(t *testing.T) {
 	// assert
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unclosed")
+}
+
+func TestResolveString__unclosedPlaceholder__doesNotEchoRawInput(t *testing.T) {
+	// arrange — same reasoning as the nested case above.
+	const secretLiteral = "literal-prefix-aaaa"
+
+	// act
+	_, err := config.EnvFileResolvers().ResolveString(secretLiteral + "${vault:secret")
+
+	// assert
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secretLiteral,
+		"error must not embed the raw input (potential secret leak)")
 }
 
 func TestResolveString__unknownKind__error(t *testing.T) {

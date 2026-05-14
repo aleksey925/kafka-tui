@@ -80,5 +80,13 @@ func validateClusterTLS(c Cluster) error {
 	if c.TLS.Key != "" && c.TLS.KeyFile != "" {
 		return fmt.Errorf("config: cluster %q: tls.key and tls.key_file cannot both be set", c.Name)
 	}
+	// cert and key are always a pair — accepting one without the other
+	// passes load but fails later at connect time with a confusing tls
+	// error. mirror the CLI flag validator (cli/flags.go) here.
+	hasCert := c.TLS.Cert != "" || c.TLS.CertFile != ""
+	hasKey := c.TLS.Key != "" || c.TLS.KeyFile != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("config: cluster %q: tls cert and key must be set together", c.Name)
+	}
 	return nil
 }

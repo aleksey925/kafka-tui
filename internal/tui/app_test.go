@@ -413,6 +413,51 @@ func TestModel_CtrlCQuits(t *testing.T) {
 	require.NotNil(t, cmd)
 }
 
+// TestModel_CtrlCQuitsFromCommandMode pins ctrl+c as the unconditional
+// global exit per CLAUDE.md — without it, opening `:` and pressing ctrl+c
+// would silently swallow the keystroke instead of quitting.
+func TestModel_CtrlCQuitsFromCommandMode(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenClusters, Width: 80, Height: 24})
+
+	updated, _ := m.Update(keyPress(":"))
+	m = updated.(*tui.Model)
+	require.Equal(t, tui.ModeCommand, m.Mode())
+
+	updated, cmd := m.Update(keyPress("ctrl+c"))
+	m = updated.(*tui.Model)
+
+	assert.True(t, m.Quit())
+	require.NotNil(t, cmd)
+}
+
+func TestModel_CtrlCQuitsFromSearchMode(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 80, Height: 24})
+
+	updated, _ := m.Update(keyPress("/"))
+	m = updated.(*tui.Model)
+	require.Equal(t, tui.ModeSearch, m.Mode())
+
+	updated, cmd := m.Update(keyPress("ctrl+c"))
+	m = updated.(*tui.Model)
+
+	assert.True(t, m.Quit())
+	require.NotNil(t, cmd)
+}
+
+func TestModel_CtrlCQuitsFromHelpMode(t *testing.T) {
+	m := tui.New(tui.Options{Initial: tui.ScreenTopics, Width: 80, Height: 24})
+
+	updated, _ := m.Update(keyPress("?"))
+	m = updated.(*tui.Model)
+	require.Equal(t, tui.ModeHelp, m.Mode())
+
+	updated, cmd := m.Update(keyPress("ctrl+c"))
+	m = updated.(*tui.Model)
+
+	assert.True(t, m.Quit())
+	require.NotNil(t, cmd)
+}
+
 func TestModel_WindowSizeUpdatesGeometry(t *testing.T) {
 	m := tui.New(tui.Options{Initial: tui.ScreenTopics})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})

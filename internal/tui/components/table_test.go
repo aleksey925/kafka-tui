@@ -542,3 +542,35 @@ func TestTable_WithStyles_ConstructsWithoutPanic(t *testing.T) {
 	tbl.SetRows(simpleRows(2))
 	assert.NotEmpty(t, tbl.View())
 }
+
+// Regression: when sorting is active AND at least one column is flex, the
+// 2 cells reserved for the sort arrow used to be excluded from fixedTotal.
+// Flex distribution then over-allocated leftover by 2, and the rendered
+// row was 2 cells wider than SetTotalWidth.
+func TestTable_SortArrowDoesNotBreakFlexWidth(t *testing.T) {
+	const totalWidth = 60
+	cols := []components.Column{
+		{Title: "name", Flex: true, Sortable: true},
+		{Title: "state", Width: 8},
+	}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "ok"}},
+		{ID: "b", Values: []string{"beta", "fail"}},
+	})
+	tbl.SetTotalWidth(totalWidth)
+
+	// arrange: turn sort on (cycles None → Asc).
+	tbl, _ = tbl.Update(keyPressMsg("s"))
+
+	// act
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+
+	// assert
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + at least one row")
+	assert.LessOrEqual(t, ansi.StringWidth(lines[0]), totalWidth,
+		"header must not exceed SetTotalWidth when sort is active")
+	assert.LessOrEqual(t, ansi.StringWidth(lines[1]), totalWidth,
+		"row must not exceed SetTotalWidth when sort is active")
+}

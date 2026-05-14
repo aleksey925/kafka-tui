@@ -546,6 +546,68 @@ func TestPartitions_InputUpdatesCheckboxes(t *testing.T) {
 	assert.Equal(t, []int32{0, 2}, m.PartitionFilter())
 }
 
+// Regression: bracketed-paste used to be dropped silently in the Partitions
+// popup — the PasteMsg handler in Update only routed to ModeSeek. Users
+// trying to paste an expression like "0,2,4-7" got nothing.
+func TestPartitions_PopupAcceptsPaste(t *testing.T) {
+	// arrange
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+	_ = m.Update(keyPress("tab")) // focus the input pane
+
+	// act
+	_ = m.Update(tea.PasteMsg{Content: "0,2"})
+
+	// assert — paste must drive the same selection sync as typing.
+	view := stripANSI(m.View())
+	assert.Contains(t, view, "[×] 0", "pasted expression must tick partition 0")
+	assert.Contains(t, view, "[×] 2", "pasted expression must tick partition 2")
+	assert.Contains(t, view, "[ ] 1")
+}
+
+// Regression: the Partitions popup input used to handle keys with a
+// hand-rolled switch that ignored readline-style emacs shortcuts. Other
+// text inputs in the app honor ctrl+a / ctrl+u / etc., so the popup is
+// the only spot that diverged from the shared edit contract.
+func TestPartitions_PopupSupportsReadlineShortcuts(t *testing.T) {
+	// arrange
+	svc := newFakeService()
+	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}
+	svc.watermarks = map[int32]kafka.PartitionWatermarks{
+		0: {Low: 0, High: 5},
+		1: {Low: 0, High: 5},
+		2: {Low: 0, High: 5},
+	}
+	m := messages.New(messages.Options{Service: svc, Topic: "orders"})
+	m.SetSize(80, 24)
+	drive(t, m, m.Init())
+	cmd := m.Update(keyPressRune('P'))
+	drive(t, m, cmd)
+	_ = m.Update(keyPress("tab"))
+	for _, r := range "0,2" {
+		_ = m.Update(keyPressRune(r))
+	}
+
+	// act — ctrl+u wipes the buffer from start of line to cursor.
+	_ = m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+
+	// assert — empty input must un-tick everything (treated as "no filter").
+	view := stripANSI(m.View())
+	assert.Contains(t, view, "[×] 0", "empty input means 'all selected'")
+	assert.Contains(t, view, "[×] 1", "empty input means 'all selected'")
+	assert.Contains(t, view, "[×] 2", "empty input means 'all selected'")
+}
+
 func TestPartitions_LoadErrorShowsFallback(t *testing.T) {
 	svc := newFakeService()
 	svc.lastN = []kafka.Message{{Topic: "orders", Value: []byte("v")}}

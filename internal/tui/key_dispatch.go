@@ -10,6 +10,13 @@ import (
 )
 
 func (m *Model) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// ctrl+c is the unconditional global exit per CLAUDE.md — it must work
+	// from any mode, including the `:` / `/` / `?` overlays, otherwise the
+	// user has no way to bail out of a prompt without typing esc first.
+	if key.String() == "ctrl+c" {
+		m.quit = true
+		return m, tea.Quit
+	}
 	switch m.mode {
 	case ModeCommand:
 		return m.handleCommandKey(key)
@@ -66,16 +73,12 @@ func (m *Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handleNormalKey runs the default-mode pipeline: ctrl+c always quits,
-// raw-input screens get every key as a literal, then global shortcuts,
-// then k9s-style filter clearing on esc/ctrl+u, then forward to the
-// active screen with q/esc fallback only when nothing claimed the key.
+// handleNormalKey runs the default-mode pipeline: raw-input screens get
+// every key as a literal, then global shortcuts, then k9s-style filter
+// clearing on esc/ctrl+u, then forward to the active screen with q/esc
+// fallback only when nothing claimed the key. ctrl+c is short-circuited
+// in [Model.handleKey] before any mode-specific dispatch.
 func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// ctrl+c is always global so the user can quit even from inside a form.
-	if key.String() == "ctrl+c" {
-		m.quit = true
-		return m, tea.Quit
-	}
 	// raw-input screens (forms) get every key as a literal so global
 	// shortcuts don't interfere with typing. See [RawInputs].
 	if m.active != nil && screenWantsRawInput(m.active) {
@@ -89,6 +92,10 @@ func (m *Model) handleNormalKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// when an overlay is open, esc belongs to it; capture the pre-state so
 	// we can suppress the pop after the screen closes its overlay too.
 	hadOverlay := m.active != nil && screenHasOverlay(m.active)
+	// k9s parity: esc with an applied filter wipes the filter AND falls
+	// through to the screen's esc binding, so a single press both clears
+	// and pops. ctrl+u below is the readline-style alternative that only
+	// wipes and stays put.
 	if key.String() == "esc" && !hadOverlay && m.active != nil && screenActiveFilter(m.active) != "" {
 		setScreenSearch(m.active, "")
 	}

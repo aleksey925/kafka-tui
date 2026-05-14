@@ -570,9 +570,21 @@ func (c *Client) runClone(
 ) {
 	defer close(progress)
 
+	// send respects ctx so an abandoned receiver (UI closed, parent ctx
+	// not yet canceled) can't deadlock us mid-clone. returns false when
+	// the context is gone — caller should bail out instead of retrying.
+	send := func(p CloneProgress) bool {
+		select {
+		case progress <- p:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
 	total := wm.MessageCount
 	if total == 0 {
-		progress <- CloneProgress{Total: 0, Copied: 0, Done: true}
+		send(CloneProgress{Total: 0, Copied: 0, Done: true})
 		return
 	}
 
@@ -588,18 +600,24 @@ func (c *Client) runClone(
 		},
 	})
 	if err != nil {
-		progress <- CloneProgress{Total: total, Err: err, Done: true}
+		send(CloneProgress{Total: total, Err: err, Done: true})
 		return
 	}
 	worker, err := kgo.NewClient(opts...)
 	if err != nil {
-		progress <- CloneProgress{Total: total, Err: fmt.Errorf("kafka: clone worker: %w", err), Done: true}
+		send(CloneProgress{Total: total, Err: fmt.Errorf("kafka: clone worker: %w", err), Done: true})
 		return
 	}
 	defer worker.Close()
 
+	// only track partitions that actually have records to copy. an empty
+	// partition (e.g. high=low=N after retention) never produces a record,
+	// so leaving it here would block reachedEnd forever.
 	endsByPartition := make(map[int32]int64, len(wm.Partitions))
 	for p, w := range wm.Partitions {
+		if w.High <= w.Low {
+			continue
+		}
 		endsByPartition[p] = w.High
 	}
 	// progressed accumulates the highest offset+1 we have observed for each
@@ -613,7 +631,7 @@ func (c *Client) runClone(
 	for {
 		fetches := worker.PollFetches(ctx)
 		if errs := fetches.Errors(); len(errs) > 0 {
-			progress <- CloneProgress{Total: total, Copied: copied.Load(), Err: errs[0].Err, Done: true}
+			send(CloneProgress{Total: total, Copied: copied.Load(), Err: errs[0].Err, Done: true})
 			return
 		}
 
@@ -625,6 +643,9 @@ func (c *Client) runClone(
 				Key:       r.Key,
 				Value:     r.Value,
 				Headers:   r.Headers,
+				// preserve event-time so timestamp lookups and retention
+				// on the clone behave the same as on the source.
+				Timestamp: r.Timestamp,
 			}
 			batch = append(batch, rec)
 			if next := r.Offset + 1; next > progressed[r.Partition] {
@@ -633,20 +654,22 @@ func (c *Client) runClone(
 		})
 		if len(batch) > 0 {
 			if results := worker.ProduceSync(ctx, batch...); results.FirstErr() != nil {
-				progress <- CloneProgress{Total: total, Copied: copied.Load(), Err: results.FirstErr(), Done: true}
+				send(CloneProgress{Total: total, Copied: copied.Load(), Err: results.FirstErr(), Done: true})
 				return
 			}
 			copied.Add(int64(len(batch)))
-			progress <- CloneProgress{Total: total, Copied: copied.Load()}
+			if !send(CloneProgress{Total: total, Copied: copied.Load()}) {
+				return
+			}
 		}
 
 		if reachedEnd(progressed, endsByPartition) {
-			progress <- CloneProgress{Total: total, Copied: copied.Load(), Done: true}
+			send(CloneProgress{Total: total, Copied: copied.Load(), Done: true})
 			return
 		}
 
 		if err := ctx.Err(); err != nil {
-			progress <- CloneProgress{Total: total, Copied: copied.Load(), Err: err, Done: true}
+			send(CloneProgress{Total: total, Copied: copied.Load(), Err: err, Done: true})
 			return
 		}
 	}

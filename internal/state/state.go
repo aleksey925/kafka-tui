@@ -67,7 +67,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		path = p
 	}
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		// keep the state directory user-private — the DB stores produced
+		// payloads which may include keys, tokens, or other sensitive
+		// content the user pushed through the produce form.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("state: create dir: %w", err)
 		}
 	}
@@ -85,6 +88,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("state: ping sqlite: %w", err)
+	}
+	if path != ":memory:" {
+		// sqlite creates the file with the process umask; force 0o600 so
+		// a permissive umask can't widen access on shared hosts (the DB
+		// holds produced payloads which may include sensitive content).
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			_ = db.Close()
+			return nil, fmt.Errorf("state: chmod sqlite: %w", err)
+		}
 	}
 	if err := applyMigrations(ctx, db); err != nil {
 		_ = db.Close()

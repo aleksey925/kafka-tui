@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"time"
@@ -165,12 +166,21 @@ func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error
 	if len(names) == 0 {
 		return out, nil
 	}
+	// DescribeGroups is best-effort here: the list still renders with
+	// State / Coordinator if it fails (typical cause is the user has
+	// ListGroups but not DescribeGroups ACL). Surface the failure at
+	// debug so missing Protocol columns aren't a silent mystery.
 	if described, dErr := c.adm.DescribeGroups(ctx, names...); dErr == nil {
 		for i := range out {
 			if d, ok := described[out[i].Group]; ok && d.Err == nil {
 				out[i].Protocol = d.Protocol
 			}
 		}
+	} else {
+		slog.Debug("kafka: describe groups (best-effort) failed",
+			slog.String("err", dErr.Error()),
+			slog.Int("groups", len(names)),
+		)
 	}
 	return out, nil
 }

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -460,15 +461,16 @@ func (c *Client) fetchWindow(
 	return msgs, nil
 }
 
-// FollowSession streams new records from the end of a topic. The caller must
-// invoke Close (or cancel the parent context) to release the underlying
-// franz-go consumer.
+// FollowSession streams new records from the end of a topic. Closing the
+// session — either via Close or by canceling the parent context — releases
+// the underlying franz-go consumer.
 type FollowSession struct {
 	Messages <-chan Message
 	Errors   <-chan error
 
-	cancel context.CancelFunc
-	cl     *kgo.Client
+	cancel  context.CancelFunc
+	cl      *kgo.Client
+	closeCl sync.Once
 }
 
 func (s *FollowSession) Close() {
@@ -477,12 +479,20 @@ func (s *FollowSession) Close() {
 	}
 	if s.cancel != nil {
 		s.cancel()
-		s.cancel = nil
 	}
-	if s.cl != nil {
-		s.cl.Close()
-		s.cl = nil
-	}
+	s.shutdownClient()
+}
+
+// shutdownClient closes the underlying franz-go client exactly once. Called
+// both from Close (caller-driven) and from the streaming goroutine's defer
+// (parent-ctx-driven) so the client never leaks regardless of which path
+// triggers shutdown first.
+func (s *FollowSession) shutdownClient() {
+	s.closeCl.Do(func() {
+		if s.cl != nil {
+			s.cl.Close()
+		}
+	})
 }
 
 // Follow opens a consumer positioned at the end of every (filtered) partition
@@ -509,7 +519,12 @@ func (c *Client) Follow(ctx context.Context, topic string, partitions []int32) (
 	msgCh := make(chan Message, 64)
 	errCh := make(chan error, 1)
 
+	s := &FollowSession{Messages: msgCh, Errors: errCh, cancel: cancel, cl: cl}
+
 	go func() {
+		// release the client on the way out regardless of whether
+		// shutdown was triggered by Close or by parent ctx cancellation.
+		defer s.shutdownClient()
 		defer close(msgCh)
 		defer close(errCh)
 		for {
@@ -532,7 +547,7 @@ func (c *Client) Follow(ctx context.Context, topic string, partitions []int32) (
 		}
 	}()
 
-	return &FollowSession{Messages: msgCh, Errors: errCh, cancel: cancel, cl: cl}, nil
+	return s, nil
 }
 
 func (c *Client) fetchUntilOffsets(

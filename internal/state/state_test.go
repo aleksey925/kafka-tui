@@ -53,6 +53,31 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 	assert.Contains(t, tables, "schema_version")
 }
 
+// Regression: the state DB stores produced payloads which may include
+// keys, tokens, or other sensitive content. On shared hosts a 0o644 DB
+// (sqlite's default + umask) lets other accounts read those payloads.
+func TestOpen_RestrictsFilePermissions(t *testing.T) {
+	// arrange
+	root := t.TempDir()
+	path := filepath.Join(root, "kafka-tui", "state.db")
+
+	// act
+	store, err := state.Open(t.Context(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	// assert — parent dir 0o700, DB file 0o600.
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(),
+		"state directory must be user-private (0o700)")
+
+	fileInfo, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fileInfo.Mode().Perm(),
+		"state DB must be user-private (0o600)")
+}
+
 func TestOpen_InMemoryIsIsolated(t *testing.T) {
 	// arrange + act
 	store, err := state.Open(t.Context(), ":memory:")

@@ -518,8 +518,11 @@ func (t *Table) computeWidths() []int {
 		fixedTotal += w
 	}
 	// reserve space for the sort arrow on the active sort column.
+	// fixedTotal must absorb the bump too — otherwise flex distribution
+	// below over-allocates by 2 cells and rows exceed t.width.
 	if t.sortCol >= 0 && t.sortCol < len(widths) && t.sortDir != SortNone {
 		widths[t.sortCol] += 2
+		fixedTotal += 2
 	}
 	if t.width > 0 && len(flexIdxs) > 0 {
 		// row layout: 2-col cursor gutter + optional "[ ] " (4 cols) +

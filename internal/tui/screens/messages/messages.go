@@ -18,6 +18,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -680,10 +681,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetSize(msg.Width, msg.Height)
 		return nil
 	case tea.PasteMsg:
-		// only the seek-input popup has a text buffer that can receive paste —
-		// list/detail views drop it.
-		if m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput {
+		// route paste to whichever overlay currently owns a text buffer.
+		// list / detail views have nothing to paste into and drop it.
+		switch {
+		case m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput:
 			m.seekPopup.form, _ = m.seekPopup.form.Update(msg)
+		case m.mode == ModePartitions && m.partitionsPopup != nil && m.partitionsPopup.focus == focusInput:
+			m.handlePartitionsPaste(msg.Content)
 		}
 		return nil
 	case tea.KeyPressMsg:
@@ -1551,40 +1555,37 @@ func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
 
 func (m *Model) handlePartitionsInputKey(key tea.KeyPressMsg) {
 	pop := m.partitionsPopup
-	runes := []rune(pop.input)
-	if pop.inputCursor > len(runes) {
-		pop.inputCursor = len(runes)
+	state, ok := lineedit.Apply(lineedit.State{
+		Runes:  []rune(pop.input),
+		Cursor: pop.inputCursor,
+	}, key)
+	if !ok {
+		return
 	}
-	switch key.String() {
-	case "left":
-		if pop.inputCursor > 0 {
-			pop.inputCursor--
-		}
-	case "right":
-		if pop.inputCursor < len(runes) {
-			pop.inputCursor++
-		}
-	case "home":
-		pop.inputCursor = 0
-	case "end":
-		pop.inputCursor = len(runes)
-	case "backspace":
-		if pop.inputCursor > 0 {
-			pop.input = string(runes[:pop.inputCursor-1]) + string(runes[pop.inputCursor:])
-			pop.inputCursor--
-			m.syncSelectionFromInput()
-		}
-	case "delete":
-		if pop.inputCursor < len(runes) {
-			pop.input = string(runes[:pop.inputCursor]) + string(runes[pop.inputCursor+1:])
-			m.syncSelectionFromInput()
-		}
-	default:
-		if t := key.Text; t != "" {
-			pop.input = string(runes[:pop.inputCursor]) + t + string(runes[pop.inputCursor:])
-			pop.inputCursor += len([]rune(t))
-			m.syncSelectionFromInput()
-		}
+	newBuf := state.String()
+	changed := newBuf != pop.input
+	pop.input = newBuf
+	pop.inputCursor = state.Cursor
+	if changed {
+		m.syncSelectionFromInput()
+	}
+}
+
+// handlePartitionsPaste sanitizes the pasted payload through lineedit and
+// merges it into the popup input. The popup is single-line, so newlines /
+// tabs are flattened to spaces per the project paste contract.
+func (m *Model) handlePartitionsPaste(content string) {
+	pop := m.partitionsPopup
+	state := lineedit.InsertText(lineedit.State{
+		Runes:  []rune(pop.input),
+		Cursor: pop.inputCursor,
+	}, content)
+	newBuf := state.String()
+	changed := newBuf != pop.input
+	pop.input = newBuf
+	pop.inputCursor = state.Cursor
+	if changed {
+		m.syncSelectionFromInput()
 	}
 }
 

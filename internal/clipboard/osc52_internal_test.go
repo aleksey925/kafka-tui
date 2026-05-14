@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,3 +101,35 @@ func TestOSC52_Close_ReleasesAcquiredWriter(t *testing.T) {
 type failingWriter struct{ err error }
 
 func (f failingWriter) Write(_ []byte) (int, error) { return 0, f.err }
+
+// Regression: the OSC52 fallback used to write the base64 payload to
+// os.Stderr unconditionally. When stderr was redirected to a regular
+// file (`kafka-tui 2>err.log`), the copied content leaked there. The
+// isTerminal guard prevents the fallback in that scenario.
+func TestIsTerminal_RejectsRegularFile(t *testing.T) {
+	// arrange — a regular file is definitely not a character device.
+	path := filepath.Join(t.TempDir(), "regular.log")
+	f, err := os.Create(path) //nolint:gosec // test-controlled path under t.TempDir
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	// act
+	got := isTerminal(f)
+
+	// assert
+	assert.False(t, got, "isTerminal must return false for redirected stderr")
+}
+
+func TestIsTerminal_HandlesClosedFile(t *testing.T) {
+	// arrange — Stat() on a closed file errors; the guard must treat
+	// that as "not a terminal", not panic.
+	f, err := os.Create(filepath.Join(t.TempDir(), "x"))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// act
+	got := isTerminal(f)
+
+	// assert
+	assert.False(t, got)
+}

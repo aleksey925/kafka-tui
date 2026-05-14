@@ -229,8 +229,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetSize(msg.Width, msg.Height)
 		return nil
 	case LoadedMsg:
-		m.handleLoaded(msg)
-		return nil
+		return m.handleLoaded(msg)
 	case AppendedMsg:
 		return m.handleAppended(msg)
 	case FollowTickMsg:
@@ -323,26 +322,49 @@ func (m *Model) toggleFollow() tea.Cmd {
 	return nil
 }
 
-func (m *Model) handleLoaded(msg LoadedMsg) {
+func (m *Model) handleLoaded(msg LoadedMsg) tea.Cmd {
 	if msg.Missing {
 		m.missing = true
 		m.lines = nil
 		m.readOff = 0
-		return
+		return m.followTick()
 	}
 	m.missing = false
 	if msg.Err != nil {
 		m.loadErr = msg.Err.Error()
 		m.toasts.Push(components.ToastError, "load logs: "+msg.Err.Error())
-		return
+		return m.followTick()
 	}
 	m.loadErr = ""
+	// detect rotation: a Truncated AppendedMsg triggers a fresh loadCmd
+	// while m.lines still holds the pre-rotation tail. on the very first
+	// cold load m.lines is nil, so we treat that as initial-open.
+	isFirstLoad := m.lines == nil
+	prevCursor := m.cursor
 	m.lines = msg.Lines
 	m.readOff = msg.NextOffset
 	m.trimLines()
-	m.cursor = max(0, len(m.lines)-1)
+	switch {
+	case isFirstLoad, m.follow:
+		// initial open and follow-mode want the tail. anything else
+		// preserves the user's reading position across reloads.
+		m.cursor = max(0, len(m.lines)-1)
+	default:
+		m.cursor = clamp(prevCursor, 0, max(0, len(m.lines)-1))
+	}
 	m.recomputeMatches()
 	m.syncViewport()
+	return m.followTick()
+}
+
+// followTick schedules the next tail tick when follow mode is on. Centralized
+// so every load/append/error path keeps the tick chain alive — a missing
+// schedule would silently break LIVE mode after rotation or transient errors.
+func (m *Model) followTick() tea.Cmd {
+	if !m.follow {
+		return nil
+	}
+	return tickCmd(m.followInterval)
 }
 
 func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {

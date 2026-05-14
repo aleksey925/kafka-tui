@@ -142,6 +142,15 @@ func TestValidateClusterTLS(t *testing.T) {
 		{name: "ca + ca_file", tls: &TLSConfig{CA: "X", CAFile: "/a"}, wantErr: "tls.ca and tls.ca_file"},
 		{name: "cert + cert_file", tls: &TLSConfig{Cert: "X", CertFile: "/c"}, wantErr: "tls.cert and tls.cert_file"},
 		{name: "key + key_file", tls: &TLSConfig{Key: "X", KeyFile: "/k"}, wantErr: "tls.key and tls.key_file"},
+		// the pair check mirrors the CLI flag validator — accepting one
+		// without the other passes load but fails later at connect time
+		// with a confusing tls error.
+		{name: "cert without key", tls: &TLSConfig{Cert: "X"}, wantErr: "must be set together"},
+		{name: "cert_file without key_file", tls: &TLSConfig{CertFile: "/c"}, wantErr: "must be set together"},
+		{name: "key without cert", tls: &TLSConfig{Key: "X"}, wantErr: "must be set together"},
+		{name: "key_file without cert_file", tls: &TLSConfig{KeyFile: "/k"}, wantErr: "must be set together"},
+		{name: "cert + key (inline pair) is fine", tls: &TLSConfig{Cert: "C", Key: "K"}},
+		{name: "cert_file + key_file (file pair) is fine", tls: &TLSConfig{CertFile: "/c", KeyFile: "/k"}},
 	}
 
 	for _, tc := range cases {
