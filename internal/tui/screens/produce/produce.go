@@ -46,9 +46,10 @@ type Entry struct {
 	Timestamp   time.Time
 }
 
-// PagerOpener launches an external editor on the value field. Edit returns a
-// [tea.Cmd] (not the edited bytes directly) so the real implementation can
-// route through [tea.ExecProcess] — the only safe way to spawn a full-screen
+// PagerOpener launches an external editor on the record (Key + Headers +
+// Value, serialized via [encodeEditorBuffer]). Edit returns a [tea.Cmd]
+// (not the edited bytes directly) so the real implementation can route
+// through [tea.ExecProcess] — the only safe way to spawn a full-screen
 // child process from inside bubbletea. A blocking exec.Cmd.Run() corrupts
 // the terminal because the parent's raw mode / alt-screen / mouse tracking
 // are not released, and the child fights bubbletea for stdin.
@@ -384,7 +385,7 @@ func (m *Model) normalBindings() []keymap.Binding {
 		{Keys: []string{"tab", "down"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
 		{Keys: []string{"shift+tab", "up"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
-		{Keys: []string{"e"}, Label: "open value in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
+		{Keys: []string{"e"}, Label: "open record in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
 		{Keys: []string{"p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
 		{Keys: []string{"n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
@@ -975,14 +976,25 @@ func formatHeaderList(headers []kafka.Header) []string {
 }
 
 // openEditor produces the handoff Cmd; the result arrives later as
-// [EditorEditedMsg], handled by [handleEditorResult].
+// [EditorEditedMsg], handled by [handleEditorResult]. The buffer carries
+// the full record (Key + Headers + Value) — see [encodeEditorBuffer].
+// Invalid header rows in the form are surfaced as a toast instead of
+// being smuggled into the editor session.
 func (m *Model) openEditor() tea.Cmd {
 	if m.pager == nil {
 		m.toasts.Push(components.ToastWarning, "editor: no $EDITOR opener configured")
 		return nil
 	}
-	val, _ := m.form.Field(fieldValue)
-	return m.pager.Edit([]byte(val.Value))
+	keyFld, _ := m.form.Field(fieldKey)
+	headersFld, _ := m.form.Field(fieldHeaders)
+	valFld, _ := m.form.Field(fieldValue)
+	headers, err := parseHeaders(headersFld.List)
+	if err != nil {
+		m.toasts.Push(components.ToastError, "editor: invalid header: "+err.Error())
+		return nil
+	}
+	buf := encodeEditorBuffer(keyFld.Value, headers, []byte(valFld.Value))
+	return m.pager.Edit(buf)
 }
 
 func (m *Model) handleEditorResult(msg EditorEditedMsg) {
@@ -990,8 +1002,14 @@ func (m *Model) handleEditorResult(msg EditorEditedMsg) {
 		m.toasts.Push(components.ToastError, "editor: "+msg.Err.Error())
 		return
 	}
-	m.form.SetValue(fieldValue, string(msg.Content))
-	m.form.FocusKey(fieldValue)
+	key, headers, value, err := parseEditorBuffer(msg.Content)
+	if err != nil {
+		m.toasts.Push(components.ToastError, "editor: parse failed: "+err.Error())
+		return
+	}
+	m.form.SetValue(fieldKey, key)
+	m.form.SetList(fieldHeaders, formatHeaderList(headers))
+	m.form.SetValue(fieldValue, string(value))
 }
 
 func (m *Model) View() string {

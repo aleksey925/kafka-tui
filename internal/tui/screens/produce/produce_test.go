@@ -739,8 +739,10 @@ func TestE_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	calls := 0
 	pager := produce.PagerOpenerFunc(func(initial []byte) tea.Cmd {
 		calls++
-		assert.Equal(t, []byte("seed"), initial)
-		return func() tea.Msg { return produce.EditorEditedMsg{Content: []byte("seed-edited")} }
+		// editor buffer carries the full record; here only Value is set.
+		assert.Equal(t, "# Key\n\n# Headers\n\n# Value\nseed", string(initial))
+		edited := "# Key\n\n# Headers\n\n# Value\nseed-edited"
+		return func() tea.Msg { return produce.EditorEditedMsg{Content: []byte(edited)} }
 	})
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
 	typeText(m, "value", "seed")
@@ -756,6 +758,62 @@ func TestE_OpensEditorAndAppliesEditedValue(t *testing.T) {
 	assert.Equal(t, 1, calls)
 	val, _ := m.Form().Field("value")
 	assert.Equal(t, "seed-edited", val.Value)
+}
+
+func TestE_RoundtripsKeyHeadersAndValue(t *testing.T) {
+	svc := newFakeService()
+	pager := produce.PagerOpenerFunc(func(initial []byte) tea.Cmd {
+		// buffer reflects the prefilled form state.
+		want := "# Key\nk1\n\n# Headers\nh1=v1\nh2=v2\n\n# Value\nbody"
+		assert.Equal(t, want, string(initial))
+		edited := "# Key\nk2\n\n# Headers\nh3=v3\n\n# Value\nnew body"
+		return func() tea.Msg { return produce.EditorEditedMsg{Content: []byte(edited)} }
+	})
+	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
+	typeText(m, "key", "k1")
+	_ = m.Update(keyPress("esc"))
+	typeText(m, "headers", "h1=v1")
+	_ = m.Update(keyPress("enter"))
+	for _, r := range "h2=v2" {
+		_ = m.Update(keyPressRune(r))
+	}
+	_ = m.Update(keyPress("esc"))
+	typeText(m, "value", "body")
+	_ = m.Update(keyPress("esc"))
+
+	cmd := m.Update(keyPress("e"))
+	drive(t, m, cmd)
+
+	key, _ := m.Form().Field("key")
+	headers, _ := m.Form().Field("headers")
+	val, _ := m.Form().Field("value")
+	assert.Equal(t, "k2", key.Value)
+	assert.Equal(t, []string{"h3=v3"}, headers.List)
+	assert.Equal(t, "new body", val.Value)
+}
+
+func TestE_ParseErrorEmitsToastAndKeepsFormState(t *testing.T) {
+	svc := newFakeService()
+	pager := produce.PagerOpenerFunc(func(_ []byte) tea.Cmd {
+		// missing '# Value' marker — parser rejects.
+		bad := "# Key\nk\n\n# Headers\nh=v\n"
+		return func() tea.Msg { return produce.EditorEditedMsg{Content: []byte(bad)} }
+	})
+	m := produce.New(produce.Options{Service: svc, Topic: "orders", Pager: pager})
+	typeText(m, "key", "before")
+	_ = m.Update(keyPress("esc"))
+	typeText(m, "value", "before-value")
+	_ = m.Update(keyPress("esc"))
+
+	cmd := m.Update(keyPress("e"))
+	drive(t, m, cmd)
+
+	key, _ := m.Form().Field("key")
+	val, _ := m.Form().Field("value")
+	assert.Equal(t, "before", key.Value)
+	assert.Equal(t, "before-value", val.Value)
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "parse failed")
 }
 
 func TestE_NoPagerEmitsWarning(t *testing.T) {
