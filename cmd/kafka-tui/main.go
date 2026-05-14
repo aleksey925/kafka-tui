@@ -126,7 +126,7 @@ func run(flags *cli.Flags) error {
 		Dialer:            dialer,
 		Pinger:            tui.NewClusterPinger(dialer, 5*time.Second),
 		Editor:            clusters.DefaultEditor(),
-		History:           produceHistory(store, logger.Logger),
+		History:           produceHistory(store, loaded.Config.Produce.HistorySize, logger.Logger),
 		MessagesViewState: messagesViewState(store, logger.Logger),
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
@@ -238,11 +238,14 @@ func findProjectDir(startDir string) (string, bool) {
 	}
 }
 
-func produceHistory(store *state.Store, log *slog.Logger) produce.History {
+func produceHistory(store *state.Store, histSize int, log *slog.Logger) produce.History {
 	if store == nil {
 		return nil
 	}
-	return tui.NewStateHistory(store, log)
+	if histSize <= 0 {
+		histSize = produce.DefaultHistorySize
+	}
+	return tui.NewStateHistory(store, histSize, log)
 }
 
 func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateRepository {

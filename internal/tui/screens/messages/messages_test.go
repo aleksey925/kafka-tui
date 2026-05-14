@@ -1360,9 +1360,9 @@ type fakePager struct {
 	err   error
 }
 
-func (f *fakePager) Open(_ string) error {
+func (f *fakePager) Open(path string) tea.Cmd {
 	f.calls++
-	return f.err
+	return func() tea.Msg { return messages.EditorOpenedMsg{Path: path, Err: f.err} }
 }
 
 func keyPress(name string) tea.KeyPressMsg {

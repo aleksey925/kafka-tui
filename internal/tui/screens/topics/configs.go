@@ -65,6 +65,13 @@ type ConfigsModel struct {
 	width, height int
 	manualRefresh bool
 
+	// lifeCtx is canceled by Close(); used by [loadConfigsCmd] so the
+	// in-flight DescribeAllTopicConfigs RPC is aborted and any late-arriving
+	// [ConfigsLoadedMsg] is dropped instead of being delivered to whichever
+	// screen happens to be active when it returns.
+	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
+	lifeCancel context.CancelFunc
+
 	action ConfigsAction
 	now    func() time.Time
 	styles theme.Styles
@@ -89,20 +96,33 @@ func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	return &ConfigsModel{
-		svc:      opts.Service,
-		topic:    opts.Topic,
-		readOnly: opts.ReadOnly,
-		focusKey: opts.FocusKey,
-		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:      now,
-		styles:   styles,
+		svc:        opts.Service,
+		topic:      opts.Topic,
+		readOnly:   opts.ReadOnly,
+		focusKey:   opts.FocusKey,
+		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:        now,
+		styles:     styles,
+		lifeCtx:    lifeCtx,
+		lifeCancel: lifeCancel,
 	}
 }
 
 func (m *ConfigsModel) Init() tea.Cmd {
 	m.loading = true
-	return loadConfigsCmd(m.svc, m.topic)
+	return loadConfigsCmd(m.lifeCtx, m.svc, m.topic)
+}
+
+// Close cancels any in-flight load goroutine so a slow
+// DescribeAllTopicConfigs RPC cannot deliver its result to a different
+// screen (or a freshly constructed ConfigsModel for another topic) after
+// the host has popped this instance.
+func (m *ConfigsModel) Close() {
+	if m.lifeCancel != nil {
+		m.lifeCancel()
+	}
 }
 
 func (m *ConfigsModel) Topic() string { return m.topic }
@@ -228,7 +248,7 @@ func (m *ConfigsModel) actToggleHelp() tea.Cmd {
 func (m *ConfigsModel) actRefresh() tea.Cmd {
 	m.loading = true
 	m.manualRefresh = true
-	return loadConfigsCmd(m.svc, m.topic)
+	return loadConfigsCmd(m.lifeCtx, m.svc, m.topic)
 }
 
 func (m *ConfigsModel) actUp() tea.Cmd {
@@ -662,11 +682,17 @@ type ConfigsLoadedMsg struct {
 	Err     error
 }
 
-func loadConfigsCmd(svc Service, topic string) tea.Cmd {
+func loadConfigsCmd(lifeCtx context.Context, svc Service, topic string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(lifeCtx, 10*time.Second)
 		defer cancel()
 		cfgs, err := svc.DescribeAllTopicConfigs(ctx, topic)
+		// the screen popped before the RPC returned; drop the result so a
+		// stale ConfigsLoadedMsg can't land on a freshly opened ConfigsModel
+		// for a different topic (or on a different screen type entirely).
+		if lifeCtx.Err() != nil {
+			return nil
+		}
 		if err != nil {
 			return ConfigsLoadedMsg{Err: err}
 		}

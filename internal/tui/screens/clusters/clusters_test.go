@@ -271,9 +271,9 @@ func TestEditChooser_NavigatesAndSelects(t *testing.T) {
 		},
 		GlobalPath:  "/global/clusters.yaml",
 		ProjectPath: "/project/clusters.yaml",
-		Editor: clusters.EditorFunc(func(p string) error {
+		Editor: clusters.EditorFunc(func(p string) tea.Cmd {
 			called = append(called, p)
-			return nil
+			return func() tea.Msg { return clusters.EditCompletedMsg{Path: p} }
 		}),
 	})
 	_ = m.Update(keyPress("e"))
@@ -307,9 +307,9 @@ func TestE_SinglePathSkipsChooser(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 		GlobalPath: "/g/clusters.yaml",
-		Editor: clusters.EditorFunc(func(p string) error {
+		Editor: clusters.EditorFunc(func(p string) tea.Cmd {
 			called = append(called, p)
-			return nil
+			return func() tea.Msg { return clusters.EditCompletedMsg{Path: p} }
 		}),
 	})
 	cmd := m.Update(keyPress("e"))
@@ -465,8 +465,10 @@ func TestEditCompleted_ErrorRaisesToast(t *testing.T) {
 			{Name: "b", Brokers: []string{"y"}},
 		},
 		GlobalPath: "/g/clusters.yaml",
-		Editor: clusters.EditorFunc(func(_ string) error {
-			return errors.New("editor crashed")
+		Editor: clusters.EditorFunc(func(p string) tea.Cmd {
+			return func() tea.Msg {
+				return clusters.EditCompletedMsg{Path: p, Err: errors.New("editor crashed")}
+			}
 		}),
 	})
 	cmd := m.Update(keyPress("e"))

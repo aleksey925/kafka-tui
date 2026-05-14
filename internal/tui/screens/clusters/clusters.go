@@ -65,27 +65,41 @@ type PingerFunc func(ctx context.Context, c config.Cluster) error
 
 func (f PingerFunc) Ping(ctx context.Context, c config.Cluster) error { return f(ctx, c) }
 
-// Editor opens path in the user's $EDITOR. Implementations block until the editor exits.
+// Editor opens path in the user's $EDITOR. Edit returns a [tea.Cmd] (not the
+// result directly) so the real implementation can route through
+// [tea.ExecProcess] — the only safe way to spawn a full-screen child process
+// from inside bubbletea. A blocking exec.Cmd.Run() corrupts the terminal
+// because the parent's raw mode / alt-screen / mouse tracking are not released,
+// and the child fights bubbletea for stdin.
+//
+// The returned Cmd must eventually post an [EditCompletedMsg] back to the program.
 type Editor interface {
-	Edit(path string) error
+	Edit(path string) tea.Cmd
 }
 
-type EditorFunc func(path string) error
+type EditorFunc func(path string) tea.Cmd
 
-func (f EditorFunc) Edit(path string) error { return f(path) }
+func (f EditorFunc) Edit(path string) tea.Cmd { return f(path) }
 
-// DefaultEditor returns an [Editor] that runs `$EDITOR <path>` (falling back to `vi`).
+// DefaultEditor runs `$EDITOR <path>` (falling back to `vi`) through
+// [tea.ExecProcess] so bubbletea can release the terminal cleanly while the
+// editor is running and restore it afterwards.
+//
+// I/O wiring (stdin/stdout/stderr) is intentionally NOT set here — bubbletea
+// fills in the program's own streams when they are unset.
 func DefaultEditor() Editor {
-	return EditorFunc(func(path string) error {
-		editor := os.Getenv("EDITOR")
+	return EditorFunc(func(path string) tea.Cmd {
+		editor := strings.TrimSpace(os.Getenv("EDITOR"))
 		if editor == "" {
 			editor = "vi"
 		}
-		cmd := exec.CommandContext(context.Background(), editor, path) //nolint:gosec // user-controlled $EDITOR
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		parts := strings.Fields(editor)
+		args := append([]string(nil), parts[1:]...)
+		args = append(args, path)
+		execCmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
+		return tea.ExecProcess(execCmd, func(runErr error) tea.Msg {
+			return EditCompletedMsg{Path: path, Err: runErr}
+		})
 	})
 }
 
@@ -523,11 +537,7 @@ func (m *Model) handlePingResult(msg PingResultMsg) {
 }
 
 func (m *Model) runEditor(path string) tea.Cmd {
-	editor := m.editor
-	return func() tea.Msg {
-		err := editor.Edit(path)
-		return EditCompletedMsg{Path: path, Err: err}
-	}
+	return m.editor.Edit(path)
 }
 
 func (m *Model) handleEditCompleted(msg EditCompletedMsg) {

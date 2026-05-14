@@ -10,17 +10,26 @@ import (
 
 // stateHistory adapts the ctx-bearing [state.Store] to the synchronous
 // [produce.History] interface. Errors are logged instead of bubbling up;
-// the produce form treats missing entries as "no history".
+// the produce form treats missing entries as "no history". `histSize` is
+// the cap passed to [state.Store.AddProduce] on every insert so the
+// on-disk produce_history table stays trimmed even though the in-memory
+// produce form keeps a smaller working set.
+//
+// histSize == 0 is forwarded to [state.Store.AddProduce] verbatim, which
+// means "do not trim" (the on-disk table will grow indefinitely). The
+// production wiring in cmd/kafka-tui/main.go forces a non-zero default so
+// this only happens in tests that explicitly opt into unbounded growth.
 type stateHistory struct {
-	store *state.Store
-	log   *slog.Logger
+	store    *state.Store
+	histSize int
+	log      *slog.Logger
 }
 
-func NewStateHistory(store *state.Store, log *slog.Logger) produce.History {
+func NewStateHistory(store *state.Store, histSize int, log *slog.Logger) produce.History {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &stateHistory{store: store, log: log}
+	return &stateHistory{store: store, histSize: histSize, log: log}
 }
 
 func (s *stateHistory) LastForTopic(topic string) (produce.Entry, bool) {
@@ -49,7 +58,7 @@ func (s *stateHistory) Recent(n int) []produce.Entry {
 }
 
 func (s *stateHistory) Add(entry produce.Entry) {
-	if err := s.store.AddProduce(context.Background(), fromProduceEntry(entry), 0); err != nil {
+	if err := s.store.AddProduce(context.Background(), fromProduceEntry(entry), s.histSize); err != nil {
 		s.log.Warn("history: add produce failed", "topic", entry.Topic, "err", err)
 	}
 }

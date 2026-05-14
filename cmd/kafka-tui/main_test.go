@@ -120,7 +120,7 @@ func TestFindProjectDir_NotFoundReturnsFalse(t *testing.T) {
 }
 
 func TestProduceHistory_NilStoreReturnsNil(t *testing.T) {
-	assert.Nil(t, produceHistory(nil, nil))
+	assert.Nil(t, produceHistory(nil, 0, nil))
 }
 
 func TestResolveLogPath_FallbackToDefaultWhenLoadFails(t *testing.T) {

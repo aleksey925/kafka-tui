@@ -270,14 +270,20 @@ func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
 
 // reloadPartitionsIfTopicChanged: when the previous load was for a
 // different (non-empty) topic, options reset to {auto} so the user
-// doesn't pick from stale partitions; on the initial fetch existing
-// options are kept so a prefilled value isn't clobbered.
+// doesn't pick from stale partitions. The currently selected value (e.g. a
+// partition prefilled from history or a re-send) is preserved as a
+// placeholder option until the fresh fetch resolves, so [components.Form.SetOptions]
+// doesn't snap a valid prefill back to "auto" the moment the topic changes.
 func (m *Model) reloadPartitionsIfTopicChanged() tea.Cmd {
 	if m.topic == m.partitionsTopic {
 		return nil
 	}
 	if m.partitionsTopic != "" {
-		m.form.SetOptions(fieldPartition, []string{partitionAuto})
+		opts := []string{partitionAuto}
+		if fld, ok := m.form.Field(fieldPartition); ok && fld.Value != "" && fld.Value != partitionAuto {
+			opts = append(opts, fld.Value)
+		}
+		m.form.SetOptions(fieldPartition, opts)
 	}
 	m.resetPartitionTypeBuf()
 	// clear so switching back to a previously loaded topic still

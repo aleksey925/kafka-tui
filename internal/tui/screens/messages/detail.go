@@ -37,14 +37,29 @@ type FileWriterFunc func(path string, data []byte) error
 
 func (f FileWriterFunc) Write(path string, data []byte) error { return f(path, data) }
 
-// PagerOpener opens a temp file in $EDITOR.
+// PagerOpener opens a temp file in $EDITOR. Open returns a [tea.Cmd] (not the
+// result directly) so the real implementation can route through
+// [tea.ExecProcess] — the only safe way to spawn a full-screen child process
+// from inside bubbletea. A blocking exec.Cmd.Run() corrupts the terminal
+// because the parent's raw mode / alt-screen / mouse tracking are not released,
+// and the child fights bubbletea for stdin.
+//
+// The returned Cmd must eventually post an [EditorOpenedMsg].
 type PagerOpener interface {
-	Open(path string) error
+	Open(path string) tea.Cmd
 }
 
-type PagerOpenerFunc func(path string) error
+type PagerOpenerFunc func(path string) tea.Cmd
 
-func (f PagerOpenerFunc) Open(path string) error { return f(path) }
+func (f PagerOpenerFunc) Open(path string) tea.Cmd { return f(path) }
+
+// EditorOpenedMsg is the result of an external editor invocation. Err is the
+// exec failure (if any); the consumer is responsible for removing the temp
+// file at Path.
+type EditorOpenedMsg struct {
+	Path string
+	Err  error
+}
 
 // DetailAction is the host-facing intent of the detail view.
 type DetailAction struct {
@@ -234,7 +249,7 @@ func (d *DetailModel) actToggleWrap() tea.Cmd { d.toggleWrap(); return nil }
 func (d *DetailModel) actCopy() tea.Cmd       { d.copyRecord(); return nil }
 func (d *DetailModel) actSaveValue() tea.Cmd  { d.saveValue(); return nil }
 func (d *DetailModel) actSaveFull() tea.Cmd   { d.saveFullJSON(); return nil }
-func (d *DetailModel) actEditor() tea.Cmd     { d.openEditor(); return nil }
+func (d *DetailModel) actEditor() tea.Cmd     { return d.openEditor() }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
 
 func (d *DetailModel) actScrollDown() tea.Cmd   { d.viewport.ScrollBy(+1); return nil }
@@ -265,15 +280,18 @@ func (d *DetailModel) actChordG() tea.Cmd {
 }
 
 func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
-	key, ok := msg.(tea.KeyPressMsg)
-	if !ok {
+	switch msg := msg.(type) {
+	case EditorOpenedMsg:
+		d.handleEditorOpened(msg)
+		return d, nil
+	case tea.KeyPressMsg:
+		// non-`g` disarms the gg chord.
+		if d.gPrimed && msg.String() != "g" {
+			d.gPrimed = false
+		}
+		keymap.Dispatch(d.bindings(), msg)
 		return d, nil
 	}
-	// non-`g` disarms the gg chord.
-	if d.gPrimed && key.String() != "g" {
-		d.gPrimed = false
-	}
-	keymap.Dispatch(d.bindings(), key)
 	return d, nil
 }
 
@@ -366,29 +384,41 @@ func (d *DetailModel) saveFullJSON() {
 	d.action.Toast = "saved " + path
 }
 
-func (d *DetailModel) openEditor() {
+// openEditor writes the current value into a tmpfile and returns a tea.Cmd
+// that hands the terminal off to $EDITOR via [PagerOpener.Open]. The tmpfile
+// is removed when the resulting [EditorOpenedMsg] is dispatched.
+func (d *DetailModel) openEditor() tea.Cmd {
 	cur := d.Current()
 	body := FormatValue(d.view, cur.Value)
 	tmp, err := os.CreateTemp("", "kafka-tui-msg-*.txt")
 	if err != nil {
 		d.action.Warn = "editor: " + err.Error()
-		return
+		return nil
 	}
 	if _, err := tmp.WriteString(body); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmp.Name())
 		d.action.Warn = "editor: " + err.Error()
-		return
+		return nil
 	}
 	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
 		d.action.Warn = "editor: " + err.Error()
-		return
+		return nil
 	}
 	_ = os.Chmod(tmp.Name(), 0o400)
-	defer os.Remove(tmp.Name())
-	if err := d.pager.Open(tmp.Name()); err != nil {
-		d.action.Warn = "editor: " + err.Error()
-		return
+	return d.pager.Open(tmp.Name())
+}
+
+// handleEditorOpened consumes the result of an external-editor session: the
+// view is read-only so we only need to remove the tmpfile and surface any
+// exec failure as a warning toast.
+func (d *DetailModel) handleEditorOpened(msg EditorOpenedMsg) {
+	if msg.Path != "" {
+		_ = os.Remove(msg.Path)
+	}
+	if msg.Err != nil {
+		d.action.Warn = "editor: " + msg.Err.Error()
 	}
 }
 
@@ -550,22 +580,25 @@ func defaultWriteFile(path string, data []byte) error {
 	return nil
 }
 
-// DefaultPagerOpener runs `$EDITOR <path>`, falling back to `vi`.
+// DefaultPagerOpener runs `$EDITOR <path>` (falling back to `vi`) through
+// [tea.ExecProcess] so bubbletea can release the terminal cleanly while the
+// editor is running and restore it afterwards.
+//
+// I/O wiring (stdin/stdout/stderr) is intentionally NOT set here — bubbletea
+// fills in the program's own streams when they are unset.
 func DefaultPagerOpener() PagerOpener {
-	return PagerOpenerFunc(func(path string) error {
+	return PagerOpenerFunc(func(path string) tea.Cmd {
 		editor := strings.TrimSpace(os.Getenv("EDITOR"))
 		if editor == "" {
 			editor = "vi"
 		}
 		parts := strings.Fields(editor)
-		args := make([]string, 0, len(parts))
-		args = append(args, parts[1:]...)
+		args := append([]string(nil), parts[1:]...)
 		args = append(args, path)
-		cmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		execCmd := exec.CommandContext(context.Background(), parts[0], args...) //nolint:gosec // user-controlled $EDITOR
+		return tea.ExecProcess(execCmd, func(runErr error) tea.Msg {
+			return EditorOpenedMsg{Path: path, Err: runErr}
+		})
 	})
 }
 

@@ -17,7 +17,7 @@ import (
 
 func TestStateHistory_AddAndLastForTopic(t *testing.T) {
 	store := openStore(t)
-	hist := tui.NewStateHistory(store, slog.Default())
+	hist := tui.NewStateHistory(store, 0, slog.Default())
 	entry := produce.Entry{
 		Cluster:     "alpha",
 		Topic:       "orders",
@@ -37,7 +37,7 @@ func TestStateHistory_AddAndLastForTopic(t *testing.T) {
 }
 
 func TestStateHistory_LastForTopic_MissingReturnsFalse(t *testing.T) {
-	hist := tui.NewStateHistory(openStore(t), slog.Default())
+	hist := tui.NewStateHistory(openStore(t), 0, slog.Default())
 
 	_, ok := hist.LastForTopic("nope")
 
@@ -46,7 +46,7 @@ func TestStateHistory_LastForTopic_MissingReturnsFalse(t *testing.T) {
 
 func TestStateHistory_RecentReturnsNewestFirst(t *testing.T) {
 	store := openStore(t)
-	hist := tui.NewStateHistory(store, slog.Default())
+	hist := tui.NewStateHistory(store, 0, slog.Default())
 	first := produce.Entry{
 		Cluster: "c", Topic: "a", Value: []byte("1"),
 		Timestamp: time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
@@ -66,10 +66,30 @@ func TestStateHistory_RecentReturnsNewestFirst(t *testing.T) {
 }
 
 func TestNewStateHistory_NilLoggerFallsBackToDefault(t *testing.T) {
-	hist := tui.NewStateHistory(openStore(t), nil)
+	hist := tui.NewStateHistory(openStore(t), 0, nil)
 
 	// any call exercises the wrapped logger; no panic = pass.
 	_, _ = hist.LastForTopic("x")
+}
+
+func TestStateHistory_AddTrimsToHistSize(t *testing.T) {
+	hist := tui.NewStateHistory(openStore(t), 2, slog.Default())
+	base := time.Now().UTC().Truncate(time.Second)
+	for i := range 5 {
+		hist.Add(produce.Entry{
+			Cluster:   "c",
+			Topic:     "t",
+			Value:     []byte{byte(i)},
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	got := hist.Recent(10)
+
+	// trim cap is 2; the two newest entries (i = 4, 3) survive.
+	require.Len(t, got, 2)
+	assert.Equal(t, []byte{4}, got[0].Value)
+	assert.Equal(t, []byte{3}, got[1].Value)
 }
 
 func openStore(t *testing.T) *state.Store {

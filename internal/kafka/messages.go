@@ -559,11 +559,21 @@ func (c *Client) fetchUntilOffsets(
 		}
 		fetches.EachRecord(func(r *kgo.Record) {
 			end, ok := ends[r.Partition]
-			if !ok || r.Offset >= end {
+			if !ok {
 				return
 			}
-			out = append(out, recordToMessage(r))
-			progress[r.Partition] = r.Offset + 1
+			if r.Offset < end {
+				out = append(out, recordToMessage(r))
+				progress[r.Partition] = r.Offset + 1
+				return
+			}
+			// offsets are monotonic per partition: a record at or beyond `end`
+			// means there will be no more in-range records (compaction may
+			// have left a gap that goes past `end`). Mark the partition as
+			// reached so the loop terminates instead of polling forever.
+			if progress[r.Partition] < end {
+				progress[r.Partition] = end
+			}
 		})
 	}
 	return out, nil

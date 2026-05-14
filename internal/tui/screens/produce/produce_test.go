@@ -634,6 +634,28 @@ func TestPrefillFromMessage_PopulatesFieldsAndResetsPartition(t *testing.T) {
 	assert.Equal(t, []string{"h1=v1"}, headers.List)
 }
 
+// Regression: stepping into a history entry for a different topic must not
+// wipe the entry's prefilled partition. Before the fix, the topic-change
+// branch in reloadPartitionsIfTopicChanged() reset partition options to
+// {auto}, which forced [components.Form.SetOptions] to drop the freshly
+// applied "0" back to "auto".
+func TestHistoryStep_DifferentTopicKeepsPrefilledPartition(t *testing.T) {
+	svc := newFakeService()
+	svc.setPartitions(0, 1)
+	hist := newFakeHistory()
+	// older entry on a different topic with a non-default partition.
+	hist.entries = []produce.Entry{
+		{Topic: "other", Partition: 0, Compression: kafka.CompressionNone, Value: []byte("v")},
+	}
+	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("p")) // jump to the entry for topic "other"
+
+	got, _ := m.Form().Field("partition")
+	assert.Equal(t, "0", got.Value, "prefilled partition must survive the topic-change reset")
+}
+
 func TestHistoryPrefill_TopOpensWithLastEntry(t *testing.T) {
 	svc := newFakeService()
 	hist := newFakeHistory()

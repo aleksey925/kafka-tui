@@ -61,8 +61,14 @@ func (o *OSC52) Copy(ctx context.Context, payload string) error {
 	if len(payload) > OSC52MaxBytes {
 		return fmt.Errorf("clipboard: osc52 payload too large (%d > %d bytes)", len(payload), OSC52MaxBytes)
 	}
-
-	w, err := o.acquireWriter()
+	// hold the mutex across both the writer acquisition AND the write so two
+	// concurrent Copy calls (e.g. parallelClipboard fanout, or a user mashing
+	// the copy hotkey) can't interleave their base64 payloads into a single
+	// corrupt OSC sequence. Writing the full sequence usually fits in one
+	// syscall, so the critical section stays short.
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	w, err := o.acquireWriterLocked()
 	if err != nil {
 		return err
 	}
@@ -74,9 +80,8 @@ func (o *OSC52) Copy(ctx context.Context, payload string) error {
 	return nil
 }
 
-func (o *OSC52) acquireWriter() (io.Writer, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// acquireWriterLocked must be called with o.mu held.
+func (o *OSC52) acquireWriterLocked() (io.Writer, error) {
 	if o.writer != nil {
 		return o.writer, nil
 	}

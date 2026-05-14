@@ -153,6 +153,12 @@ type Model struct {
 	// during the dial window before the session attaches.
 	live bool
 
+	// lifeCtx is canceled by Close(); used by [startFollowCmd] so an
+	// in-flight Follow dial bails out (and any late-arriving session can be
+	// detected and closed) when the screen is popped before the dial returns.
+	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
+	lifeCancel context.CancelFunc
+
 	seek SeekState
 	// captured edges of the active seek window so `[` / `]` can clamp.
 	fromBoundary map[int32]int64
@@ -211,24 +217,27 @@ func New(opts Options) *Model {
 	}
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	return &Model{
-		svc:       opts.Service,
-		topic:     opts.Topic,
-		cluster:   opts.Cluster,
-		readOnly:  opts.ReadOnly,
-		repo:      opts.ViewState,
-		columns:   cols,
-		pageSize:  pageSize,
-		clipboard: opts.Clipboard,
-		writer:    opts.FileWriter,
-		pager:     opts.Pager,
-		outputDir: opts.OutputDir,
-		table:     tbl,
-		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:       now,
-		styles:    styles,
-		wrap:      true,
-		seek:      SeekState{Mode: SeekLatest},
+		svc:        opts.Service,
+		topic:      opts.Topic,
+		cluster:    opts.Cluster,
+		readOnly:   opts.ReadOnly,
+		repo:       opts.ViewState,
+		columns:    cols,
+		pageSize:   pageSize,
+		clipboard:  opts.Clipboard,
+		writer:     opts.FileWriter,
+		pager:      opts.Pager,
+		outputDir:  opts.OutputDir,
+		table:      tbl,
+		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:        now,
+		styles:     styles,
+		wrap:       true,
+		seek:       SeekState{Mode: SeekLatest},
+		lifeCtx:    lifeCtx,
+		lifeCancel: lifeCancel,
 	}
 }
 
@@ -520,9 +529,9 @@ func (m *Model) actSeekApply() tea.Cmd {
 		m.toasts.Push(components.ToastError, err.Error())
 		return nil
 	}
-	m.applySeek(state)
+	persist := m.applySeek(state)
 	m.closeSeek()
-	return m.dispatchSeek()
+	return tea.Batch(persist, m.dispatchSeek())
 }
 
 func (m *Model) actSeekBackToMenu() tea.Cmd {
@@ -577,8 +586,7 @@ func (m *Model) actPartApply() tea.Cmd {
 	m.filter = parts
 	m.partitionsPopup = nil
 	m.mode = ModeList
-	m.persistView()
-	return m.dispatchSeek()
+	return tea.Batch(m.persistView(), m.dispatchSeek())
 }
 
 func (m *Model) actPartCancel() tea.Cmd {
@@ -671,17 +679,33 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return nil
+	case tea.PasteMsg:
+		// only the seek-input popup has a text buffer that can receive paste —
+		// list/detail views drop it.
+		if m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput {
+			m.seekPopup.form, _ = m.seekPopup.form.Update(msg)
+		}
+		return nil
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+	}
+	return m.handleAsync(msg)
+}
+
+// handleAsync routes the data / lifecycle messages produced by background
+// tea.Cmds. Split out from [Model.Update] so the latter stays under the
+// gocyclo budget; both inputs (keys, paste, resize) and outputs (loads,
+// follow chunks, persistence results) used to live in one switch.
+func (m *Model) handleAsync(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
 	case MessagesLoadedMsg:
 		m.handleLoaded(msg)
-		return nil
 	case viewRestoredMsg:
 		return m.handleViewRestored(msg)
 	case partitionsLoadedMsg:
 		m.handlePartitionsLoaded(msg)
-		return nil
 	case MessagesAppendedMsg:
 		m.handleAppended(msg)
-		return nil
 	case FollowStartedMsg:
 		return m.handleFollowStarted(msg)
 	case LiveTickMsg:
@@ -698,16 +722,14 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		return m.followPollCmd()
 	case FollowErrMsg:
 		m.handleFollowErr(msg)
-		return nil
-	case tea.PasteMsg:
-		// only the seek-input popup has a text buffer that can receive paste —
-		// list/detail views drop it.
-		if m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput {
-			m.seekPopup.form, _ = m.seekPopup.form.Update(msg)
+	case viewPersistedMsg:
+		if msg.err != nil {
+			m.toasts.Push(components.ToastWarning, "save view state: "+msg.err.Error())
 		}
-		return nil
-	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+	case EditorOpenedMsg:
+		if m.mode == ModeDetail && m.detail != nil {
+			return m.forwardDetailMsg(msg)
+		}
 	}
 	return nil
 }
@@ -784,7 +806,13 @@ func (m *Model) openDetail() {
 }
 
 func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
-	d, cmd := m.detail.Update(key)
+	return m.forwardDetailMsg(key)
+}
+
+// forwardDetailMsg pumps a generic tea.Msg through the detail model and routes
+// any pending action back onto the list model.
+func (m *Model) forwardDetailMsg(msg tea.Msg) tea.Cmd {
+	d, cmd := m.detail.Update(msg)
 	m.detail = d
 	a := d.ConsumeAction()
 	switch {
@@ -881,14 +909,21 @@ func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 		return
 	}
 	if len(msg.Messages) > 0 {
-		// follow yields newest records — prepend to keep newest-first ordering.
+		// follow yields newest records — prepend to keep newest-first ordering,
+		// then drop the tail past [liveBufferCap] so a long-running tail on a
+		// busy topic can't grow the buffer indefinitely.
 		m.messages = append(msg.Messages, m.messages...)
+		if len(m.messages) > liveBufferCap {
+			m.messages = m.messages[:liveBufferCap]
+		}
 		m.refreshTable()
 	}
 	if msg.Closed {
 		m.stopFollow()
 	}
 }
+
+const liveBufferCap = 1000
 
 func (m *Model) handleFollowErr(msg FollowErrMsg) {
 	if msg.Gen != m.fetchGen {
@@ -898,9 +933,24 @@ func (m *Model) handleFollowErr(msg FollowErrMsg) {
 	m.stopFollow()
 }
 
-func startFollowCmd(svc Service, topic string, parts []int32, gen uint64) tea.Cmd {
+// startFollowCmd dials the follow session under the screen's lifecycle ctx so
+// a screen pop during the dial both aborts the underlying RPC and lets us
+// detect a late-arriving session and close it before the FollowStartedMsg is
+// routed to a stale handler.
+func startFollowCmd(ctx context.Context, svc Service, topic string, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
-		sess, err := svc.Follow(context.Background(), topic, parts)
+		sess, err := svc.Follow(ctx, topic, parts)
+		if ctx.Err() != nil {
+			// the screen popped while the dial was in flight; close any
+			// session that did slip through so its kgo consumer / goroutine
+			// don't outlive the model. Drop the msg entirely (returning nil
+			// from a tea.Cmd suppresses dispatch) so a different active
+			// screen never receives a stale FollowStartedMsg.
+			if sess != nil {
+				sess.Close()
+			}
+			return nil
+		}
 		return FollowStartedMsg{Session: sess, Gen: gen, Err: err}
 	}
 }
@@ -946,8 +996,13 @@ func (m *Model) stopFollow() {
 
 // Close releases background resources before the host swaps screens, so
 // an open follow session doesn't leak its kgo consumer / goroutine.
+// lifeCancel signals [startFollowCmd] that any session it produces after
+// this point must be closed and the message dropped.
 func (m *Model) Close() {
 	m.stopFollow()
+	if m.lifeCancel != nil {
+		m.lifeCancel()
+	}
 }
 
 func (m *Model) followPollCmd() tea.Cmd {
@@ -1097,9 +1152,9 @@ func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
 		pop.chosen = mode
 		switch mode {
 		case SeekLatest, SeekEarliest, SeekLive:
-			m.applySeek(SeekState{Mode: mode})
+			persist := m.applySeek(SeekState{Mode: mode})
 			m.closeSeek()
-			return m.dispatchSeek()
+			return tea.Batch(persist, m.dispatchSeek())
 		default:
 			pop.stage = stageInput
 			pop.form = m.buildSeekForm(mode)
@@ -1188,12 +1243,12 @@ func parseOffsetExpression(s string) (int32, int64, bool, error) {
 	return 0, off, false, nil
 }
 
-func (m *Model) applySeek(state SeekState) {
+func (m *Model) applySeek(state SeekState) tea.Cmd {
 	m.stopFollow()
 	m.seek = state
 	m.fromBoundary = nil
 	m.toBoundary = nil
-	m.persistView()
+	return m.persistView()
 }
 
 // refresh re-issues the current seek. stopFollow first so refreshing while
@@ -1240,7 +1295,7 @@ func (m *Model) dispatchSeek() tea.Cmd {
 		// kafbat-ui / AKHQ / kafka-console-consumer semantics.
 		m.live = true
 		return tea.Batch(
-			startFollowCmd(m.svc, m.topic, m.filter, gen),
+			startFollowCmd(m.lifeCtx, m.svc, m.topic, m.filter, gen),
 			liveTickCmd(gen),
 		)
 	}
@@ -1648,13 +1703,17 @@ func (m *Model) renderSmartFilter() string {
 
 // ----- persistence -----
 
-func (m *Model) persistView() {
+// persistView returns a tea.Cmd that asynchronously saves the current view
+// state. Save runs off the event loop so a slow repo (network FS, locked
+// SQLite file) can't stall keyboard / refresh handling for seconds at a time.
+// Failures surface back via [viewPersistedMsg] as a warning toast.
+func (m *Model) persistView() tea.Cmd {
 	if m.repo == nil || m.cluster == "" || m.topic == "" {
-		return
+		return nil
 	}
 	// live mode is intentionally not persisted (see [ViewState]).
 	if m.seek.Mode == SeekLive {
-		return
+		return nil
 	}
 	view := ViewState{
 		SeekMode:   m.seek.Mode,
@@ -1664,12 +1723,18 @@ func (m *Model) persistView() {
 		HasPart:    m.seek.HasPart,
 		Partitions: renderPartitionFilter(m.filter),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := m.repo.SaveMessagesView(ctx, m.cluster, m.topic, view); err != nil {
-		m.toasts.Push(components.ToastWarning, "save view state: "+err.Error())
+	repo := m.repo
+	cluster, topic := m.cluster, m.topic
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return viewPersistedMsg{err: repo.SaveMessagesView(ctx, cluster, topic, view)}
 	}
 }
+
+// viewPersistedMsg is the result of an async [persistView] save. Only the
+// error is surfaced — successful saves don't need user confirmation.
+type viewPersistedMsg struct{ err error }
 
 // ----- table refresh & rendering -----
 
