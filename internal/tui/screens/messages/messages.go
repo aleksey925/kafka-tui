@@ -1900,15 +1900,7 @@ func (m *Model) renderSeekPopup() string {
 // sits below the state-header line; the reserved height matches
 // table.SetHeight to keep chrome stable across mode switches.
 func (m *Model) placePopupInBody(popup string) string {
-	if m.width <= 0 {
-		return popup
-	}
-	centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, popup)
-	h := m.bodyHeight()
-	if h <= 0 {
-		return centered
-	}
-	return lipgloss.PlaceVertical(h, lipgloss.Top, centered)
+	return layout.PlaceCenteredTop(m.width, m.bodyHeight(), popup)
 }
 
 func (m *Model) renderPartitionsPopup() string {

@@ -2,7 +2,6 @@ package messages_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"maps"
 	"strconv"
@@ -1456,11 +1455,10 @@ func keyPressRune(r rune) tea.KeyPressMsg {
 
 // ----- detail tests (preserved from previous suite) -----
 
-func newDetail(t *testing.T, cb messages.Clipboard, msgs []kafka.Message, idx int) *messages.DetailModel {
+func newDetail(t *testing.T, cb messages.Clipboard, msgs []kafka.Message) *messages.DetailModel {
 	t.Helper()
 	return messages.NewDetailModel(messages.DetailOptions{
 		Messages:  msgs,
-		Index:     idx,
 		Clipboard: cb,
 	})
 }
@@ -1497,16 +1495,111 @@ func TestDetail_FormatHotkeysSwitchView(t *testing.T) {
 	assert.Equal(t, messages.ViewHex, m.Detail().ViewMode())
 }
 
-func TestDetail_CopyRecordUsesClipboard(t *testing.T) {
+func TestDetail_CopyRecord_OpensMenuThenCopiesOnDigit1(t *testing.T) {
+	cb := &fakeClipboard{}
+	ts := time.Date(2026, 5, 14, 12, 34, 56, 0, time.UTC)
+	msg := kafka.Message{
+		Topic:     "orders",
+		Partition: 1,
+		Offset:    7,
+		Timestamp: ts,
+		Key:       []byte("order-42"),
+		Value:     []byte("hello"),
+		Headers:   []kafka.Header{{Key: "source", Value: []byte("web")}},
+	}
+	model := newDetail(t, cb, []kafka.Message{msg})
+
+	_, _ = model.Update(keyPressRune('c'))
+	// popup is open; no copy yet.
+	assert.True(t, model.CopyMenuOpen())
+	assert.Empty(t, cb.payloads)
+
+	_, _ = model.Update(keyPressRune('1'))
+	assert.False(t, model.CopyMenuOpen())
+	require.Len(t, cb.payloads, 1)
+	expected := "# topic: orders\n" +
+		"# partition: 1\n" +
+		"# offset: 7\n" +
+		"# timestamp: 1778762096000\n" +
+		"\n" +
+		"# Key\norder-42\n\n# Headers\nsource=web\n\n# Value\nhello"
+	assert.Equal(t, expected, cb.payloads[0])
+}
+
+func TestDetail_CopyKeyViaDigit2(t *testing.T) {
 	cb := &fakeClipboard{}
 	model := newDetail(t, cb, []kafka.Message{
-		{Topic: "orders", Partition: 1, Offset: 7, Key: []byte("kk"), Value: []byte("hello")},
-	}, 0)
+		{Topic: "orders", Key: []byte("order-42"), Value: []byte("v")},
+	})
 
-	_, _ = model.Update(keyPressRune('y'))
+	_, _ = model.Update(keyPressRune('c'))
+	_, _ = model.Update(keyPressRune('2'))
 
 	require.Len(t, cb.payloads, 1)
-	assert.Contains(t, cb.payloads[0], `"topic": "orders"`)
+	assert.Equal(t, "order-42", cb.payloads[0])
+	assert.False(t, model.CopyMenuOpen())
+}
+
+func TestDetail_CopyValueViaDigit3(t *testing.T) {
+	cb := &fakeClipboard{}
+	model := newDetail(t, cb, []kafka.Message{
+		{Topic: "orders", Key: []byte("k"), Value: []byte("payload")},
+	})
+
+	_, _ = model.Update(keyPressRune('c'))
+	_, _ = model.Update(keyPressRune('3'))
+
+	require.Len(t, cb.payloads, 1)
+	assert.Equal(t, "payload", cb.payloads[0])
+}
+
+func TestDetail_CopyHeadersViaDigit4(t *testing.T) {
+	cb := &fakeClipboard{}
+	msg := kafka.Message{
+		Topic: "orders",
+		Value: []byte("v"),
+		Headers: []kafka.Header{
+			{Key: "source", Value: []byte("web")},
+			{Key: "trace-id", Value: []byte("abc")},
+		},
+	}
+	model := newDetail(t, cb, []kafka.Message{msg})
+
+	_, _ = model.Update(keyPressRune('c'))
+	_, _ = model.Update(keyPressRune('4'))
+
+	require.Len(t, cb.payloads, 1)
+	// unquoted name=value per line, distinct from the on-screen
+	// headersText helper.
+	assert.Equal(t, "source=web\ntrace-id=abc\n", cb.payloads[0])
+}
+
+func TestDetail_CopyMenuEscCancels(t *testing.T) {
+	cb := &fakeClipboard{}
+	model := newDetail(t, cb, []kafka.Message{
+		{Topic: "orders", Key: []byte("k"), Value: []byte("v")},
+	})
+
+	_, _ = model.Update(keyPressRune('c'))
+	assert.True(t, model.CopyMenuOpen())
+	_, _ = model.Update(keyPress("esc"))
+
+	assert.False(t, model.CopyMenuOpen())
+	assert.Empty(t, cb.payloads)
+}
+
+func TestDetail_CopyEmptyKey(t *testing.T) {
+	cb := &fakeClipboard{}
+	model := newDetail(t, cb, []kafka.Message{
+		// no Key field — message has empty key.
+		{Topic: "orders", Value: []byte("v")},
+	})
+
+	_, _ = model.Update(keyPressRune('c'))
+	_, _ = model.Update(keyPressRune('2'))
+
+	require.Len(t, cb.payloads, 1)
+	assert.Empty(t, cb.payloads[0])
 }
 
 func TestDetail_SaveRecordWritesFile(t *testing.T) {
@@ -1535,7 +1628,7 @@ func TestDetail_SaveRecordWritesFile(t *testing.T) {
 	expected := "# topic: orders\n" +
 		"# partition: 1\n" +
 		"# offset: 7\n" +
-		"# timestamp: 2026-05-14T12:34:56Z\n" +
+		"# timestamp: 1778762096000\n" +
 		"\n" +
 		"# Key\norder-42\n\n# Headers\nsource=web\n\n# Value\nhello"
 	assert.Equal(t, expected, string(fw.writes[0].data))
@@ -1567,40 +1660,7 @@ func TestDetail_SaveRecordOmittedFieldsRenderEmpty(t *testing.T) {
 	assert.Contains(t, body, "# Value\nbody")
 	// metadata block present.
 	assert.Contains(t, body, "# topic: orders\n")
-	assert.Contains(t, body, "# timestamp: 2026-01-01T00:00:00Z\n")
-}
-
-func TestDetail_SaveJSONWritesFile(t *testing.T) {
-	fw := &fakeWriter{}
-	msg := kafka.Message{
-		Topic:     "orders",
-		Partition: 1,
-		Offset:    7,
-		Timestamp: time.Date(2026, 5, 14, 12, 34, 56, 0, time.UTC),
-		Key:       []byte("order-42"),
-		Value:     []byte(`{"a":1}`),
-		Headers:   []kafka.Header{{Key: "source", Value: []byte("web")}},
-	}
-	model := messages.NewDetailModel(messages.DetailOptions{
-		Messages:   []kafka.Message{msg},
-		Index:      0,
-		FileWriter: fw,
-		OutputDir:  "/tmp",
-	})
-
-	_, _ = model.Update(keyPressRune('S'))
-
-	require.Len(t, fw.writes, 1)
-	assert.Equal(t, "/tmp/orders-p1-o7-record.json", fw.writes[0].path)
-	var parsed map[string]any
-	require.NoError(t, json.Unmarshal(fw.writes[0].data, &parsed))
-	assert.Equal(t, "orders", parsed["topic"])
-	assert.EqualValues(t, 1, parsed["partition"])
-	assert.EqualValues(t, 7, parsed["offset"])
-	assert.NotNil(t, parsed["timestamp"])
-	assert.NotNil(t, parsed["key"])
-	assert.NotNil(t, parsed["value"])
-	assert.NotNil(t, parsed["headers"])
+	assert.Contains(t, body, "# timestamp: 1767225600000\n")
 }
 
 func TestDetail_OpenEditorInvokesPager(t *testing.T) {

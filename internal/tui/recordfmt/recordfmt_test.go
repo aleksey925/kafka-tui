@@ -84,7 +84,7 @@ func TestEncodeWithMetadata_LiteralBytes(t *testing.T) {
 	expected := "# topic: orders\n" +
 		"# partition: 3\n" +
 		"# offset: 1234\n" +
-		"# timestamp: 2026-05-14T12:34:56Z\n" +
+		"# timestamp: 1778762096000\n" +
 		"\n" +
 		"# Key\norder-42\n\n# Headers\nsource=web\n\n# Value\nbody"
 	assert.Equal(t, expected, string(buf))
@@ -122,7 +122,7 @@ func TestEncodeWithMetadata_ZeroValues(t *testing.T) {
 	expected := "# topic: \n" +
 		"# partition: 0\n" +
 		"# offset: 0\n" +
-		"# timestamp: 0001-01-01T00:00:00Z\n" +
+		"# timestamp: -62135596800000\n" +
 		"\n" +
 		"# Key\n\n# Headers\n\n# Value\n"
 	assert.Equal(t, expected, string(buf))

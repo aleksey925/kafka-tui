@@ -42,8 +42,10 @@ var (
 )
 
 // Metadata describes a stored Kafka record for the "save with metadata"
-// flow. The timestamp uses [time.RFC3339] when rendered so the saved
-// value matches what the detail view shows on screen.
+// flow. The timestamp is rendered as raw milliseconds since the Unix
+// epoch (the unit used by Kafka's wire protocol and by tools like
+// kcat / kafka-console-consumer) so the saved value round-trips
+// through downstream pipelines without timezone or format ambiguity.
 type Metadata struct {
 	Topic     string
 	Partition int32
@@ -69,7 +71,7 @@ func EncodeWithMetadata(key string, headers []kafka.Header, value []byte, meta M
 	fmt.Fprintf(&b, "# topic: %s\n", meta.Topic)
 	fmt.Fprintf(&b, "# partition: %d\n", meta.Partition)
 	fmt.Fprintf(&b, "# offset: %d\n", meta.Offset)
-	fmt.Fprintf(&b, "# timestamp: %s\n", meta.Timestamp.Format(time.RFC3339))
+	fmt.Fprintf(&b, "# timestamp: %d\n", meta.Timestamp.UnixMilli())
 	b.WriteByte('\n')
 	writeEncoded(&b, key, headers, value)
 	return b.Bytes()

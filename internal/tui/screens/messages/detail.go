@@ -2,8 +2,6 @@ package messages
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -102,7 +100,21 @@ type DetailModel struct {
 	width, height int
 	viewport      *components.Viewport
 	gPrimed       bool
+
+	// copyMenu is non-nil only while the `c` popup is open; while open,
+	// it owns the entire input stream of the detail screen (see
+	// handleCopyMenu).
+	copyMenu *components.Menu
 }
+
+// indices of the items built in openCopyMenu — used by
+// dispatchCopySelection to route the selected payload.
+const (
+	copyItemRecord = iota
+	copyItemKey
+	copyItemValue
+	copyItemHeaders
+)
 
 func NewDetailModel(opts DetailOptions) *DetailModel {
 	now := opts.Now
@@ -199,6 +211,12 @@ func (d *DetailModel) HelpSections() []help.Section {
 }
 
 func (d *DetailModel) bindings() []keymap.Binding {
+	// while the copy popup owns input, advertise its bindings instead
+	// of the screen's normal set — same pattern as messages.go seek
+	// popup. Keeps the hints bar and help screen accurate.
+	if d.copyMenu != nil {
+		return d.copyMenu.Bindings("Copy")
+	}
 	bs := []keymap.Binding{
 		{Keys: []string{"n"}, Label: "next message", Category: "Browse", Hint: true, Handler: d.actNext},
 		{Keys: []string{"p"}, Label: "previous message", Category: "Browse", Hint: true, Handler: d.actPrev},
@@ -220,9 +238,8 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"h", "left"}, Label: "scroll left (no-wrap)", Category: "Movement", Handler: d.actHScrollLeft},
 		{Keys: []string{"l", "right"}, Label: "scroll right (no-wrap)", Category: "Movement", Handler: d.actHScrollRight},
 
-		{Keys: []string{"y"}, Label: "copy record", Category: "Export", Hint: true, Handler: d.actCopy},
+		{Keys: []string{"c"}, Label: "copy record", Category: "Export", Hint: true, Handler: d.actCopy},
 		{Keys: []string{"s"}, Label: "save record to file", Category: "Export", Hint: true, Handler: d.actSaveRecord},
-		{Keys: []string{"S"}, Label: "save record as JSON", Category: "Export", Handler: d.actSaveJSON},
 		{Keys: []string{"e"}, Label: "open in $EDITOR", Category: "Export", Handler: d.actEditor},
 	}
 	// `R` stays bound in read-only mode so resend() can warn explicitly
@@ -247,9 +264,8 @@ func (d *DetailModel) actViewJSON() tea.Cmd   { d.setView(ViewJSON); return nil 
 func (d *DetailModel) actViewRaw() tea.Cmd    { d.setView(ViewRaw); return nil }
 func (d *DetailModel) actViewHex() tea.Cmd    { d.setView(ViewHex); return nil }
 func (d *DetailModel) actToggleWrap() tea.Cmd { d.toggleWrap(); return nil }
-func (d *DetailModel) actCopy() tea.Cmd       { d.copyRecord(); return nil }
+func (d *DetailModel) actCopy() tea.Cmd       { d.openCopyMenu(); return nil }
 func (d *DetailModel) actSaveRecord() tea.Cmd { d.saveRecord(); return nil }
-func (d *DetailModel) actSaveJSON() tea.Cmd   { d.saveJSON(); return nil }
 func (d *DetailModel) actEditor() tea.Cmd     { return d.openEditor() }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
 
@@ -289,6 +305,15 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 		// non-`g` disarms the gg chord.
 		if d.gPrimed && msg.String() != "g" {
 			d.gPrimed = false
+		}
+		// the copy popup owns the input stream while open; no
+		// detail-screen bindings (n/p/1/2/3/scroll/etc.) are evaluated,
+		// so digits route to menu items without colliding with view-mode
+		// shortcuts. Globals are handled at the host level before this
+		// point, so :/?/ctrl+r/ctrl+c still fire normally.
+		if d.copyMenu != nil {
+			d.handleCopyMenu(msg)
+			return d, nil
 		}
 		keymap.Dispatch(d.bindings(), msg)
 		return d, nil
@@ -334,16 +359,6 @@ func (d *DetailModel) refresh() {
 	d.viewport.SetLines(logical)
 }
 
-func (d *DetailModel) copyRecord() {
-	cur := d.Current()
-	blob, err := json.MarshalIndent(toExportable(cur), "", "  ")
-	if err != nil {
-		d.action.Warn = "copy: " + err.Error()
-		return
-	}
-	d.copy(string(blob), "record")
-}
-
 func (d *DetailModel) copy(payload, label string) {
 	if d.clipboard == nil {
 		d.action.Warn = "copy " + label + ": clipboard unavailable"
@@ -358,6 +373,79 @@ func (d *DetailModel) copy(payload, label string) {
 	d.action.Toast = "copied " + label + " (" + strconv.Itoa(len(payload)) + " bytes)"
 }
 
+// CopyMenuOpen reports whether the copy popup is currently displayed.
+// Exposed for tests.
+func (d *DetailModel) CopyMenuOpen() bool { return d.copyMenu != nil }
+
+func (d *DetailModel) openCopyMenu() {
+	if len(d.messages) == 0 {
+		return
+	}
+	items := []components.MenuItem{
+		{Label: "Record (with metadata)"},
+		{Label: "Key"},
+		{Label: "Value"},
+		{Label: "Headers"},
+	}
+	d.copyMenu = components.NewMenu(items,
+		components.WithMenuStyles(d.styles),
+		components.WithMenuTitle("Copy"),
+	)
+}
+
+func (d *DetailModel) handleCopyMenu(key tea.KeyPressMsg) {
+	d.copyMenu, _ = d.copyMenu.Update(key)
+	if d.copyMenu.Canceled() {
+		d.copyMenu = nil
+		return
+	}
+	if idx, _, ok := d.copyMenu.Selected(); ok {
+		d.dispatchCopySelection(idx)
+		d.copyMenu = nil
+	}
+}
+
+func (d *DetailModel) dispatchCopySelection(idx int) {
+	cur := d.Current()
+	switch idx {
+	case copyItemRecord:
+		meta := recordfmt.Metadata{
+			Topic:     cur.Topic,
+			Partition: cur.Partition,
+			Offset:    cur.Offset,
+			Timestamp: cur.Timestamp,
+		}
+		blob := recordfmt.EncodeWithMetadata(string(cur.Key), cur.Headers, cur.Value, meta)
+		d.copy(string(blob), "record")
+	case copyItemKey:
+		d.copy(string(cur.Key), "key")
+	case copyItemValue:
+		d.copy(string(cur.Value), "value")
+	case copyItemHeaders:
+		d.copy(copyHeadersPayload(cur.Headers), "headers")
+	default:
+		// new menu items must be added to both openCopyMenu and this
+		// switch — surface the gap as a warning instead of silently
+		// dropping the user's keystroke.
+		d.action.Warn = fmt.Sprintf("copy: unknown menu index %d", idx)
+	}
+}
+
+// copyHeadersPayload renders the headers section as `name=value\n` per
+// line — same shape as the `# Headers` section in the recordfmt format,
+// so a paste into the produce form / editor lands cleanly. Distinct
+// from the on-screen [headersText] which quotes values for display.
+func copyHeadersPayload(headers []kafka.Header) string {
+	var b strings.Builder
+	for _, h := range headers {
+		b.WriteString(h.Key)
+		b.WriteByte('=')
+		b.Write(h.Value)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func (d *DetailModel) saveRecord() {
 	cur := d.Current()
 	meta := recordfmt.Metadata{
@@ -368,25 +456,8 @@ func (d *DetailModel) saveRecord() {
 	}
 	blob := recordfmt.EncodeWithMetadata(string(cur.Key), cur.Headers, cur.Value, meta)
 	// extension is always .txt: the section frame is plain text;
-	// value bytes (possibly binary) flow verbatim into it. Machine-
-	// readable archival lives on `S` (.json).
+	// value bytes (possibly binary) flow verbatim into it.
 	name := defaultSaveName(cur, "record", ".txt")
-	path := filepath.Join(d.outputDir, name)
-	if err := d.writer.Write(path, blob); err != nil {
-		d.action.Warn = "save: " + err.Error()
-		return
-	}
-	d.action.Toast = "saved " + path
-}
-
-func (d *DetailModel) saveJSON() {
-	cur := d.Current()
-	blob, err := json.MarshalIndent(toExportable(cur), "", "  ")
-	if err != nil {
-		d.action.Warn = "save: " + err.Error()
-		return
-	}
-	name := defaultSaveName(cur, "record", ".json")
 	path := filepath.Join(d.outputDir, name)
 	if err := d.writer.Write(path, blob); err != nil {
 		d.action.Warn = "save: " + err.Error()
@@ -448,8 +519,26 @@ func (d *DetailModel) View() string {
 	if len(d.messages) == 0 {
 		return d.styles.StatusInfo.Render("(no message)")
 	}
+	if d.copyMenu != nil {
+		// modal: show the record header for orientation, then center
+		// the popup over the body. Viewport content is hidden until
+		// the popup closes.
+		header := d.renderHeader(d.Current())
+		body := layout.PlaceCenteredTop(d.width, d.bodyHeight(), d.copyMenu.View(0))
+		return header + "\n" + body
+	}
 	d.refresh()
 	return d.viewport.View()
+}
+
+// bodyHeight returns the height available below the record-header line
+// for popups / viewport content. Falls back to 0 when the screen size
+// hasn't been propagated yet.
+func (d *DetailModel) bodyHeight() int {
+	if d.height <= 1 {
+		return 0
+	}
+	return d.height - 1
 }
 
 // ANSI styling is baked in here so downstream wrap/truncate must be ANSI-aware.
@@ -493,66 +582,6 @@ func headersText(headers []kafka.Header) string {
 		lines = append(lines, h.Key+"="+strconv.Quote(string(h.Value)))
 	}
 	return strings.Join(lines, "\n")
-}
-
-// exportableMessage is JSON-friendly. Binary key/value bytes are base64;
-// UTF-8 text is preserved as-is.
-type exportableMessage struct {
-	Topic     string             `json:"topic"`
-	Partition int32              `json:"partition"`
-	Offset    int64              `json:"offset"`
-	Timestamp time.Time          `json:"timestamp"`
-	Key       *exportableBytes   `json:"key,omitempty"`
-	Value     *exportableBytes   `json:"value,omitempty"`
-	Headers   []exportableHeader `json:"headers,omitempty"`
-}
-
-type exportableBytes struct {
-	Encoding string `json:"encoding"` // "utf8" / "json" / "base64"
-	Text     string `json:"text,omitempty"`
-	Base64   string `json:"base64,omitempty"`
-}
-
-type exportableHeader struct {
-	Key   string           `json:"key"`
-	Value *exportableBytes `json:"value,omitempty"`
-}
-
-func toExportable(msg kafka.Message) exportableMessage {
-	out := exportableMessage{
-		Topic:     msg.Topic,
-		Partition: msg.Partition,
-		Offset:    msg.Offset,
-		Timestamp: msg.Timestamp,
-	}
-	if len(msg.Key) > 0 {
-		out.Key = encodeBytes(msg.Key)
-	}
-	if len(msg.Value) > 0 {
-		out.Value = encodeBytes(msg.Value)
-	}
-	if len(msg.Headers) > 0 {
-		out.Headers = make([]exportableHeader, 0, len(msg.Headers))
-		for _, h := range msg.Headers {
-			eh := exportableHeader{Key: h.Key}
-			if len(h.Value) > 0 {
-				eh.Value = encodeBytes(h.Value)
-			}
-			out.Headers = append(out.Headers, eh)
-		}
-	}
-	return out
-}
-
-func encodeBytes(b []byte) *exportableBytes {
-	switch kafka.DetectValueFormat(b) {
-	case kafka.ValueFormatJSON:
-		return &exportableBytes{Encoding: "json", Text: string(b)}
-	case kafka.ValueFormatUTF8:
-		return &exportableBytes{Encoding: "utf8", Text: string(b)}
-	default:
-		return &exportableBytes{Encoding: "base64", Base64: base64.StdEncoding.EncodeToString(b)}
-	}
 }
 
 // defaultSaveName: <topic>-p<partition>-o<offset>-<kind><ext>.

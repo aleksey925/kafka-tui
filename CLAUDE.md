@@ -142,3 +142,30 @@ Deviation: the row-based table component has its own row-cursor scroll
 scroll math isn't the shared viewport. Its **cell content** still routes
 through the shared truncate helper, so visually the table participates in
 the rule even though its scroll path is separate.
+
+## Compound shortcuts via popup menus
+
+*Applies the single-source rule above: every popup menu in the app
+shares one implementation (navigation, digit selection, cancel
+semantics).*
+
+Where a screen-level action has 2-5 close variants (e.g. copy: record /
+key / value / headers; or seek: latest / earliest / from offset / …),
+we don't burn a separate key per variant or hide them behind a chord
+prefix. The entry key opens a popup menu listing every variant, each
+with a digit shortcut (1-N).
+
+Why: the popup is **discoverable** — new users navigate with arrows +
+Enter and see every variant labeled — and **fast** — experienced users
+get chord-level speed because the digit confirms in a single keypress
+(`c` then `2` to copy the key). One key learnt at the screen level,
+not N keys scattered across actions; the variant list lives in one
+visible place instead of in the help screen.
+
+How to apply: when an action splits into a small fixed set of variants
+and a clean one-letter mapping per variant isn't obvious (or clashes
+with existing keys like j/k/h navigation), route through the shared
+menu component from the screen's entry shortcut. While the popup is
+open it owns the input stream — the screen's own bindings (including
+digits used elsewhere as view-mode toggles) are suspended until the
+menu confirms or cancels.
