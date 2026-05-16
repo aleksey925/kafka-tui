@@ -28,7 +28,8 @@ Instances of this rule below: **Text input** (one edit contract), **Reserved
 global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Handing the terminal off** (one handoff path for full-screen subprocesses),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
-for horizontal).
+for horizontal), **Toast / flash routing** (one flash bar for every screen's
+toasts).
 
 ## Text input
 
@@ -110,9 +111,12 @@ Users use whatever their terminal expects (`cmd+v`, `ctrl+shift+v`, etc.).
 All pasted content goes through a single sanitization point that treats it
 as plain text only (this is the **single-source rule** above, applied to
 paste): escape sequences and control characters in the payload can't be
-interpreted or corrupt the rendered output. Paste into a single-line field
-is flattened (newlines and tabs become spaces) rather than rejected or
-truncated. Non-text controls (dropdowns, segmented selectors) ignore paste.
+interpreted or corrupt the rendered output. Within a screen, paste is
+routed to whichever sub-overlay currently owns a text buffer (picker,
+inline prompt, command bar); with no text-owning overlay open the event is
+dropped. Paste into a single-line field is flattened (newlines and tabs
+become spaces) rather than rejected or truncated. Non-text controls
+(dropdowns, segmented selectors) ignore paste.
 
 Deviation: in modal forms, paste auto-transitions NORMAL → INSERT when the
 focused field is text-like — the only implicit mode crossing. Without it the
@@ -172,3 +176,92 @@ menu component from the screen's entry shortcut. While the popup is
 open it owns the input stream — the screen's own bindings (including
 digits used elsewhere as view-mode toggles) are suspended until the
 menu confirms or cancels.
+
+## Toast / flash routing
+
+*Applies the single-source rule above: one flash bar above the body chrome
+displays every screen's toasts.*
+
+Errors, warnings, and one-off success messages don't render inline inside
+screens. Each screen pushes them onto its toast queue; the host promotes
+the most recent live toast into a global flash bar above the body chrome.
+
+Why: inline rendering means each screen reinvents its own error rectangle
+(layout, styling, dismiss key, expiry). One bar gives every screen the
+same visual language, the same dismiss conventions, the same auto-expiry,
+and lets background events (config reload, async failures) surface
+without each screen needing a dedicated banner slot.
+
+Deviation: forms blocking on save/send keep a local error inline until
+the user fixes it. Their **success** toast is forwarded to the screen the
+user lands on after the form closes — not the popped form itself.
+
+How to apply: if the active screen has no toast queue, route the toast to
+the screen the user will land on next (the parent / listing screen). A
+toast with no surface to land on is a dropped error.
+
+## Auto-refresh: quiet by default
+
+Tick-driven refreshes are **silent** — no success toast on the auto cycle.
+Only user-initiated `r` surfaces a confirmation. Recurring or permanent
+warnings (broker ACL denial on a batch RPC, etc.) dedup across ticks so
+they fire once, not every cycle.
+
+Why: a toast on every tick is noise — it competes with the user's actual
+attention and trains them to ignore the flash bar. The asymmetry (`r` is
+loud, auto is quiet) keeps the bar useful for things that actually
+changed.
+
+## Async lifecycle and stale results
+
+A screen with background work (fetches, dials, RPCs, periodic ticks) must
+protect against results that arrive after the screen has moved on — a
+different seek, a closed session, a popped screen. Late arrivals that
+mutate model state are silent corruption: they don't crash, they show
+the wrong data or restart loops that should have died.
+
+Two mechanisms:
+
+- **Generation counter** — bumped on every dispatch, stamped on the
+  result message, checked by the handler. Mismatched results are dropped
+  before touching state.
+- **Screen-scoped context** — held by the screen, cancelled on `Close`.
+  Background commands listen on it; late messages from a popped screen
+  produce a nil cmd or explicitly close their resource (e.g. a Follow
+  session that slipped through closes its connection so its goroutine
+  doesn't outlive the model).
+
+Use whichever fits the shape of the work: counter when there are many
+concurrent dispatches (seek variants, fetch retries, tick chains),
+context when the work is bound to a single long-lived resource.
+
+Why: tests don't reliably catch the failure modes here — they're tied to
+timing. A new screen that omits this protection won't fail in CI; it
+will fail when a user pops the screen mid-fetch on a slow broker.
+
+How to apply: any goroutine or background command that calls the network
+or sleeps for a tick — stamp it or scope it. No exceptions for "this
+fetch is fast enough to not race".
+
+## Optional subsystems and graceful degradation
+
+Non-essential subsystems — persistence stores (history, view state,
+refresh intervals), clipboard, file watcher, broker metadata, ACL probes
+— are **nil-safe**. A missing or failed source disables that one feature,
+never the screen.
+
+Pattern: subsystem available → full experience; subsystem absent or
+failing → fallback view (rows-derived counts instead of metadata, "no
+persistence" mode instead of a crash, blank clipboard slot instead of
+refusing to copy). The screen always mounts.
+
+Why: the binary runs in very different environments — a developer's
+laptop with full broker access, a CI box with no clipboard, an oncall's
+hardened jumpbox with no writable state directory. Optional means the
+same binary survives all of them; required means the app refuses to
+start on perfectly usable setups.
+
+How to apply: when adding a new dependency to a screen, the nil case is
+part of the design, not an afterthought. If the subsystem cannot be
+optional (brokers, auth), that's an explicit deviation worth flagging in
+review.
