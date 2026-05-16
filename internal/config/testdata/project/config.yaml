@@ -1,0 +1,8 @@
+logging:
+  level: debug
+
+topics:
+  columns: [name, partitions]
+
+clipboard:
+  method: osc52

@@ -101,4 +101,6 @@ go.work.sum
 ### Project
 vendor/
 dist/
+.kafka-tui/
 coverage.out
+TODO

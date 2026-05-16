@@ -1,0 +1,14 @@
+logging:
+  level: info
+  file: /tmp/global.log
+  max_size_mb: 20
+
+topics:
+  columns: [name, partitions, replicas]
+
+produce:
+  history_size: 5
+  default_compression: gzip
+
+clipboard:
+  method: native

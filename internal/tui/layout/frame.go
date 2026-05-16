@@ -1,0 +1,109 @@
+package layout
+
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/theme"
+)
+
+// FrameOpts describes the frame chrome wrapped around a screen body.
+type FrameOpts struct {
+	// Width and Height are the outer dimensions (including the border). The
+	// inner area is Width-2 by Height-2.
+	Width, Height int
+	// Title is centered inside the top border. Empty hides the slot.
+	Title   string
+	Focused bool
+}
+
+// FrameSidePadding is the number of blank columns between each vertical
+// border (`│`) and the body content. Hosts sizing screens for the inner
+// area must subtract `2*FrameSidePadding + 2` from the terminal width to
+// account for borders + padding.
+const FrameSidePadding = 1
+
+// Frame wraps body in a rounded box with the title embedded in the top
+// border. Body lines exceeding the inner width are left as-is (caller is
+// expected to size the body to fit).
+func Frame(s theme.Styles, opts FrameOpts, body string) string {
+	if opts.Width < 4+2*FrameSidePadding || opts.Height < 3 {
+		return body
+	}
+	innerEdge := opts.Width - 2             // space between vertical borders
+	inner := innerEdge - 2*FrameSidePadding // usable cell width
+	bodyH := opts.Height - 2
+
+	border := frameBorderStyle(s, opts.Focused)
+	// render the corners as standalone styled segments — wrapping the
+	// whole "╭…╮" string in a single border.Render leaves the right
+	// corner unstyled because frameTopLine emits internal resets
+	// (\x1b[m) for its title segment, which collapse the outer style
+	// before it can paint the closing corner.
+	top := border.Render("╭") + frameTopLine(s, opts.Title, innerEdge) + border.Render("╮")
+	bottom := border.Render("╰" + strings.Repeat("─", innerEdge) + "╯")
+
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, opts.Height)
+	out = append(out, top)
+	side := border.Render("│")
+	pad := strings.Repeat(" ", FrameSidePadding)
+	for i := range bodyH {
+		var content string
+		if i < len(lines) {
+			content = lines[i]
+		}
+		out = append(out, side+pad+padOrTruncate(content, inner)+pad+side)
+	}
+	out = append(out, bottom)
+	return strings.Join(out, "\n")
+}
+
+func frameBorderStyle(s theme.Styles, focused bool) lipgloss.Style {
+	if focused {
+		return lipgloss.NewStyle().Foreground(s.Palette.Accent)
+	}
+	return lipgloss.NewStyle().Foreground(s.Palette.Muted)
+}
+
+// frameTopLine builds the inner part of the top border line, centering the
+// title inside continuous dashes. The title is dropped when it doesn't fit.
+func frameTopLine(s theme.Styles, title string, inner int) string {
+	border := lipgloss.NewStyle().Foreground(s.Palette.Muted)
+	if title == "" {
+		return border.Render(strings.Repeat("─", inner))
+	}
+	seg := " " + title + " "
+	segW := lipgloss.Width(seg)
+	if segW+2 > inner {
+		return border.Render(strings.Repeat("─", inner))
+	}
+	left := (inner - segW) / 2
+	right := inner - segW - left
+	return border.Render(strings.Repeat("─", left)) +
+		s.HelpTitle.Render(seg) +
+		border.Render(strings.Repeat("─", right))
+}
+
+// padOrTruncate fits content to exactly width cells: pads with spaces when
+// narrower, truncates with an ellipsis via [components.TruncateText] when
+// wider. Wide runes that don't fit the post-ellipsis budget can leave the
+// truncated result one cell short — the extra pad below catches that so the
+// border on the next line lines up. Before this helper truncated at all,
+// overflowing styled content shifted the entire right border of the frame.
+func padOrTruncate(content string, width int) string {
+	w := lipgloss.Width(content)
+	if w == width {
+		return content
+	}
+	if w > width {
+		out := components.TruncateText(content, width)
+		if ow := lipgloss.Width(out); ow < width {
+			out += strings.Repeat(" ", width-ow)
+		}
+		return out
+	}
+	return content + strings.Repeat(" ", width-w)
+}

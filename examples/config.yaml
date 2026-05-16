@@ -1,0 +1,45 @@
+# kafka-tui config.yaml — UI behavior, columns, integrations.
+#
+# Two layers are merged at startup (lowest priority first):
+#   1. Global  — ~/.kafka-tui/config.yaml
+#   2. Project — <repo>/.kafka-tui/config.yaml (located by walking up from cwd)
+#
+# Scalars in the project layer override global; lists are replaced wholesale.
+# Use `:config sources` inside the TUI to inspect where each field came from.
+
+logging:
+  # one of: debug | info | warn | error
+  level: info
+  # supports ${env:VAR}, ${env:VAR:-default}, and ~ expansion (vault not supported here)
+  file: ~/.kafka-tui/kafka-tui.log
+  max_size_mb: 10
+  max_files: 5
+
+topics:
+  # available keys: name, partitions, replicas, message_count, size,
+  # cleanup_policy, retention, min_isr
+  columns: [name, partitions, replicas, message_count, size]
+
+groups:
+  # available keys: name, state, members, total_lag, coordinator
+  columns: [name, state, members, total_lag]
+
+messages:
+  # available keys: timestamp, partition, offset, key, value_preview, headers
+  columns: [timestamp, partition, offset, key, value_preview]
+
+produce:
+  # how many recent produce events to keep (Ctrl+P / Ctrl+N in the form)
+  history_size: 10
+  # default compression for the dropdown: none | gzip | snappy | lz4 | zstd
+  default_compression: none
+
+clipboard:
+  # auto = native + osc52 in parallel; native uses pbcopy / xclip / wl-copy
+  method: auto
+
+vault:
+  # only required when ${vault:...} placeholders appear in any config file
+  address: https://vault.example.com
+  # token resolution: this field → $VAULT_TOKEN → ~/.vault-token → error
+  token: ${env:VAULT_TOKEN:-}

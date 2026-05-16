@@ -1,0 +1,458 @@
+// Package state owns the persistent SQLite store for kafka-tui.
+//
+// modernc.org/sqlite (pure Go) is used instead of the cgo driver so
+// cross-compilation and static linking stay trivial.
+package state
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/aleksey925/kafka-tui/internal/kafka"
+)
+
+const driverName = "sqlite"
+
+// DefaultPath returns `~/.local/share/kafka-tui/state.db`. Errors when $HOME
+// cannot be resolved so callers can fall back to in-memory or skip
+// persistence.
+func DefaultPath() (string, error) {
+	if dir, err := os.UserHomeDir(); err == nil && dir != "" {
+		return filepath.Join(dir, ".local", "share", "kafka-tui", "state.db"), nil
+	} else if err != nil {
+		return "", fmt.Errorf("state: resolve home dir: %w", err)
+	}
+	return "", errors.New("state: $HOME is empty")
+}
+
+// ProduceEntry is the row payload for `produce_history`. It mirrors the
+// produce screen's Entry, decoupled from the TUI package to avoid an import
+// cycle.
+type ProduceEntry struct {
+	Cluster     string
+	Topic       string
+	Key         []byte
+	Value       []byte
+	Headers     []kafka.Header
+	Partition   int32
+	Compression kafka.Compression
+	Timestamp   time.Time
+}
+
+// Store is the SQLite-backed persistent state. Methods are safe to call from
+// multiple goroutines: the underlying *sql.DB serializes access.
+type Store struct {
+	db   *sql.DB
+	path string
+}
+
+// Open opens the SQLite database (creating the parent dir as needed) and
+// applies pending migrations. path == ":memory:" opens an in-process DB;
+// path == "" resolves via [DefaultPath].
+func Open(ctx context.Context, path string) (*Store, error) {
+	if path == "" {
+		p, err := DefaultPath()
+		if err != nil {
+			return nil, err
+		}
+		path = p
+	}
+	if path != ":memory:" {
+		// keep the state directory user-private — the DB stores produced
+		// payloads which may include keys, tokens, or other sensitive
+		// content the user pushed through the produce form.
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("state: create dir: %w", err)
+		}
+	}
+
+	dsn := buildDSN(path)
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("state: open sqlite: %w", err)
+	}
+	// in-memory connections are per-connection — pin the pool to one so
+	// every query sees the same database.
+	if path == ":memory:" {
+		db.SetMaxOpenConns(1)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("state: ping sqlite: %w", err)
+	}
+	if path != ":memory:" {
+		// sqlite creates the file with the process umask; force 0o600 so
+		// a permissive umask can't widen access on shared hosts (the DB
+		// holds produced payloads which may include sensitive content).
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			_ = db.Close()
+			return nil, fmt.Errorf("state: chmod sqlite: %w", err)
+		}
+	}
+	if err := applyMigrations(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db, path: path}, nil
+}
+
+// buildDSN appends sane defaults: WAL keeps reads from blocking writes;
+// busy_timeout avoids spurious "database is locked" errors when the TUI and
+// a background watcher race on the file.
+func buildDSN(path string) string {
+	if path == ":memory:" {
+		return path
+	}
+	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
+}
+
+func (s *Store) Path() string { return s.path }
+
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if err := s.db.Close(); err != nil {
+		return fmt.Errorf("state: close sqlite: %w", err)
+	}
+	return nil
+}
+
+// AddProduce inserts a produce-history row and trims the table back down to
+// historySize entries (newest kept). historySize <= 0 skips the trim.
+func (s *Store) AddProduce(ctx context.Context, entry ProduceEntry, historySize int) error {
+	headersJSON, err := encodeHeaders(entry.Headers)
+	if err != nil {
+		return err
+	}
+	ts := entry.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("state: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO produce_history
+			(cluster, topic, key, value, headers, partition, compression, ts)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.Cluster,
+		entry.Topic,
+		nullableBlob(entry.Key),
+		nullableBlob(entry.Value),
+		headersJSON,
+		entry.Partition,
+		string(entry.Compression),
+		ts.UnixNano(),
+	); err != nil {
+		return fmt.Errorf("state: insert produce_history: %w", err)
+	}
+
+	if historySize > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM produce_history
+				WHERE id NOT IN (
+					SELECT id FROM produce_history
+					ORDER BY ts DESC, id DESC
+					LIMIT ?
+				)`,
+			historySize,
+		); err != nil {
+			return fmt.Errorf("state: trim produce_history: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state: commit produce_history: %w", err)
+	}
+	return nil
+}
+
+// LastProduceForTopic returns the newest entry for the given topic; the bool
+// is false when no row exists.
+func (s *Store) LastProduceForTopic(ctx context.Context, topic string) (ProduceEntry, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT cluster, topic, key, value, headers, partition, compression, ts
+			FROM produce_history
+			WHERE topic = ?
+			ORDER BY ts DESC, id DESC
+			LIMIT 1`,
+		topic,
+	)
+	entry, err := scanEntry(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProduceEntry{}, false, nil
+	}
+	if err != nil {
+		return ProduceEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+// RecentProduce returns up to n entries, newest-first.
+func (s *Store) RecentProduce(ctx context.Context, n int) ([]ProduceEntry, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT cluster, topic, key, value, headers, partition, compression, ts
+			FROM produce_history
+			ORDER BY ts DESC, id DESC
+			LIMIT ?`,
+		n,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("state: query produce_history: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]ProduceEntry, 0, n)
+	for rows.Next() {
+		entry, err := scanEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: iterate produce_history: %w", err)
+	}
+	return out, nil
+}
+
+// scanner is implemented by both *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEntry(s scanner) (ProduceEntry, error) {
+	var (
+		entry       ProduceEntry
+		key, value  []byte
+		headers     string
+		compression string
+		tsNanos     int64
+	)
+	if err := s.Scan(
+		&entry.Cluster,
+		&entry.Topic,
+		&key,
+		&value,
+		&headers,
+		&entry.Partition,
+		&compression,
+		&tsNanos,
+	); err != nil {
+		return ProduceEntry{}, fmt.Errorf("state: scan produce_history row: %w", err)
+	}
+	entry.Key = key
+	entry.Value = value
+	entry.Compression = kafka.Compression(compression)
+	entry.Timestamp = time.Unix(0, tsNanos).UTC()
+
+	hdrs, err := decodeHeaders(headers)
+	if err != nil {
+		return ProduceEntry{}, err
+	}
+	entry.Headers = hdrs
+	return entry, nil
+}
+
+// MessagesView is the persisted seek + partition configuration per
+// (cluster, topic). SeekMode stays an int so this package does not need to
+// import the screen package; mapping is the caller's responsibility.
+type MessagesView struct {
+	SeekMode   int
+	Partition  int32
+	Offset     int64
+	Timestamp  time.Time
+	HasPart    bool
+	Partitions string
+}
+
+type messagesViewParams struct {
+	Partition int32 `json:"partition,omitempty"`
+	Offset    int64 `json:"offset,omitempty"`
+	Timestamp int64 `json:"ts_nanos,omitempty"`
+	HasPart   bool  `json:"has_part,omitempty"`
+}
+
+// LoadMessagesView returns the persisted seek + partition view; the bool is
+// false when no row exists.
+func (s *Store) LoadMessagesView(ctx context.Context, cluster, topic string) (MessagesView, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT seek_mode, seek_params, partitions
+			FROM messages_view_state
+			WHERE cluster_name = ? AND topic = ?`,
+		cluster, topic,
+	)
+	var (
+		mode       int
+		paramsJSON string
+		parts      string
+	)
+	err := row.Scan(&mode, &paramsJSON, &parts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MessagesView{}, false, nil
+	}
+	if err != nil {
+		return MessagesView{}, false, fmt.Errorf("state: load messages_view_state: %w", err)
+	}
+	var p messagesViewParams
+	if paramsJSON != "" {
+		if err := json.Unmarshal([]byte(paramsJSON), &p); err != nil {
+			return MessagesView{}, false, fmt.Errorf("state: decode seek_params: %w", err)
+		}
+	}
+	view := MessagesView{
+		SeekMode:   mode,
+		Partition:  p.Partition,
+		Offset:     p.Offset,
+		HasPart:    p.HasPart,
+		Partitions: parts,
+	}
+	if p.Timestamp != 0 {
+		view.Timestamp = time.Unix(0, p.Timestamp).UTC()
+	}
+	return view, true, nil
+}
+
+func (s *Store) SaveMessagesView(ctx context.Context, cluster, topic string, view MessagesView) error {
+	params := messagesViewParams{
+		Partition: view.Partition,
+		Offset:    view.Offset,
+		HasPart:   view.HasPart,
+	}
+	if !view.Timestamp.IsZero() {
+		params.Timestamp = view.Timestamp.UnixNano()
+	}
+	buf, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("state: encode seek_params: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO messages_view_state
+			(cluster_name, topic, seek_mode, seek_params, partitions, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(cluster_name, topic) DO UPDATE SET
+				seek_mode  = excluded.seek_mode,
+				seek_params= excluded.seek_params,
+				partitions = excluded.partitions,
+				updated_at = excluded.updated_at`,
+		cluster, topic, view.SeekMode, string(buf), view.Partitions, time.Now().UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("state: upsert messages_view_state: %w", err)
+	}
+	return nil
+}
+
+// LoadRefreshInterval returns the persisted refresh interval for a screen
+// type. The bool is false when no row exists — callers should fall back to
+// their config-level default. A stored value of 0 is a real choice ("manual")
+// and is returned as (0, true, nil).
+func (s *Store) LoadRefreshInterval(ctx context.Context, screenID string) (time.Duration, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT interval_ns FROM refresh_intervals WHERE screen_id = ?`,
+		screenID,
+	)
+	var ns int64
+	err := row.Scan(&ns)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("state: load refresh_intervals: %w", err)
+	}
+	// negative values can't have been written by SaveRefreshInterval (it clamps),
+	// but defend against manual edits — treat them as "manual".
+	if ns < 0 {
+		ns = 0
+	}
+	return time.Duration(ns), true, nil
+}
+
+// SaveRefreshInterval upserts the user-chosen interval for a screen type.
+// Negative durations are clamped to 0 ("manual") so the on-disk shape mirrors
+// the in-memory contract from [components.Refresher].
+func (s *Store) SaveRefreshInterval(ctx context.Context, screenID string, d time.Duration) error {
+	if d < 0 {
+		d = 0
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO refresh_intervals (screen_id, interval_ns, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(screen_id) DO UPDATE SET
+				interval_ns = excluded.interval_ns,
+				updated_at  = excluded.updated_at`,
+		screenID, int64(d), time.Now().UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("state: upsert refresh_intervals: %w", err)
+	}
+	return nil
+}
+
+// nullableBlob returns nil for empty payloads so SQLite stores SQL NULL
+// rather than an empty BLOB — keeps reads symmetrical with how the produce
+// form treats absent keys/values.
+func nullableBlob(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// encodedHeader is the on-disk shape of the `headers` JSON column. The
+// []byte field marshals to base64 by default in encoding/json, so binary
+// header values survive the round-trip.
+type encodedHeader struct {
+	Key   string `json:"key"`
+	Value []byte `json:"value"`
+}
+
+func encodeHeaders(headers []kafka.Header) (string, error) {
+	if len(headers) == 0 {
+		return "[]", nil
+	}
+	out := make([]encodedHeader, len(headers))
+	for i, h := range headers {
+		out[i] = encodedHeader{Key: h.Key, Value: h.Value}
+	}
+	buf, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("state: encode headers: %w", err)
+	}
+	return string(buf), nil
+}
+
+func decodeHeaders(raw string) ([]kafka.Header, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" || raw == "null" {
+		return nil, nil
+	}
+	var rows []encodedHeader
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		return nil, fmt.Errorf("state: decode headers: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]kafka.Header, len(rows))
+	for i, r := range rows {
+		out[i] = kafka.Header{Key: r.Key, Value: r.Value}
+	}
+	return out, nil
+}

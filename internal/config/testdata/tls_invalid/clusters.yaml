@@ -1,0 +1,9 @@
+clusters:
+  - name: bad
+    brokers: ['bad:9092']
+    tls:
+      ca: |
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+      ca_file: /etc/kafka/ca.pem

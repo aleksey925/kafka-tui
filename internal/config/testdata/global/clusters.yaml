@@ -1,0 +1,16 @@
+clusters:
+  - name: prod
+    brokers: ['prod-broker-1:9092', 'prod-broker-2:9092']
+    color: red
+    read_only: true
+    sasl:
+      mechanism: PLAIN
+      username: prod-user
+      password: prod-pass
+    tls:
+      ca_file: /etc/kafka/ca.pem
+      skip_verify: false
+
+  - name: stage
+    brokers: ['stage-broker-1:9092']
+    color: yellow

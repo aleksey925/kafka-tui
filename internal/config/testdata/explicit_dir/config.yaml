@@ -1,0 +1,3 @@
+logging:
+  level: warn
+  file: /tmp/explicit.log
