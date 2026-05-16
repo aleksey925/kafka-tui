@@ -1,6 +1,7 @@
 package components_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -51,7 +52,9 @@ func TestTable_NavigationHomeEnd(t *testing.T) {
 
 func TestTable_NavigationPaging(t *testing.T) {
 	tbl := components.NewTable(simpleColumns())
-	tbl.SetHeight(10)
+	// SetHeight includes the column-header row; total 11 leaves 10 data
+	// rows so the page step lands cleanly on row index 9.
+	tbl.SetHeight(11)
 	tbl.SetRows(simpleRows(50))
 
 	tbl, _ = tbl.Update(keyPressMsg("ctrl+f"))
@@ -490,6 +493,67 @@ func TestTable_SetHeight_AndSetTotalWidth_DontPanic(t *testing.T) {
 	tbl.SetTotalWidth(80)
 
 	assert.Contains(t, tbl.View(), "row-0")
+}
+
+func TestTable_SetHeight_AccountsForOwnChrome_NoSort(t *testing.T) {
+	// arrange
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(20))
+	tbl.SetHeight(6)
+
+	// act
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+
+	// assert: 1 column header + 5 data rows = 6 total lines.
+	assert.Len(t, lines, 6)
+	assert.Contains(t, out, "row-4")
+	assert.NotContains(t, out, "row-5")
+}
+
+func TestTable_SetHeight_AccountsForOwnChrome_WithSort(t *testing.T) {
+	// arrange
+	tbl := components.NewTable([]components.Column{{Title: "name", Sortable: true}})
+	tbl.SetRows(simpleRows(20))
+	tbl.SetHeight(6)
+	tbl, _ = tbl.Update(keyPressMsg("s"))
+
+	// act
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+
+	// assert: 1 column header + 4 data rows + 1 sort indicator = 6 total lines.
+	assert.Len(t, lines, 6)
+	assert.Contains(t, out, "sort: name asc")
+	assert.NotContains(t, out, "row-4", "sort indicator must steal one data row, not overflow")
+}
+
+func TestTable_SetHeight_ZeroMeansFitAll(t *testing.T) {
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(3))
+	tbl.SetHeight(0)
+
+	out := tbl.View()
+	assert.Contains(t, out, "row-0")
+	assert.Contains(t, out, "row-1")
+	assert.Contains(t, out, "row-2")
+}
+
+func TestTable_SetHeight_SmallerThanChrome_RendersNoDataRows(t *testing.T) {
+	// arrange
+	tbl := components.NewTable(simpleColumns())
+	tbl.SetRows(simpleRows(5))
+	tbl.SetHeight(1)
+
+	// act
+	out := tbl.View()
+
+	// assert: h=1 leaves no room below the column header — no data rows
+	// fit. Distinct from SetHeight(0) which is the "fit-all" sentinel.
+	for i := range 5 {
+		assert.NotContainsf(t, out, fmt.Sprintf("row-%d", i),
+			"row-%d must not render when h is smaller than the table's own chrome", i)
+	}
 }
 
 func TestTable_TruncateCellsLongerThanColumnWidth(t *testing.T) {

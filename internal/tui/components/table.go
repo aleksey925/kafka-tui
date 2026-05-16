@@ -174,10 +174,38 @@ func (t *Table) FilteredCount() int { return len(t.view) }
 
 func (t *Table) TotalCount() int { return len(t.rows) }
 
-// SetHeight changes the visible body height. 0 disables scrolling.
+// SetHeight changes the table's visible height. h is the total rendered
+// height the table will occupy — column header + data rows + an optional
+// sort indicator when a sort is active. The table computes its own data
+// row capacity from h, so callers pass through whatever vertical space
+// the surrounding screen gave them without subtracting anything for the
+// table's chrome. 0 means "fit-all rows, no scrolling".
 func (t *Table) SetHeight(rows int) {
 	t.height = rows
 	t.clampViewport()
+}
+
+// tableHeaderRows is the fixed chrome the table always renders above its
+// data rows (the column header line).
+const tableHeaderRows = 1
+
+// bodyRows reports how many data rows fit in the table's current height
+// after subtracting its own chrome (column header plus the sort indicator
+// when a sort is active). Returns 0 when SetHeight has not been called
+// (height == 0) — the "fit-all" sentinel — or when h is smaller than the
+// chrome. Hot path, called from every key event and render.
+func (t *Table) bodyRows() int {
+	if t.height <= 0 {
+		return 0
+	}
+	chrome := tableHeaderRows
+	if t.sortCol >= 0 && t.sortDir != SortNone {
+		chrome++
+	}
+	if t.height <= chrome {
+		return 0
+	}
+	return t.height - chrome
 }
 
 // SetTotalWidth tells the table how many columns are available for its
@@ -263,22 +291,24 @@ func (t *Table) move(delta int) {
 }
 
 func (t *Table) pageStep() int {
-	if t.height > 1 {
-		return t.height - 1
+	body := t.bodyRows()
+	if body > 1 {
+		return body - 1
 	}
 	return 1
 }
 
 func (t *Table) clampViewport() {
-	if t.height <= 0 {
+	body := t.bodyRows()
+	if body <= 0 {
 		t.viewport = 0
 		return
 	}
 	if t.cursor < t.viewport {
 		t.viewport = t.cursor
 	}
-	if t.cursor >= t.viewport+t.height {
-		t.viewport = t.cursor - t.height + 1
+	if t.cursor >= t.viewport+body {
+		t.viewport = t.cursor - body + 1
 	}
 	if t.viewport < 0 {
 		t.viewport = 0
@@ -466,14 +496,25 @@ func (t *Table) View() string {
 }
 
 func (t *Table) viewportRange() (int, int) {
-	if t.height <= 0 || t.height >= len(t.view) {
+	// height == 0 is the "fit-all, no scrolling" sentinel — render every
+	// row regardless of count. Distinct from "h smaller than the table's
+	// own chrome" below, where the caller asked for a tiny height and we
+	// must render zero data rows rather than overflow it.
+	if t.height <= 0 {
+		return 0, len(t.view)
+	}
+	body := t.bodyRows()
+	if body <= 0 {
+		return 0, 0
+	}
+	if body >= len(t.view) {
 		return 0, len(t.view)
 	}
 	start := t.viewport
-	end := start + t.height
+	end := start + body
 	if end > len(t.view) {
 		end = len(t.view)
-		start = max(0, end-t.height)
+		start = max(0, end-body)
 	}
 	return start, end
 }

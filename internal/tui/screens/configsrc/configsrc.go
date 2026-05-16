@@ -102,10 +102,14 @@ func (m *Model) ActiveFilter() string {
 	return m.cfgTable.Search()
 }
 
+// SetSize splits the body area between the two tables. Three rows of
+// screen chrome (cfg title, blank divider, cluster title) live outside
+// the tables; the rest is divided in half. The tables account for their
+// own column headers internally — see [components.Table.SetHeight].
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		half := max(3, (h-9)/2)
+		half := max(3, (h-3)/2)
 		m.cfgTable.SetHeight(half)
 		m.clusterTable.SetHeight(half)
 	}

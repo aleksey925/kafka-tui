@@ -211,7 +211,9 @@ const (
 	headerLineCount = 2
 	// detailChromeRows is the layout overhead between the chip header and
 	// the bottom of the partitions table: one title row above topics, one
-	// blank divider, one title row above partitions.
+	// blank divider, one title row above partitions. Each sub-table's own
+	// column header sits inside the value passed to table.SetHeight and
+	// isn't counted here.
 	detailChromeRows = 3
 )
 

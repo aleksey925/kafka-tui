@@ -276,7 +276,7 @@ func (m *Model) HasOverlay() bool {
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		m.table.SetHeight(maxInt(1, h-7))
+		m.table.SetHeight(h)
 	}
 	if w > 0 {
 		m.table.SetTotalWidth(w)
@@ -1195,11 +1195,4 @@ func formatBytes(n int64) string {
 	default:
 		return strconv.FormatInt(n, 10) + " B"
 	}
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

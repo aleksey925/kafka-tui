@@ -201,12 +201,11 @@ func (r *ResetModel) SetSize(w, h int) {
 	}
 }
 
-// resetChromeRows is the row budget reserved around the preview table
-// at StepPreview: 1 scope/step header + 1 "Preview" title + 1 line for
-// the table's own column header + blank + summary (2) + blank + hint
-// (2) = 7. Without this padding the box bottom would clip when the
-// partition list was long.
-const resetChromeRows = 7
+// resetChromeRows is the layout overhead around the preview table at
+// StepPreview: 1 scope/step header + 1 "Preview" title + 1 blank + 1
+// summary + 1 blank + 1 hint = 6. The table's own column header sits
+// inside the value passed to table.SetHeight and isn't counted here.
+const resetChromeRows = 6
 
 func (r *ResetModel) KeyHints() []layout.KeyHint {
 	return layout.HintsFromBindings(r.bindings())

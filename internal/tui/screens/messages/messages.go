@@ -411,7 +411,11 @@ func (m *Model) HasOverlay() bool {
 // popupChromeRows must be kept in sync with renderPartitionsPopup —
 // the list area on big topics depends on it for scroll bounds.
 const (
-	chromeRows      = 8
+	// chromeRows is the layout overhead the messages screen renders
+	// above the table area: just the single state-header line. The
+	// table's own column header sits inside the value passed to
+	// table.SetHeight and isn't counted here.
+	chromeRows      = 1
 	popupChromeRows = 12
 )
 

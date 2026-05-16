@@ -318,7 +318,7 @@ func (m *Model) HasOverlay() bool { return m.editing }
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
 	if h > 0 {
-		m.table.SetHeight(maxInt(1, h-6))
+		m.table.SetHeight(h)
 	}
 	if w > 0 {
 		m.table.SetTotalWidth(w)
@@ -636,11 +636,4 @@ func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingInten
 		err := p.Ping(ctx, c)
 		return PingResultMsg{Name: c.Name, Err: err, Intent: intent}
 	}
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
