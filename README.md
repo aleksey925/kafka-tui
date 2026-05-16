@@ -7,6 +7,10 @@ read-only protection for production clusters.
 Built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and
 [franz-go](https://github.com/twmb/franz-go).
 
+> [!WARNING]
+> Early project — not yet tested against production Kafka clusters. Use with caution:
+> check on a staging cluster before pointing it at critical environments.
+
 - [Why kafka-tui?](#why-kafka-tui)
 - [Features](#features)
 - [Installation](#installation)
