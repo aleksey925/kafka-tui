@@ -21,6 +21,24 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
+// Persistence keys for the two cadences this screen owns — stable across
+// releases (renaming would orphan previously-saved values).
+const (
+	refreshIntervalScreenListID   = "groups"
+	refreshIntervalScreenDetailID = "group_detail"
+)
+
+// Seeds used when no persisted row exists for the corresponding screen ID.
+// Detail polls faster because lag values move faster than group composition.
+const (
+	defaultListRefreshInterval   = 30 * time.Second
+	defaultDetailRefreshInterval = 5 * time.Second
+)
+
+// refreshIntervalIOTimeout caps the synchronous load (construction) and save
+// (post-pick) — a stalled disk would otherwise block the cmd loop.
+const refreshIntervalIOTimeout = 500 * time.Millisecond
+
 // Service abstracts the Kafka admin operations the groups screen needs.
 type Service interface {
 	ListConsumerGroups(ctx context.Context) ([]kafka.GroupListInfo, error)
@@ -52,13 +70,15 @@ const (
 )
 
 type Options struct {
-	Service               Service
-	ReadOnly              bool
-	FilterTopic           string
-	ListRefreshInterval   time.Duration
-	DetailRefreshInterval time.Duration
-	Now                   func() time.Time
-	Styles                theme.Styles
+	Service     Service
+	ReadOnly    bool
+	FilterTopic string
+	// RefreshIntervals persists each cadence across runs (keyed separately
+	// for the list and detail views). nil disables persistence; both
+	// refreshers start at their respective default constants.
+	RefreshIntervals components.RefreshIntervalRepository
+	Now              func() time.Time
+	Styles           theme.Styles
 }
 
 type Model struct {
@@ -86,6 +106,9 @@ type Model struct {
 
 	listRefresher   components.Refresher
 	detailRefresher components.Refresher
+
+	refreshIntervals components.RefreshIntervalRepository
+	refreshPicker    *components.RefreshPicker
 
 	width, height int
 	loading       bool
@@ -116,19 +139,37 @@ func New(opts Options) *Model {
 		styles = theme.DefaultStyles()
 	}
 	tbl := components.NewTable(listColumns(), components.WithStyles(styles))
-	return &Model{
-		svc:             opts.Service,
-		readOnly:        opts.ReadOnly,
-		filterTopic:     opts.FilterTopic,
-		totalLag:        map[string]int64{},
-		memberN:         map[string]int{},
-		table:           tbl,
-		toasts:          components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		listRefresher:   components.NewRefresher(opts.ListRefreshInterval, now),
-		detailRefresher: components.NewRefresher(opts.DetailRefreshInterval, now),
-		now:             now,
-		styles:          styles,
+
+	listInterval := defaultListRefreshInterval
+	detailInterval := defaultDetailRefreshInterval
+	if opts.RefreshIntervals != nil {
+		listInterval = loadPersistedInterval(opts.RefreshIntervals, refreshIntervalScreenListID, listInterval)
+		detailInterval = loadPersistedInterval(opts.RefreshIntervals, refreshIntervalScreenDetailID, detailInterval)
 	}
+
+	return &Model{
+		svc:              opts.Service,
+		readOnly:         opts.ReadOnly,
+		filterTopic:      opts.FilterTopic,
+		totalLag:         map[string]int64{},
+		memberN:          map[string]int{},
+		table:            tbl,
+		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		listRefresher:    components.NewRefresher(listInterval, now),
+		detailRefresher:  components.NewRefresher(detailInterval, now),
+		refreshIntervals: opts.RefreshIntervals,
+		now:              now,
+		styles:           styles,
+	}
+}
+
+func loadPersistedInterval(repo components.RefreshIntervalRepository, screenID string, fallback time.Duration) time.Duration {
+	ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
+	defer cancel()
+	if d, ok, err := repo.LoadRefreshInterval(ctx, screenID); err == nil && ok {
+		return d
+	}
+	return fallback
 }
 
 func listColumns() []components.Column {
@@ -267,7 +308,7 @@ func (m *Model) ActiveFilter() string {
 // HasOverlay must include ModeDetail or a single esc would pop both the
 // detail view and the list, skipping the list entirely.
 func (m *Model) HasOverlay() bool {
-	return m.confirm != nil || m.mode == ModeReset || m.mode == ModeDetail
+	return m.confirm != nil || m.refreshPicker != nil || m.mode == ModeReset || m.mode == ModeDetail
 }
 
 func (m *Model) SetSize(w, h int) {
@@ -295,6 +336,9 @@ func (m *Model) HelpSections() []help.Section {
 }
 
 func (m *Model) activeBindings() []keymap.Binding {
+	if m.refreshPicker != nil {
+		return m.refreshPicker.Bindings("Refresh interval")
+	}
 	switch m.mode {
 	case ModeList:
 		return m.listBindings()
@@ -329,7 +373,7 @@ func (m *Model) listBindings() []keymap.Binding {
 	bs = append(bs, mut...)
 	bs = append(bs,
 		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Group", Hint: true},
-		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Group", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "set refresh interval", Category: "Group", Hint: true},
 	)
 	return bs
 }
@@ -384,6 +428,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 		return nil
+	case tea.PasteMsg:
+		// the picker is the only sub-overlay on this screen that owns a
+		// text buffer; route paste there when it's open.
+		if m.refreshPicker != nil {
+			m.refreshPicker, _ = m.refreshPicker.Update(msg)
+		}
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -391,6 +442,10 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
+	// picker owns the foreground when open — every key feeds it.
+	if m.refreshPicker != nil {
+		return m.handlePickerKey(key)
+	}
 	switch m.mode {
 	case ModeDetail:
 		return m.handleDetailKey(key)
@@ -642,7 +697,7 @@ func (m *Model) handleListRefreshTick() tea.Cmd {
 		return nil
 	}
 	next := m.AutoRefreshTick()
-	if next == nil || m.listRefresher.Paused() || m.loading {
+	if next == nil || m.loading {
 		return next
 	}
 	return tea.Batch(m.refreshCmd(), next)
@@ -653,8 +708,8 @@ func (m *Model) handleDetailRefreshTick() tea.Cmd {
 		return nil
 	}
 	next := m.DetailRefreshTick()
-	if next == nil || m.detailRefresher.Paused() {
-		return next
+	if next == nil {
+		return nil
 	}
 	return tea.Batch(m.detail.RefreshCmd(), next)
 }
@@ -664,11 +719,6 @@ func (m *Model) RefreshInterval() time.Duration {
 		return m.detailRefresher.Interval()
 	}
 	return m.listRefresher.Interval()
-}
-
-func (m *Model) SetRefreshPaused(paused bool) {
-	m.listRefresher.SetPaused(paused)
-	m.detailRefresher.SetPaused(paused)
 }
 
 func (m *Model) LastRefresh() time.Time {
@@ -749,6 +799,9 @@ func (m *Model) FetchLagsForVisible() tea.Cmd {
 }
 
 func (m *Model) View() string {
+	if m.refreshPicker != nil {
+		return m.refreshPicker.View(m.width)
+	}
 	switch m.mode {
 	case ModeDetail:
 		return m.detail.View()
@@ -760,6 +813,75 @@ func (m *Model) View() string {
 		return m.confirm.View(m.width, m.height)
 	}
 	return m.table.View()
+}
+
+// OpenRefreshPicker mounts the picker for whichever refresher is currently
+// in the foreground: detail's cadence while we're in the detail sub-view,
+// list's cadence otherwise. Implements [tui.RefreshConfigurable].
+func (m *Model) OpenRefreshPicker() {
+	current := m.currentRefresher().Interval()
+	m.refreshPicker = components.NewRefreshPicker(
+		current,
+		components.WithRefreshPickerStyles(m.styles),
+	)
+}
+
+// currentRefresher selects which cadence the picker should edit. Kept
+// internal so callers don't accidentally rebind to the wrong one.
+func (m *Model) currentRefresher() *components.Refresher {
+	if m.mode == ModeDetail {
+		return &m.detailRefresher
+	}
+	return &m.listRefresher
+}
+
+// currentRefreshScreenID is the persistence key matching [currentRefresher].
+func (m *Model) currentRefreshScreenID() string {
+	if m.mode == ModeDetail {
+		return refreshIntervalScreenDetailID
+	}
+	return refreshIntervalScreenListID
+}
+
+// currentTickMsg is the tick type emitted by the active refresher's chain —
+// needed to bootstrap the chain after a 0 → >0 transition.
+func (m *Model) currentTickMsg() tea.Msg {
+	if m.mode == ModeDetail {
+		return DetailRefreshTickMsg{}
+	}
+	return ListRefreshTickMsg{}
+}
+
+func (m *Model) handlePickerKey(key tea.KeyPressMsg) tea.Cmd {
+	m.refreshPicker, _ = m.refreshPicker.Update(key)
+	if m.refreshPicker.Canceled() {
+		m.refreshPicker = nil
+		return nil
+	}
+	d, ok := m.refreshPicker.Selected()
+	if !ok {
+		return nil
+	}
+	r := m.currentRefresher()
+	tickMsg := m.currentTickMsg()
+	screenID := m.currentRefreshScreenID()
+	m.refreshPicker = nil
+	cmd := r.SetInterval(d, tickMsg)
+	m.persistRefreshInterval(screenID, d)
+	return cmd
+}
+
+func (m *Model) persistRefreshInterval(screenID string, d time.Duration) {
+	if m.refreshIntervals == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
+	defer cancel()
+	// the adapter logs the underlying SQLite error before wrapping; the
+	// screen only adds the user-visible toast.
+	if err := m.refreshIntervals.SaveRefreshInterval(ctx, screenID, d); err != nil {
+		m.toasts.Push(components.ToastWarning, "couldn't persist refresh interval: "+err.Error())
+	}
 }
 
 // ----- Messages -----

@@ -7,12 +7,11 @@ import (
 )
 
 // Refresher is a helper that screens embed when they need an auto-refresh
-// tick chain. It owns the interval, the pause flag, and the wall-clock
-// timestamp of the last successful load. The screen drives ticks by calling
-// [Tick] from its Init and after each tick handler.
+// tick chain. It owns the interval and the wall-clock timestamp of the last
+// successful load. The screen drives ticks by calling [Tick] from its Init
+// and after each tick handler.
 type Refresher struct {
 	interval time.Duration
-	paused   bool
 	last     time.Time
 	now      func() time.Time
 }
@@ -32,10 +31,24 @@ func NewRefresher(interval time.Duration, now func() time.Time) Refresher {
 // Interval is the configured cadence (0 means no auto-refresh).
 func (r *Refresher) Interval() time.Duration { return r.interval }
 
-func (r *Refresher) Paused() bool { return r.paused }
-
-// SetPaused toggles the pause flag without stopping the tick chain.
-func (r *Refresher) SetPaused(paused bool) { r.paused = paused }
+// SetInterval changes the cadence at runtime. Negative values clamp to 0
+// (consistent with [NewRefresher]). The returned cmd bootstraps the tick
+// chain on a 0 → >0 transition — without it the chain never starts because
+// the previous [Tick] call returned nil and nothing scheduled a successor.
+// Other transitions return nil: >0 → 0 lets the in-flight tick burn down
+// naturally, and >0 → >0 leaves the in-flight tick to fire once at the
+// old cadence before the next [Tick] picks up the new value.
+func (r *Refresher) SetInterval(d time.Duration, tickMsg tea.Msg) tea.Cmd {
+	if d < 0 {
+		d = 0
+	}
+	bootstrap := r.interval == 0 && d > 0
+	r.interval = d
+	if bootstrap {
+		return r.Tick(tickMsg)
+	}
+	return nil
+}
 
 // LastRefresh returns the wall-clock time of the most recent [MarkSuccess]
 // call, or the zero time when none has happened yet.

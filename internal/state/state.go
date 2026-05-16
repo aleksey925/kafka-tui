@@ -359,6 +359,52 @@ func (s *Store) SaveMessagesView(ctx context.Context, cluster, topic string, vie
 	return nil
 }
 
+// LoadRefreshInterval returns the persisted refresh interval for a screen
+// type. The bool is false when no row exists — callers should fall back to
+// their config-level default. A stored value of 0 is a real choice ("manual")
+// and is returned as (0, true, nil).
+func (s *Store) LoadRefreshInterval(ctx context.Context, screenID string) (time.Duration, bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT interval_ns FROM refresh_intervals WHERE screen_id = ?`,
+		screenID,
+	)
+	var ns int64
+	err := row.Scan(&ns)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("state: load refresh_intervals: %w", err)
+	}
+	// negative values can't have been written by SaveRefreshInterval (it clamps),
+	// but defend against manual edits — treat them as "manual".
+	if ns < 0 {
+		ns = 0
+	}
+	return time.Duration(ns), true, nil
+}
+
+// SaveRefreshInterval upserts the user-chosen interval for a screen type.
+// Negative durations are clamped to 0 ("manual") so the on-disk shape mirrors
+// the in-memory contract from [components.Refresher].
+func (s *Store) SaveRefreshInterval(ctx context.Context, screenID string, d time.Duration) error {
+	if d < 0 {
+		d = 0
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO refresh_intervals (screen_id, interval_ns, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(screen_id) DO UPDATE SET
+				interval_ns = excluded.interval_ns,
+				updated_at  = excluded.updated_at`,
+		screenID, int64(d), time.Now().UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("state: upsert refresh_intervals: %w", err)
+	}
+	return nil
+}
+
 // nullableBlob returns nil for empty payloads so SQLite stores SQL NULL
 // rather than an empty BLOB — keeps reads symmetrical with how the produce
 // form treats absent keys/values.

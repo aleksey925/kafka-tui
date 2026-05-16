@@ -253,8 +253,6 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
 
-func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
-
 func (m *Model) Action() Action { return m.action }
 
 func (m *Model) ConsumeAction() Action {

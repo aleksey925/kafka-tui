@@ -30,13 +30,20 @@ type Screen interface {
 
 // Refreshable is implemented by screens with a periodic auto-refresh tick.
 type Refreshable interface {
-	// RefreshInterval is the auto-refresh cadence; 0 disables auto-refresh
-	// (the chrome shows "off" rather than "—").
+	// RefreshInterval is the auto-refresh cadence; 0 means the user picked
+	// Manual (no ticks) — the chrome shows "manual".
 	RefreshInterval() time.Duration
-	SetRefreshPaused(bool)
 	// LastRefresh is the wall-clock time of the most recent successful load,
 	// or zero when no load has completed yet. Drives the "X ago" indicator.
 	LastRefresh() time.Time
+}
+
+// RefreshConfigurable is implemented by screens that let the user change
+// the auto-refresh cadence at runtime via the ctrl+r popup. Separated from
+// [Refreshable] so test stubs can opt out and so a future read-only-status
+// screen could implement [Refreshable] without owning a picker.
+type RefreshConfigurable interface {
+	OpenRefreshPicker()
 }
 
 // Searchable is implemented by screens whose primary table can be
@@ -109,10 +116,16 @@ func screenSupportsRefresh(s Screen) bool {
 	return ok
 }
 
-func setScreenRefreshPaused(s Screen, paused bool) {
-	if r, ok := s.(Refreshable); ok {
-		r.SetRefreshPaused(paused)
+// screenOpenRefreshPicker asks the active screen to mount its refresh-interval
+// picker, returning false when the screen doesn't implement
+// [RefreshConfigurable] — ctrl+r has nothing to do there.
+func screenOpenRefreshPicker(s Screen) bool {
+	rc, ok := s.(RefreshConfigurable)
+	if !ok {
+		return false
 	}
+	rc.OpenRefreshPicker()
+	return true
 }
 
 func screenSupportsSearch(s Screen) bool {

@@ -65,7 +65,6 @@ type Model struct {
 	hints               []layout.KeyHint
 
 	width, height int
-	autoRefresh   bool
 
 	styles theme.Styles
 	now    func() time.Time
@@ -132,21 +131,22 @@ func New(opts Options) *Model {
 			FromCLI:      opts.FromCLI,
 		},
 		status: layout.StatusInfo{
-			Mode: layout.RefreshOff,
+			// no-screen sentinel — [pushScreen] flips this via
+			// [syncRefreshStatus] as soon as the first screen mounts.
+			Mode: layout.RefreshNotApplicable,
 			Now:  now(),
 		},
-		hints:       hints,
-		width:       opts.Width,
-		height:      opts.Height,
-		autoRefresh: true,
-		styles:      styles,
-		now:         now,
-		build:       opts.Build,
-		boot:        opts.Bootstrap,
-		activeClu:   opts.Cluster,
-		clusterClr:  opts.ClusterColor,
-		clusterRO:   opts.ReadOnly,
-		fromCLI:     opts.FromCLI,
+		hints:      hints,
+		width:      opts.Width,
+		height:     opts.Height,
+		styles:     styles,
+		now:        now,
+		build:      opts.Build,
+		boot:       opts.Bootstrap,
+		activeClu:  opts.Cluster,
+		clusterClr: opts.ClusterColor,
+		clusterRO:  opts.ReadOnly,
+		fromCLI:    opts.FromCLI,
 	}
 	if opts.Initial != "" {
 		m.pushScreen(opts.Initial)
@@ -160,7 +160,7 @@ func DefaultKeyHints() []layout.KeyHint {
 		{Key: ":", Label: "command"},
 		{Key: "/", Label: "search"},
 		{Key: "?", Label: "help"},
-		{Key: "ctrl+r", Label: "auto-refresh"},
+		{Key: "ctrl+r", Label: "refresh interval"},
 		{Key: "q", Label: "back/quit"},
 	}
 }
@@ -191,8 +191,6 @@ func (m *Model) SearchBuffer() string { return m.search.Buffer }
 
 func (m *Model) SearchSuggestion() string { return m.search.Suggestion }
 
-func (m *Model) AutoRefresh() bool { return m.autoRefresh }
-
 func (m *Model) Status() layout.StatusInfo { return m.status }
 
 func (m *Model) Quit() bool { return m.quit }
@@ -201,56 +199,30 @@ func (m *Model) Quit() bool { return m.quit }
 // has been selected). Exposed so cmd/kafka-tui can close it on exit.
 func (m *Model) ActiveClient() *kafka.Client { return m.client }
 
-func (m *Model) SetAutoRefresh(on bool) {
-	m.autoRefresh = on
-	if m.active != nil {
-		setScreenRefreshPaused(m.active, !on)
-	}
-	m.syncRefreshStatus()
-}
-
-// syncRefreshStatus keeps the chrome's Refresh: indicator in sync with the
-// active screen's RefreshInterval and the global auto-refresh flag.
-//
-// Special case: the clusters screen has no periodic poll — it reloads on
-// filesystem events via config.Watcher, reflected as RefreshOnEdit.
+// syncRefreshStatus mirrors the active screen's refresher state into the
+// chrome's Refresh: indicator. The clusters screen is a special case — it
+// reloads on filesystem events (config.Watcher) instead of a periodic tick.
 func (m *Model) syncRefreshStatus() {
 	if _, ok := m.active.(*clusters.Model); ok && m.boot != nil && m.boot.ConfigSnapshots != nil {
 		m.status.Mode = layout.RefreshOnEdit
 		m.status.Interval = 0
 		return
 	}
-	if m.active != nil && !screenSupportsRefresh(m.active) {
+	if m.active == nil || !screenSupportsRefresh(m.active) {
 		m.status.Mode = layout.RefreshNotApplicable
 		m.status.Interval = 0
 		return
 	}
-	interval := time.Duration(0)
-	if m.active != nil {
-		interval = screenRefreshInterval(m.active)
-	}
+	interval := screenRefreshInterval(m.active)
+	m.status.Interval = interval
 	if interval <= 0 {
-		m.status.Mode = layout.RefreshOff
-		m.status.Interval = 0
+		m.status.Mode = layout.RefreshManual
 		return
 	}
-	m.status.Interval = interval
-	if m.autoRefresh {
-		m.status.Mode = layout.RefreshAuto
-	} else {
-		m.status.Mode = layout.RefreshManual
-	}
+	m.status.Mode = layout.RefreshAuto
 }
 
-func (m *Model) SetStatus(s layout.StatusInfo) {
-	m.status = s
-	if m.autoRefresh && s.Mode == layout.RefreshManual {
-		m.autoRefresh = false
-	}
-	if !m.autoRefresh && s.Mode == layout.RefreshAuto {
-		m.autoRefresh = true
-	}
-}
+func (m *Model) SetStatus(s layout.StatusInfo) { m.status = s }
 
 func (m *Model) SetKeyHints(hints []layout.KeyHint) {
 	m.hints = hints
@@ -265,6 +237,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		newM, cmd := m.handleKey(msg)
+		// re-sync chrome after every key so screen-level mutations to the
+		// refresher (e.g. the picker confirming a new interval) flow into
+		// the status bar without waiting for the next screen transition.
+		m.syncRefreshStatus()
 		flashCmd := m.promoteFlash()
 		return newM, teaBatch(cmd, flashCmd)
 	case tea.PasteMsg:

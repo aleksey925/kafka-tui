@@ -140,10 +140,14 @@ func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) bool {
 		m.mode = ModeHelp
 		return true
 	case "ctrl+r":
-		if m.active != nil && screenHasOverlay(m.active) {
+		// yield to overlays (incl. the picker itself once opened — its esc
+		// closes it). Picker-less screens (messages, clusters, forms, …)
+		// just swallow the key — there's nothing to do. The chrome's status
+		// re-sync after this key is handled by app.Update.
+		if m.active == nil || screenHasOverlay(m.active) {
 			return false
 		}
-		m.SetAutoRefresh(!m.autoRefresh)
+		screenOpenRefreshPicker(m.active)
 		return true
 	}
 	return false

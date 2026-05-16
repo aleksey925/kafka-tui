@@ -6,7 +6,6 @@ package config
 
 type Config struct {
 	Logging   LoggingConfig   `yaml:"logging"`
-	Refresh   RefreshConfig   `yaml:"refresh"`
 	Topics    TopicsConfig    `yaml:"topics"`
 	Groups    GroupsConfig    `yaml:"groups"`
 	Messages  MessagesConfig  `yaml:"messages"`
@@ -20,13 +19,6 @@ type LoggingConfig struct {
 	File      string `yaml:"file"`
 	MaxSizeMB int    `yaml:"max_size_mb"`
 	MaxFiles  int    `yaml:"max_files"`
-}
-
-// RefreshConfig values are duration strings ("5s", "30s") or "off".
-type RefreshConfig struct {
-	TopicsList  string `yaml:"topics_list"`
-	GroupsList  string `yaml:"groups_list"`
-	GroupDetail string `yaml:"group_detail"`
 }
 
 type TopicsConfig struct {
@@ -62,11 +54,6 @@ func Defaults() Config {
 			File:      "~/.kafka-tui/kafka-tui.log",
 			MaxSizeMB: 10,
 			MaxFiles:  5,
-		},
-		Refresh: RefreshConfig{
-			TopicsList:  "30s",
-			GroupsList:  "30s",
-			GroupDetail: "5s",
 		},
 		Produce: ProduceConfig{
 			HistorySize:        10,

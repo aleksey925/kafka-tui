@@ -1,4 +1,4 @@
-# kafka-tui config.yaml — UI behavior, refresh intervals, columns, integrations.
+# kafka-tui config.yaml — UI behavior, columns, integrations.
 #
 # Two layers are merged at startup (lowest priority first):
 #   1. Global  — ~/.kafka-tui/config.yaml
@@ -14,12 +14,6 @@ logging:
   file: ~/.kafka-tui/kafka-tui.log
   max_size_mb: 10
   max_files: 5
-
-refresh:
-  # duration string ("5s", "30s") or "off" to disable
-  topics_list: 30s
-  groups_list: 30s
-  group_detail: 5s
 
 topics:
   # available keys: name, partitions, replicas, message_count, size,

@@ -19,6 +19,19 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
+// refreshIntervalScreenID is the persistence key for this screen's chosen
+// refresh cadence. Stable across releases — changing it would orphan
+// previously-saved values in the user's SQLite store.
+const refreshIntervalScreenID = "topics"
+
+// defaultRefreshInterval seeds the refresher when the user hasn't picked a
+// value yet (no persisted row); subsequent runs read from the picker store.
+const defaultRefreshInterval = 30 * time.Second
+
+// refreshIntervalIOTimeout caps the synchronous load (construction) and save
+// (post-pick) — a stalled disk would otherwise block the cmd loop.
+const refreshIntervalIOTimeout = 500 * time.Millisecond
+
 // Service abstracts the Kafka admin operations the topics screen needs.
 type Service interface {
 	ListTopics(ctx context.Context) ([]kafka.TopicSummary, error)
@@ -57,13 +70,16 @@ const (
 )
 
 type Options struct {
-	Service         Service
-	ReadOnly        bool
-	Columns         []string
-	FocusTopic      string
-	RefreshInterval time.Duration
-	Now             func() time.Time
-	Styles          theme.Styles
+	Service    Service
+	ReadOnly   bool
+	Columns    []string
+	FocusTopic string
+	// RefreshIntervals persists the user's chosen cadence across runs. nil
+	// disables persistence; the screen always starts at
+	// [defaultRefreshInterval].
+	RefreshIntervals components.RefreshIntervalRepository
+	Now              func() time.Time
+	Styles           theme.Styles
 }
 
 var DefaultColumns = []string{"name", "partitions", "replicas", "cleanup_policy", "messages", "size"}
@@ -103,6 +119,9 @@ type Model struct {
 	refresher     components.Refresher
 	manualRefresh bool
 
+	refreshIntervals components.RefreshIntervalRepository
+	refreshPicker    *components.RefreshPicker
+
 	action Action
 
 	now    func() time.Time
@@ -131,20 +150,32 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
+	interval := defaultRefreshInterval
+	// persisted user choice (incl. Manual = 0) overrides the default. load
+	// errors degrade to "no persistence" — the screen still mounts.
+	if opts.RefreshIntervals != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
+		if d, ok, err := opts.RefreshIntervals.LoadRefreshInterval(ctx, refreshIntervalScreenID); err == nil && ok {
+			interval = d
+		}
+		cancel()
+	}
+
 	return &Model{
-		svc:           opts.Service,
-		readOnly:      opts.ReadOnly,
-		columns:       cols,
-		focusTopic:    opts.FocusTopic,
-		watermarks:    map[string]kafka.TopicWatermarks{},
-		sizes:         map[string]int64{},
-		configs:       map[string][]kafka.TopicConfig{},
-		shownWarnings: map[string]struct{}{},
-		table:         tbl,
-		toasts:        components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:           now,
-		styles:        styles,
-		refresher:     components.NewRefresher(opts.RefreshInterval, now),
+		svc:              opts.Service,
+		readOnly:         opts.ReadOnly,
+		columns:          cols,
+		focusTopic:       opts.FocusTopic,
+		watermarks:       map[string]kafka.TopicWatermarks{},
+		sizes:            map[string]int64{},
+		configs:          map[string][]kafka.TopicConfig{},
+		shownWarnings:    map[string]struct{}{},
+		table:            tbl,
+		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:              now,
+		styles:           styles,
+		refresher:        components.NewRefresher(interval, now),
+		refreshIntervals: opts.RefreshIntervals,
 	}
 }
 
@@ -239,6 +270,7 @@ func (m *Model) ActiveFilter() string { return m.table.Search() }
 // form's NORMAL/INSERT dispatcher instead of popping the screen.
 func (m *Model) HasOverlay() bool {
 	return m.confirm != nil ||
+		m.refreshPicker != nil ||
 		m.mode == ModeCloning ||
 		m.mode == ModeCreate ||
 		m.mode == ModeClone
@@ -263,6 +295,9 @@ func (m *Model) HelpSections() []help.Section {
 }
 
 func (m *Model) activeBindings() []keymap.Binding {
+	if m.refreshPicker != nil {
+		return m.pickerBindings()
+	}
 	switch m.mode {
 	case ModeCreate:
 		return m.createBindings()
@@ -298,12 +333,23 @@ func (m *Model) listBindings() []keymap.Binding {
 		}
 	}
 	bs = append(bs, mut...)
-	// advertise-only: `/` and `ctrl+r` are owned by the host.
+	// advertise-only: `/` and `ctrl+r` are owned by the host. ctrl+r opens
+	// the refresh-interval picker (the actual binding lives in the host's
+	// global dispatch).
 	bs = append(bs,
 		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Topic", Hint: true},
-		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Topic", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "set refresh interval", Category: "Topic", Hint: true},
 	)
 	return bs
+}
+
+// pickerBindings exposes the picker's own keymap for help / hints while the
+// overlay is open. The picker's internal Update owns the actual key handling.
+func (m *Model) pickerBindings() []keymap.Binding {
+	if m.refreshPicker == nil {
+		return nil
+	}
+	return m.refreshPicker.Bindings("Refresh interval")
 }
 
 func (m *Model) Update(msg tea.Msg) tea.Cmd {
@@ -328,6 +374,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	case RefreshTickMsg:
 		cmd := m.HandleRefreshTick()
 		return cmd
+	case tea.PasteMsg:
+		// the picker is the only sub-overlay on this screen that owns a
+		// text buffer; route paste there when it's open, otherwise drop.
+		if m.refreshPicker != nil {
+			m.refreshPicker, _ = m.refreshPicker.Update(msg)
+		}
+		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -335,6 +388,11 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
+	// picker owns the foreground when open — every key feeds it until the
+	// user confirms or cancels.
+	if m.refreshPicker != nil {
+		return m.handlePickerKey(key)
+	}
 	switch m.mode {
 	case ModeList:
 	case ModeCreate:
@@ -352,6 +410,44 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 		_, _ = m.toasts.Update(key)
 	}
 	return m.handleListKey(key)
+}
+
+func (m *Model) handlePickerKey(key tea.KeyPressMsg) tea.Cmd {
+	m.refreshPicker, _ = m.refreshPicker.Update(key)
+	if m.refreshPicker.Canceled() {
+		m.refreshPicker = nil
+		return nil
+	}
+	d, ok := m.refreshPicker.Selected()
+	if !ok {
+		return nil
+	}
+	m.refreshPicker = nil
+	cmd := m.refresher.SetInterval(d, RefreshTickMsg{})
+	m.persistRefreshInterval(d)
+	return cmd
+}
+
+func (m *Model) persistRefreshInterval(d time.Duration) {
+	if m.refreshIntervals == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
+	defer cancel()
+	// the adapter logs the underlying SQLite error before wrapping; the
+	// screen only adds the user-visible toast.
+	if err := m.refreshIntervals.SaveRefreshInterval(ctx, refreshIntervalScreenID, d); err != nil {
+		m.toasts.Push(components.ToastWarning, "couldn't persist refresh interval: "+err.Error())
+	}
+}
+
+// OpenRefreshPicker mounts the host-driven refresh-interval picker.
+// Implements [tui.RefreshConfigurable].
+func (m *Model) OpenRefreshPicker() {
+	m.refreshPicker = components.NewRefreshPicker(
+		m.refresher.Interval(),
+		components.WithRefreshPickerStyles(m.styles),
+	)
 }
 
 func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
@@ -752,6 +848,9 @@ func (m *Model) cellFor(col string, t kafka.TopicSummary) string {
 }
 
 func (m *Model) View() string {
+	if m.refreshPicker != nil {
+		return m.refreshPicker.View(m.width)
+	}
 	switch m.mode {
 	case ModeList:
 	case ModeCreate:
@@ -793,15 +892,13 @@ func (m *Model) AutoRefreshTick() tea.Cmd { return m.refresher.Tick(RefreshTickM
 // the ticker keeps running so resuming is instantaneous.
 func (m *Model) HandleRefreshTick() tea.Cmd {
 	next := m.refresher.Tick(RefreshTickMsg{})
-	if next == nil || m.loading || m.refresher.Paused() {
+	if next == nil || m.loading {
 		return next
 	}
 	return tea.Batch(m.refreshCmd(), next)
 }
 
 func (m *Model) RefreshInterval() time.Duration { return m.refresher.Interval() }
-
-func (m *Model) SetRefreshPaused(paused bool) { m.refresher.SetPaused(paused) }
 
 func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
 

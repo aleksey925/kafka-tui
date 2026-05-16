@@ -324,7 +324,7 @@ func GeneralSections() []Section {
 			Hints: []Hint{
 				{Key: ":", Label: "open command bar"},
 				{Key: "/", Label: "filter list"},
-				{Key: "ctrl+r", Label: "toggle auto-refresh"},
+				{Key: "ctrl+r", Label: "set refresh interval"},
 				{Key: "?", Label: "toggle help"},
 				{Key: "q", Label: "back / quit"},
 				{Key: "esc", Label: "back / clear filter"},

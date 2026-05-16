@@ -48,12 +48,10 @@ func (s *gatedSearchable) SearchAvailable() bool { return s.available }
 type refreshable struct {
 	minimalScreen
 	interval time.Duration
-	paused   bool
 	last     time.Time
 }
 
 func (r *refreshable) RefreshInterval() time.Duration { return r.interval }
-func (r *refreshable) SetRefreshPaused(p bool)        { r.paused = p }
 func (r *refreshable) LastRefresh() time.Time         { return r.last }
 
 // closable counts how many times Close was invoked.
@@ -99,8 +97,7 @@ func TestScreenSupportsRefresh_TrueForRefreshable(t *testing.T) {
 }
 
 func TestScreenSupportsRefresh_FalseForMinimalScreen(t *testing.T) {
-	assert.False(t, screenSupportsRefresh(minimalScreen{}),
-		"a screen that doesn't implement Refreshable must report SupportsRefresh=false so the chrome shows '—' not 'off'")
+	assert.False(t, screenSupportsRefresh(minimalScreen{}))
 }
 
 // --- screenRefreshInterval / screenLastRefresh defaults ---
@@ -111,18 +108,6 @@ func TestScreenRefreshInterval_ZeroForNonRefreshable(t *testing.T) {
 
 func TestScreenLastRefresh_ZeroForNonRefreshable(t *testing.T) {
 	assert.True(t, screenLastRefresh(minimalScreen{}).IsZero())
-}
-
-func TestSetScreenRefreshPaused_NoOpForNonRefreshable(t *testing.T) {
-	// must not panic — the host blindly calls this on every screen
-	// when the user hits ctrl+r.
-	setScreenRefreshPaused(minimalScreen{}, true)
-}
-
-func TestSetScreenRefreshPaused_ForwardsToRefreshable(t *testing.T) {
-	r := &refreshable{interval: time.Second}
-	setScreenRefreshPaused(r, true)
-	assert.True(t, r.paused, "helper must call SetRefreshPaused on Refreshable screens")
 }
 
 // --- screenSupportsSearch ---

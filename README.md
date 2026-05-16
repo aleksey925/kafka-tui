@@ -135,10 +135,10 @@ Annotated `config.yaml` and `clusters.yaml` samples live in [`examples/`](exampl
 
 Two files are read from each layer:
 
-| File            | Purpose                                                                         |
-| --------------- | ------------------------------------------------------------------------------- |
-| `config.yaml`   | UI behavior (logging, refresh intervals, columns, produce / clipboard / vault). |
-| `clusters.yaml` | Cluster definitions (brokers, color, `read_only`, SASL, TLS).                   |
+| File            | Purpose                                                       |
+| --------------- | ------------------------------------------------------------- |
+| `config.yaml`   | UI behavior (logging, columns, produce / clipboard / vault).  |
+| `clusters.yaml` | Cluster definitions (brokers, color, `read_only`, SASL, TLS). |
 
 Layers, lowest priority first:
 
@@ -157,21 +157,19 @@ samples covering all fields below live in [`examples/`](examples/).
 
 #### `config.yaml` — UI behavior
 
-| Section     | Field                         | Description                                                                                                           |
-| ----------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `logging`   | `level`                       | Log level: `debug` / `info` / `warn` / `error`.                                                                       |
-|             | `file`                        | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                   |
-|             | `max_size_mb`, `max_files`    | Rotation thresholds for the log file.                                                                                 |
-| `refresh`   | `topics_list`                 | Auto-refresh interval for the topics screen. Duration (`5s`, `30s`) or `off`.                                         |
-|             | `groups_list`, `group_detail` | Same, for consumer-group screens.                                                                                     |
-| `topics`    | `columns`                     | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`. |
-| `groups`    | `columns`                     | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                              |
-| `messages`  | `columns`                     | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                               |
-| `produce`   | `history_size`                | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                |
-|             | `default_compression`         | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                |
-| `clipboard` | `method`                      | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                          |
-| `vault`     | `address`                     | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere.                                     |
-|             | `token`                       | Vault token. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).                      |
+| Section     | Field                      | Description                                                                                                           |
+| ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`.                                                                       |
+|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                   |
+|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                 |
+| `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`. |
+| `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                              |
+| `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                               |
+| `produce`   | `history_size`             | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                |
+|             | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                |
+| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                          |
+| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere.                                     |
+|             | `token`                    | Vault token. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).                      |
 
 Lists (`columns`) replace wholesale across layers; everything else is merged scalar-by-scalar.
 

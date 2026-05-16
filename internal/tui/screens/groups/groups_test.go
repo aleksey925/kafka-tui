@@ -17,8 +17,9 @@ import (
 )
 
 // drive runs cmd to completion synchronously and routes any resulting
-// messages back through the Model, mirroring how the Bubble Tea program
-// dispatches cmds in production.
+// messages back through the Model. Cmds that don't deliver a value within
+// driveCmdDeadline are dropped — that's how we skip [tea.Tick] cmds (the
+// auto-refresh chain) without blocking on real timers.
 func drive(t *testing.T, m *groups.Model, cmd tea.Cmd) {
 	t.Helper()
 	queue := []tea.Cmd{cmd}
@@ -28,7 +29,7 @@ func drive(t *testing.T, m *groups.Model, cmd tea.Cmd) {
 		if next == nil {
 			continue
 		}
-		msg := next()
+		msg := runCmdNonBlocking(next)
 		if msg == nil {
 			continue
 		}
@@ -38,6 +39,19 @@ func drive(t *testing.T, m *groups.Model, cmd tea.Cmd) {
 		}
 		follow := m.Update(msg)
 		queue = append(queue, follow)
+	}
+}
+
+const driveCmdDeadline = 50 * time.Millisecond
+
+func runCmdNonBlocking(cmd tea.Cmd) tea.Msg {
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(driveCmdDeadline):
+		return nil
 	}
 }
 
@@ -226,124 +240,19 @@ func TestKeyHints_OmitDestructiveInReadOnly(t *testing.T) {
 	assert.NotContains(t, got, "delete")
 }
 
-func TestRefreshInterval_AutoRefreshTickIssuesCommand(t *testing.T) {
-	svc := newFakeService()
-	m := groups.New(groups.Options{Service: svc, ListRefreshInterval: 10 * time.Second})
-	cmd := m.AutoRefreshTick()
-	require.NotNil(t, cmd)
-}
-
-func TestRefreshInterval_OffYieldsNilCmd(t *testing.T) {
+func TestRefreshInterval_AutoRefreshTickIssuesCommandAtDefault(t *testing.T) {
 	svc := newFakeService()
 	m := groups.New(groups.Options{Service: svc})
-	assert.Nil(t, m.AutoRefreshTick())
+	cmd := m.AutoRefreshTick()
+	require.NotNil(t, cmd, "default non-zero interval must yield a tick cmd")
 }
 
-// TestSetRefreshPaused_AffectsListAndDetailTickers pins the
-// post-refactor contract: the host's single ctrl+r toggle must pause
-// (and resume) BOTH the list and detail refresh tickers in lock-step.
-// Before the refactor a single shared bool covered both; the refactor
-// split it into two Refresher values, so a regression that only paused
-// one would surface as a still-running auto-refresh on the other side.
-//
-// We drive the screen by sending the typed *RefreshTickMsg values
-// directly into Update — that exercises the same handle*RefreshTick
-// codepath the production tea.Tick chain feeds, but without waiting on
-// real interval durations.
-func TestSetRefreshPaused_AffectsListAndDetailTickers(t *testing.T) {
-	// arrange — both intervals enabled so the refresher fires ticks.
-	svc := newFakeService()
-	svc.groups = []kafka.GroupListInfo{{Group: "g1"}}
-	svc.descriptions = map[string]kafka.GroupDescription{"g1": {Group: "g1", State: "Empty"}}
-	m := groups.New(groups.Options{
-		Service:               svc,
-		ListRefreshInterval:   time.Second,
-		DetailRefreshInterval: time.Second,
-	})
-	// settle the initial load (refreshCmd is the first cmd in Init's batch
-	// — runIfDataMsg unwraps it; the auto-refresh tick is dropped because
-	// running tea.Tick synchronously would block for 1s).
-	runDataCmds(t, m, m.Init())
-	listCallsBefore := svc.ListCalls()
-
-	// pause both — feeding a list-tick must NOT trigger another ListConsumerGroups.
-	m.SetRefreshPaused(true)
-	feedTick(t, m, groups.ListRefreshTickMsg{})
-	assert.Equal(t, listCallsBefore, svc.ListCalls(),
-		"paused list refresher must skip its load")
-
-	// open detail and verify the same for the detail ticker.
-	cmd := m.Update(keyPress("enter"))
-	runDataCmds(t, m, cmd)
-	require.Equal(t, groups.ModeDetail, m.CurrentMode())
-	descCallsBefore := svc.DescribeCalls()
-	feedTick(t, m, groups.DetailRefreshTickMsg{})
-	assert.Equal(t, descCallsBefore, svc.DescribeCalls(),
-		"paused detail refresher must skip its load")
-
-	// resume — both tickers must reload again.
-	m.SetRefreshPaused(false)
-	feedTick(t, m, groups.DetailRefreshTickMsg{})
-	runDataCmds(t, m, nil) // drain the batched detail-load cmd that the tick produced
-	assert.Greater(t, svc.DescribeCalls(), descCallsBefore,
-		"resumed detail refresher must reload on the next tick")
-}
-
-// feedTick sends a typed refresh-tick message into Update and pumps any
-// data-bearing follow-up cmds through. Tea.Tick cmds (the rescheduled
-// next tick) are dropped — running them synchronously would block on
-// the real interval duration.
-func feedTick(t *testing.T, m *groups.Model, msg tea.Msg) {
-	t.Helper()
-	cmd := m.Update(msg)
-	runDataCmds(t, m, cmd)
-}
-
-// runDataCmds drains cmd and any tea.BatchMsg children, feeding only
-// non-tick messages back into Update. It distinguishes "data" cmds
-// (the actual load that returns a typed *LoadedMsg) from "tick" cmds
-// (tea.Tick that waits on a real timer) by trying each cmd in a tight
-// loop and skipping anything that would deliver a *RefreshTickMsg — we
-// never want to chain another tick during a test.
-func runDataCmds(t *testing.T, m *groups.Model, cmd tea.Cmd) {
-	t.Helper()
-	queue := []tea.Cmd{cmd}
-	for len(queue) > 0 {
-		next := queue[0]
-		queue = queue[1:]
-		if next == nil {
-			continue
-		}
-		msg := runCmdNonBlocking(next)
-		if msg == nil {
-			continue
-		}
-		switch msg.(type) {
-		case groups.ListRefreshTickMsg, groups.DetailRefreshTickMsg:
-			// drop — we drive ticks explicitly via feedTick.
-			continue
-		}
-		if batch, ok := msg.(tea.BatchMsg); ok {
-			queue = append(queue, batch...)
-			continue
-		}
-		queue = append(queue, m.Update(msg))
-	}
-}
-
-// runCmdNonBlocking invokes cmd in a goroutine with a tight deadline.
-// tea.Tick's value is delivered after Interval ms, so we time-bound it
-// to keep tests fast — anything that doesn't return promptly is treated
-// as a deferred timer and dropped.
-func runCmdNonBlocking(cmd tea.Cmd) tea.Msg {
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	select {
-	case msg := <-done:
-		return msg
-	case <-time.After(50 * time.Millisecond):
-		return nil
-	}
+func TestRefreshInterval_PersistedManualYieldsNilCmd(t *testing.T) {
+	repo := newFakeRefreshRepo()
+	repo.stored["groups"] = 0
+	m := groups.New(groups.Options{Service: newFakeService(), RefreshIntervals: repo})
+	assert.Nil(t, m.AutoRefreshTick(),
+		"persisted Manual (0) must override the default and disable ticks")
 }
 
 func TestFetchLagsForVisible_PopulatesLagAndMemberCount(t *testing.T) {
@@ -1217,6 +1126,90 @@ type fakeService struct {
 
 	deleted   []string
 	deleteErr error
+}
+
+// fakeRefreshRepo records save/load calls per screen id so tests can verify
+// the mode-aware routing (list cadence saved under "groups", detail cadence
+// under "group_detail").
+type fakeRefreshRepo struct {
+	stored map[string]time.Duration
+	saves  []refreshSaveCall
+}
+
+type refreshSaveCall struct {
+	screenID string
+	value    time.Duration
+}
+
+func newFakeRefreshRepo() *fakeRefreshRepo {
+	return &fakeRefreshRepo{stored: map[string]time.Duration{}}
+}
+
+func (r *fakeRefreshRepo) LoadRefreshInterval(_ context.Context, screenID string) (time.Duration, bool, error) {
+	d, ok := r.stored[screenID]
+	return d, ok, nil
+}
+
+func (r *fakeRefreshRepo) SaveRefreshInterval(_ context.Context, screenID string, d time.Duration) error {
+	r.stored[screenID] = d
+	r.saves = append(r.saves, refreshSaveCall{screenID: screenID, value: d})
+	return nil
+}
+
+func TestNew_PersistedIntervalsOverrideDefaults(t *testing.T) {
+	repo := newFakeRefreshRepo()
+	repo.stored["groups"] = 45 * time.Second
+	repo.stored["group_detail"] = 2 * time.Second
+
+	m := groups.New(groups.Options{Service: newFakeService(), RefreshIntervals: repo})
+
+	// list mode reads listRefresher.Interval(); detail's load is exercised
+	// indirectly via the mode-aware picker test below.
+	assert.Equal(t, 45*time.Second, m.RefreshInterval(),
+		"list mode must reflect the persisted groups cadence")
+}
+
+func TestOpenRefreshPicker_ListMode_UsesGroupsScreenID(t *testing.T) {
+	repo := newFakeRefreshRepo()
+	m := groups.New(groups.Options{Service: newFakeService(), RefreshIntervals: repo})
+
+	m.OpenRefreshPicker()
+	require.True(t, m.HasOverlay(), "picker must register as overlay")
+	// digit 3 = 3rd preset = 5s — distinct from the 30s default so the save
+	// records a real transition.
+	_ = m.Update(keyPress("3"))
+
+	require.Len(t, repo.saves, 1)
+	assert.Equal(t, "groups", repo.saves[0].screenID,
+		"in ModeList the picker must save under the list cadence's key")
+	assert.Equal(t, 5*time.Second, repo.saves[0].value)
+}
+
+func TestOpenRefreshPicker_DetailMode_UsesGroupDetailScreenID(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Stable"}}
+	repo := newFakeRefreshRepo()
+	// force both cadences to Manual via persistence so the construction-time
+	// tick chains return nil cmds — otherwise [drive] would block waiting on
+	// the real interval timers.
+	repo.stored["groups"] = 0
+	repo.stored["group_detail"] = 0
+	m := groups.New(groups.Options{Service: svc, RefreshIntervals: repo})
+	drive(t, m, m.Init())
+	// keyPress("enter") flips the mode synchronously inside openDetail; the
+	// returned cmds (detail load + tick bootstrap) aren't needed for the
+	// picker-routing assertion and are intentionally dropped on the floor.
+	_ = m.Update(keyPress("enter"))
+	require.Equal(t, groups.ModeDetail, m.CurrentMode(),
+		"precondition: detail view must be active for the mode-aware picker test")
+
+	m.OpenRefreshPicker()
+	_ = m.Update(keyPress("5")) // 30s
+
+	require.Len(t, repo.saves, 1)
+	assert.Equal(t, "group_detail", repo.saves[0].screenID,
+		"in ModeDetail the picker must save under the detail cadence's key")
+	assert.Equal(t, 30*time.Second, repo.saves[0].value)
 }
 
 func newFakeService() *fakeService {

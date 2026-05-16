@@ -7,6 +7,7 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
@@ -65,10 +66,14 @@ type Bootstrap struct {
 	// MessagesViewState persists per-(cluster, topic) seek state. nil
 	// disables persistence; the screen always starts at `latest`.
 	MessagesViewState messages.ViewStateRepository
-	Pager             produce.PagerOpener
-	StartupWarnings   []string
-	ReadOnly          bool
-	Now               func() time.Time
+	// RefreshIntervals persists the user-chosen auto-refresh cadence per
+	// screen type. nil disables persistence; screens fall back to the
+	// config-level default on every start.
+	RefreshIntervals components.RefreshIntervalRepository
+	Pager            produce.PagerOpener
+	StartupWarnings  []string
+	ReadOnly         bool
+	Now              func() time.Time
 	// ConfigReloader re-reads config files from disk. nil disables manual reload.
 	ConfigReloader func() (*config.Loaded, []config.Cluster, string, error)
 	// ConfigSnapshots is the channel emitted by [config.Watcher]. nil

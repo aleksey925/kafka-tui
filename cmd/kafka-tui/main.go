@@ -16,6 +16,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/logging"
 	"github.com/aleksey925/kafka-tui/internal/state"
 	"github.com/aleksey925/kafka-tui/internal/tui"
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
@@ -136,6 +137,7 @@ func run(flags *cli.Flags) error {
 		Editor:            clusters.DefaultEditor(),
 		History:           produceHistory(store, loaded.Config.Produce.HistorySize, logger.Logger),
 		MessagesViewState: messagesViewState(store, logger.Logger),
+		RefreshIntervals:  refreshIntervals(store, logger.Logger),
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
 		StartupWarnings:   loaded.Warnings,
@@ -261,6 +263,13 @@ func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateR
 		return nil
 	}
 	return tui.NewStateMessagesView(store, log)
+}
+
+func refreshIntervals(store *state.Store, log *slog.Logger) components.RefreshIntervalRepository {
+	if store == nil {
+		return nil
+	}
+	return tui.NewStateRefreshIntervals(store, log)
 }
 
 func resolveLogPath(flags *cli.Flags) (string, error) {

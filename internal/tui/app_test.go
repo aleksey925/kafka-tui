@@ -373,17 +373,18 @@ func TestModel_HelpToggle(t *testing.T) {
 	assert.Equal(t, tui.ModeNormal, m.Mode())
 }
 
-func TestModel_AutoRefreshToggle(t *testing.T) {
+// ctrl+r on a screen without [RefreshConfigurable] (the test bootstrap
+// uses a placeholder screen) is a no-op — the model state stays untouched.
+// Real refreshable screens mount the picker overlay; that path is covered
+// by per-screen tests in the topics / groups packages.
+func TestModel_CtrlRWithoutPickerCapableScreenNoOps(t *testing.T) {
 	m := tui.New(tui.Options{Initial: tui.ScreenTopics})
-	assert.True(t, m.AutoRefresh())
 
-	updated, _ := m.Update(keyPress("ctrl+r"))
+	updated, cmd := m.Update(keyPress("ctrl+r"))
 	m = updated.(*tui.Model)
-	assert.False(t, m.AutoRefresh())
 
-	updated, _ = m.Update(keyPress("ctrl+r"))
-	m = updated.(*tui.Model)
-	assert.True(t, m.AutoRefresh())
+	assert.Nil(t, cmd)
+	assert.Equal(t, tui.ModeNormal, m.Mode())
 }
 
 func TestModel_QuitFromTopOfStack(t *testing.T) {
@@ -524,9 +525,6 @@ func TestModel_StatusForRefreshMode(t *testing.T) {
 
 	m.SetStatus(layout.StatusInfo{Mode: layout.RefreshManual})
 	assert.Contains(t, m.Render(), "manual")
-
-	m.SetStatus(layout.StatusInfo{Mode: layout.RefreshPaused})
-	assert.Contains(t, m.Render(), "paused")
 }
 
 // keyPressTable maps a name to its tea.KeyPressMsg. Literal printable keys

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
@@ -16,8 +17,9 @@ import (
 )
 
 // drive runs cmd to completion synchronously and routes any resulting
-// messages back through the Model, mirroring how the Bubble Tea program
-// dispatches cmds in production.
+// messages back through the Model. Cmds that don't deliver a value within
+// driveCmdDeadline are dropped — that's how we skip [tea.Tick] cmds (the
+// auto-refresh chain) without blocking on real timers.
 func drive(t *testing.T, m *topics.Model, cmd tea.Cmd) {
 	t.Helper()
 	queue := []tea.Cmd{cmd}
@@ -27,7 +29,7 @@ func drive(t *testing.T, m *topics.Model, cmd tea.Cmd) {
 		if next == nil {
 			continue
 		}
-		msg := next()
+		msg := runCmdNonBlocking(next)
 		if msg == nil {
 			continue
 		}
@@ -37,6 +39,19 @@ func drive(t *testing.T, m *topics.Model, cmd tea.Cmd) {
 		}
 		follow := m.Update(msg)
 		queue = append(queue, follow)
+	}
+}
+
+const driveCmdDeadline = 50 * time.Millisecond
+
+func runCmdNonBlocking(cmd tea.Cmd) tea.Msg {
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(driveCmdDeadline):
+		return nil
 	}
 }
 
@@ -505,17 +520,19 @@ func TestSort_SCyclesSortOnCurrentColumn(t *testing.T) {
 	assert.Less(t, idxAlpha, idxZeta, "ascending sort puts alpha first")
 }
 
-func TestRefreshInterval_AutoRefreshTickIssuesCommand(t *testing.T) {
+func TestRefreshInterval_AutoRefreshTickIssuesCommandWhenDefaultActive(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
-	m := topics.New(topics.Options{Service: svc, RefreshInterval: 10})
+	m := topics.New(topics.Options{Service: svc})
 	cmd := m.AutoRefreshTick()
-	require.NotNil(t, cmd, "refresh interval > 0 must yield a tick cmd")
+	require.NotNil(t, cmd, "default non-zero interval must yield a tick cmd")
 }
 
-func TestRefreshInterval_OffYieldsNilCmd(t *testing.T) {
+func TestRefreshInterval_PersistedManualYieldsNilCmd(t *testing.T) {
 	svc := newFakeService(nil, nil)
-	m := topics.New(topics.Options{Service: svc})
-	assert.Nil(t, m.AutoRefreshTick())
+	repo := &fakeRefreshRepo{loaded: 0, loadedOK: true}
+	m := topics.New(topics.Options{Service: svc, RefreshIntervals: repo})
+	assert.Nil(t, m.AutoRefreshTick(),
+		"persisted Manual (0) must override the default and disable ticks")
 }
 
 func TestFocusTopic_CursorRestoredAfterLoad(t *testing.T) {
@@ -593,6 +610,91 @@ type fakeService struct {
 	// terminate it with a Done=true event; otherwise tests will hang on
 	// the channel close path.
 	clonePartial []kafka.CloneProgress
+}
+
+// fakeRefreshRepo is a stub [components.RefreshIntervalRepository] that
+// records every save and serves a fixed load value.
+type fakeRefreshRepo struct {
+	loaded     time.Duration
+	loadedOK   bool
+	loadErr    error
+	savedID    string
+	savedValue time.Duration
+	saveCalls  int
+}
+
+func (r *fakeRefreshRepo) LoadRefreshInterval(_ context.Context, _ string) (time.Duration, bool, error) {
+	return r.loaded, r.loadedOK, r.loadErr
+}
+
+func (r *fakeRefreshRepo) SaveRefreshInterval(_ context.Context, screenID string, d time.Duration) error {
+	r.savedID = screenID
+	r.savedValue = d
+	r.saveCalls++
+	return nil
+}
+
+func TestNew_PersistedRefreshIntervalOverridesDefault(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	repo := &fakeRefreshRepo{loaded: 42 * time.Second, loadedOK: true}
+
+	m := topics.New(topics.Options{Service: svc, RefreshIntervals: repo})
+
+	assert.Equal(t, 42*time.Second, m.RefreshInterval(),
+		"persisted value must override the built-in default")
+}
+
+func TestNew_FallsBackToDefaultWhenRepoEmpty(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	repo := &fakeRefreshRepo{loadedOK: false}
+
+	m := topics.New(topics.Options{Service: svc, RefreshIntervals: repo})
+
+	assert.Equal(t, 30*time.Second, m.RefreshInterval(),
+		"no persisted row → screen mounts at the built-in default")
+}
+
+func TestOpenRefreshPicker_MountsOverlay(t *testing.T) {
+	m := topics.New(topics.Options{Service: newFakeService(nil, nil)})
+
+	m.OpenRefreshPicker()
+
+	assert.True(t, m.HasOverlay(),
+		"opening the picker must register as an overlay so the host yields esc to it")
+	assert.Contains(t, m.View(), "Refresh interval",
+		"View must render the picker overlay when one is mounted")
+}
+
+func TestPicker_DigitConfirmUpdatesIntervalAndPersists(t *testing.T) {
+	repo := &fakeRefreshRepo{}
+	m := topics.New(topics.Options{Service: newFakeService(nil, nil), RefreshIntervals: repo})
+	require.Equal(t, 30*time.Second, m.RefreshInterval(), "precondition: default")
+	m.OpenRefreshPicker()
+
+	// digit 3 = 3rd preset = 5s (Manual / 1s / 5s / 10s / 30s / 1m / 5m) —
+	// a value distinct from the default so we observe a real transition.
+	_ = m.Update(keyPressRune('3'))
+
+	assert.Equal(t, 5*time.Second, m.RefreshInterval(),
+		"picker confirm must apply the picked preset to the live refresher")
+	assert.False(t, m.HasOverlay(), "picker must clear itself after confirm")
+	assert.Equal(t, 1, repo.saveCalls)
+	assert.Equal(t, "topics", repo.savedID)
+	assert.Equal(t, 5*time.Second, repo.savedValue)
+}
+
+func TestPicker_EscCancelsWithoutPersisting(t *testing.T) {
+	repo := &fakeRefreshRepo{}
+	m := topics.New(topics.Options{Service: newFakeService(nil, nil), RefreshIntervals: repo})
+	require.Equal(t, 30*time.Second, m.RefreshInterval(), "precondition: default")
+	m.OpenRefreshPicker()
+
+	_ = m.Update(keyPress("esc"))
+
+	assert.Equal(t, 30*time.Second, m.RefreshInterval(),
+		"esc must leave the interval untouched")
+	assert.False(t, m.HasOverlay())
+	assert.Equal(t, 0, repo.saveCalls)
 }
 
 func newFakeService(topicsList []kafka.TopicSummary, listErr error) *fakeService {

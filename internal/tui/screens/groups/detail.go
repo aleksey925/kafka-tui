@@ -240,7 +240,7 @@ func (d *DetailModel) bindings() []keymap.Binding {
 	bs = append(bs, mut...)
 	bs = append(bs,
 		keymap.Binding{Keys: []string{"/"}, Label: "filter rows", Category: "Group", Hint: true},
-		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "toggle auto-refresh", Category: "Group", Hint: true},
+		keymap.Binding{Keys: []string{"ctrl+r"}, Label: "set refresh interval", Category: "Group", Hint: true},
 	)
 	return bs
 }

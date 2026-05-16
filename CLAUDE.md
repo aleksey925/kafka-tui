@@ -66,12 +66,15 @@ screens:
 - `:` — command bar
 - `/` — filter prompt
 - `?` — help
-- `ctrl+r` — toggle auto-refresh
+- `ctrl+r` — open the refresh-interval picker (presets + custom). On screens
+  with no auto-refresh concept (forms, message detail, …) the key is a
+  no-op rather than mounting an inert popup.
 
-Deviation: when the active screen has an overlay (e.g. a modal form), a
-global is skipped if its action does not apply in that context (e.g.
-`ctrl+r` auto-refresh has nothing to refresh inside a form). The key falls
-through to the overlay instead of firing a no-op global.
+Deviation: when the active screen has an overlay (e.g. a modal form, or the
+picker itself), a global is skipped if its action does not apply in that
+context. The key falls through to the overlay instead of firing a no-op
+global — that's how the picker's own `esc` closes it without the dispatcher
+trying to remount one on top.
 
 ## Filter clear
 

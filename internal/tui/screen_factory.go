@@ -1,9 +1,6 @@
 package tui
 
 import (
-	"strings"
-	"time"
-
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
@@ -102,13 +99,13 @@ func (m *Model) newClusters() *clusters.Model {
 func (m *Model) newTopics() *topics.Model {
 	cfg := m.boot.Loaded.Config
 	return topics.New(topics.Options{
-		Service:         m.client,
-		ReadOnly:        m.clusterRO,
-		Columns:         cfg.Topics.Columns,
-		FocusTopic:      m.lastTopic,
-		RefreshInterval: parseRefresh(cfg.Refresh.TopicsList),
-		Now:             m.now,
-		Styles:          m.styles,
+		Service:          m.client,
+		ReadOnly:         m.clusterRO,
+		Columns:          cfg.Topics.Columns,
+		FocusTopic:       m.lastTopic,
+		RefreshIntervals: m.boot.RefreshIntervals,
+		Now:              m.now,
+		Styles:           m.styles,
 	})
 }
 
@@ -166,15 +163,13 @@ func (m *Model) newProduce() *produce.Model {
 }
 
 func (m *Model) newGroups() *groups.Model {
-	cfg := m.boot.Loaded.Config
 	return groups.New(groups.Options{
-		Service:               m.client,
-		ReadOnly:              m.clusterRO,
-		FilterTopic:           m.navGroupFilter,
-		ListRefreshInterval:   parseRefresh(cfg.Refresh.GroupsList),
-		DetailRefreshInterval: parseRefresh(cfg.Refresh.GroupDetail),
-		Now:                   m.now,
-		Styles:                m.styles,
+		Service:          m.client,
+		ReadOnly:         m.clusterRO,
+		FilterTopic:      m.navGroupFilter,
+		RefreshIntervals: m.boot.RefreshIntervals,
+		Now:              m.now,
+		Styles:           m.styles,
 	})
 }
 
@@ -191,21 +186,4 @@ func (m *Model) newConfigSrc() *configsrc.Model {
 		Sources: m.boot.Loaded.Sources,
 		Styles:  m.styles,
 	})
-}
-
-// parseRefresh converts the config string ("off", "5s", …) into a duration.
-// "off" / unparseable / zero / negative map to 0 (auto-refresh disabled).
-func parseRefresh(s string) time.Duration {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "off") {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0
-	}
-	if d < 0 {
-		return 0
-	}
-	return d
 }

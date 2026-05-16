@@ -38,7 +38,7 @@ func TestHeader_RendersAllParts(t *testing.T) {
 		ClusterColor: theme.ClusterRed,
 		ReadOnly:     true,
 		FromCLI:      true,
-	}, layout.StatusInfo{Mode: layout.RefreshOff}, []layout.KeyHint{
+	}, layout.StatusInfo{Mode: layout.RefreshNotApplicable}, []layout.KeyHint{
 		{Key: "n", Label: "new"},
 	}, layout.Build{Version: "v1.2.3", Commit: "abc"}, 120)
 
@@ -53,7 +53,7 @@ func TestHeader_OnlyTitleWithoutCluster(t *testing.T) {
 	s := theme.DefaultStyles()
 
 	out := layout.Header(s, layout.HeaderInfo{},
-		layout.StatusInfo{Mode: layout.RefreshOff}, nil,
+		layout.StatusInfo{Mode: layout.RefreshNotApplicable}, nil,
 		layout.Build{Version: "v1.0.0"}, 120)
 
 	assert.Contains(t, out, "kafka-tui")
@@ -176,7 +176,7 @@ func TestHeader_LeftPaneReservesGutter(t *testing.T) {
 	// name overflows the inner area; truncation must kick in.
 	out := layout.Header(theme.DefaultStyles(),
 		layout.HeaderInfo{Cluster: "production-east-region-multi-az-cluster-1"},
-		layout.StatusInfo{Mode: layout.RefreshOff},
+		layout.StatusInfo{Mode: layout.RefreshNotApplicable},
 		nil,
 		layout.Build{},
 		60,

@@ -36,7 +36,7 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version))
-	assert.Equal(t, 2, version)
+	assert.Equal(t, 3, version)
 
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestApplyMigrations_Idempotent(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	var rowCount int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&rowCount))
-	assert.Equal(t, 2, rowCount)
+	assert.Equal(t, 3, rowCount)
 }
 
 func TestAddProduce_RoundTripsEveryField(t *testing.T) {
@@ -528,6 +528,72 @@ func TestMessagesView_UpsertOverwrites(t *testing.T) {
 	got, _, _ := store.LoadMessagesView(t.Context(), "c1", "orders")
 	assert.Equal(t, 5, got.SeekMode)
 	assert.Equal(t, "0-4", got.Partitions)
+}
+
+func TestRefreshInterval_RoundTrip(t *testing.T) {
+	store := openMemory(t)
+
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
+
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 5*time.Second, got)
+}
+
+func TestRefreshInterval_AbsentReturnsFalse(t *testing.T) {
+	store := openMemory(t)
+
+	_, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	assert.False(t, ok, "missing row must surface as ok=false so callers fall back to config")
+}
+
+// Manual is a real user choice — 0 must round-trip and stay distinguishable
+// from "no row" via the ok flag.
+func TestRefreshInterval_ManualPersists(t *testing.T) {
+	store := openMemory(t)
+
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 0))
+
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	assert.True(t, ok, "Manual (0) must be reported as present, not absent")
+	assert.Equal(t, time.Duration(0), got)
+}
+
+func TestRefreshInterval_PerScreenIsolation(t *testing.T) {
+	store := openMemory(t)
+
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "groups", time.Minute))
+
+	topicsVal, _, _ := store.LoadRefreshInterval(t.Context(), "topics")
+	groupsVal, _, _ := store.LoadRefreshInterval(t.Context(), "groups")
+	assert.Equal(t, 5*time.Second, topicsVal)
+	assert.Equal(t, time.Minute, groupsVal)
+}
+
+func TestRefreshInterval_UpsertOverwrites(t *testing.T) {
+	store := openMemory(t)
+
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", time.Minute))
+
+	got, _, _ := store.LoadRefreshInterval(t.Context(), "topics")
+	assert.Equal(t, time.Minute, got)
+}
+
+func TestRefreshInterval_NegativeClampedOnSave(t *testing.T) {
+	store := openMemory(t)
+
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", -5*time.Second))
+
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, time.Duration(0), got,
+		"negative durations are not meaningful — clamp to 0 (Manual) on the way in")
 }
 
 func entry(cluster, topic string, partition int32, ts time.Time) state.ProduceEntry {

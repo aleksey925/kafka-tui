@@ -32,17 +32,6 @@ func TestNewRefresher_NegativeIntervalIsClampedToZero(t *testing.T) {
 		"negative interval must be clamped to 0 so screens don't try to schedule a backwards tick")
 }
 
-func TestRefresher_PausedSetterAndGetter(t *testing.T) {
-	r := components.NewRefresher(time.Second, nil)
-	require.False(t, r.Paused(), "fresh refresher must not be paused")
-
-	r.SetPaused(true)
-	assert.True(t, r.Paused())
-
-	r.SetPaused(false)
-	assert.False(t, r.Paused(), "SetPaused(false) must resume")
-}
-
 func TestRefresher_MarkSuccessUsesInjectedClock(t *testing.T) {
 	// arrange — fixed clock so the assertion is exact.
 	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -87,11 +76,66 @@ func TestRefresher_IntervalGetter(t *testing.T) {
 	assert.Equal(t, 7*time.Second, r.Interval())
 }
 
+func TestRefresher_SetInterval_BootstrapsChainOnZeroToNonZero(t *testing.T) {
+	// arrange — chain is dead because interval starts at 0.
+	r := components.NewRefresher(0, nil)
+	require.Nil(t, r.Tick(tickMsg{}), "precondition: interval=0 returns nil tick")
+
+	// act
+	cmd := r.SetInterval(time.Millisecond, tickMsg{})
+
+	// assert — bootstrap cmd produced, runs and emits the supplied message.
+	require.NotNil(t, cmd, "0→>0 must return a bootstrap cmd so the chain restarts")
+	assert.Equal(t, time.Millisecond, r.Interval())
+	got := cmd()
+	_, ok := got.(tickMsg)
+	assert.True(t, ok, "bootstrap cmd must emit the supplied message type, got %T", got)
+}
+
+func TestRefresher_SetInterval_NoBootstrapOnNonZeroToZero(t *testing.T) {
+	// arrange — chain alive.
+	r := components.NewRefresher(time.Second, nil)
+
+	// act
+	cmd := r.SetInterval(0, tickMsg{})
+
+	// assert — caller has nothing to schedule; in-flight tick burns down.
+	assert.Nil(t, cmd, ">0→0 must return nil — the in-flight tick burns down naturally")
+	assert.Equal(t, time.Duration(0), r.Interval())
+	assert.Nil(t, r.Tick(tickMsg{}), "after setting to 0, subsequent Tick must also return nil")
+}
+
+func TestRefresher_SetInterval_NoBootstrapOnNonZeroToNonZero(t *testing.T) {
+	// arrange
+	r := components.NewRefresher(time.Second, nil)
+
+	// act
+	cmd := r.SetInterval(5*time.Second, tickMsg{})
+
+	// assert — chain already alive; next Tick will pick up the new cadence.
+	assert.Nil(t, cmd, ">0→>0 must return nil to avoid double-scheduling")
+	assert.Equal(t, 5*time.Second, r.Interval())
+}
+
+func TestRefresher_SetInterval_NoBootstrapOnZeroToZero(t *testing.T) {
+	r := components.NewRefresher(0, nil)
+	assert.Nil(t, r.SetInterval(0, tickMsg{}), "0→0 must return nil")
+	assert.Equal(t, time.Duration(0), r.Interval())
+}
+
+func TestRefresher_SetInterval_ClampsNegativeToZero(t *testing.T) {
+	r := components.NewRefresher(time.Second, nil)
+	cmd := r.SetInterval(-5*time.Second, tickMsg{})
+	assert.Nil(t, cmd, "negative input is treated as 0 — same as >0→0")
+	assert.Equal(t, time.Duration(0), r.Interval(),
+		"negative interval must be clamped to 0 so screens don't try to schedule a backwards tick")
+}
+
 // TestRefresher_EmbedsCleanlyInScreen pins the host-facing usage shape:
-// a screen embeds the Refresher as a value, the host calls
-// SetRefreshPaused/RefreshInterval/LastRefresh through tiny delegating
-// getters, and pointer-receiver mutations propagate because the
-// enclosing Model is always pointer-passed.
+// a screen embeds the Refresher as a value and the host calls
+// RefreshInterval/LastRefresh through tiny delegating getters. Pointer-
+// receiver mutations propagate because the enclosing Model is always
+// pointer-passed.
 func TestRefresher_EmbedsCleanlyInScreen(t *testing.T) {
 	type screen struct {
 		refresher components.Refresher
@@ -99,17 +143,9 @@ func TestRefresher_EmbedsCleanlyInScreen(t *testing.T) {
 	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	s := &screen{refresher: components.NewRefresher(time.Second, func() time.Time { return fixed })}
 
-	// pause through the embedded value — Go takes &s.refresher because s is *screen
-	s.refresher.SetPaused(true)
-	require.True(t, s.refresher.Paused())
-
 	s.refresher.MarkSuccess()
 	assert.Equal(t, fixed, s.refresher.LastRefresh())
 
-	// Tick still emits the cmd even when paused — pause only affects whether
-	// the screen runs the workload, not the tick chain.
 	cmd := s.refresher.Tick(tickMsg{})
-	require.NotNil(t, cmd, "Tick must keep firing while paused so resume is instantaneous")
-	// type assertion to tea.Cmd is implicit in the require.NotNil — the
-	// signature of Tick already pins the return.
+	require.NotNil(t, cmd, "Tick must return a cmd for a non-zero interval")
 }

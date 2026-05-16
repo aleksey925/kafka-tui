@@ -40,7 +40,6 @@ func (s *fakeScreen) LatestFlash() (components.Toast, bool) {
 func (s *fakeScreen) Title() string                  { return "" }
 func (s *fakeScreen) Breadcrumb() string             { return "" }
 func (s *fakeScreen) RefreshInterval() time.Duration { return 0 }
-func (s *fakeScreen) SetRefreshPaused(bool)          {}
 func (s *fakeScreen) LastRefresh() time.Time         { return time.Time{} }
 func (s *fakeScreen) SupportsRefresh() bool          { return false }
 func (s *fakeScreen) SearchAvailable() bool          { return s.supportsSearch }
@@ -68,7 +67,6 @@ func TestHandleNormalKey_RawInputBypassesGlobalShortcuts(t *testing.T) {
 	assert.Equal(t, []string{":", "/", "?", "ctrl+r"}, fake.keys,
 		"raw-input screen must receive every key as a literal")
 	assert.Equal(t, ModeNormal, m.mode, "global modes must not activate")
-	assert.True(t, m.autoRefresh, "auto-refresh toggle must not fire")
 }
 
 func TestHandleNormalKey_NonRawScreenStillSeesGlobalShortcuts(t *testing.T) {
@@ -213,34 +211,58 @@ func TestSlash_OpensWhenScreenSupportsSearch(t *testing.T) {
 	assert.Equal(t, ModeSearch, m.mode)
 }
 
-// TestCtrlR_OnOverlayFallsThroughToScreen verifies that the global
-// auto-refresh shortcut yields to the active screen when it reports an
-// overlay (e.g. a produce form): the screen receives ctrl+r and the host's
-// auto-refresh flag is untouched.
+// TestCtrlR_OnOverlayFallsThroughToScreen verifies that the global ctrl+r
+// shortcut yields to the active screen when it reports an overlay (e.g. a
+// produce form): the screen receives ctrl+r so its own bindings (if any)
+// can react, and the host doesn't try to mount a picker on top.
 func TestCtrlR_OnOverlayFallsThroughToScreen(t *testing.T) {
 	m := New(Options{Width: 80, Height: 24})
-	m.SetAutoRefresh(true)
 	fake := &fakeScreen{hasOverlay: true}
 	m.active = fake
 
 	_, _ = m.Update(keyMsg("ctrl+r"))
 
 	assert.Equal(t, []string{"ctrl+r"}, fake.keys, "ctrl+r must reach the overlay")
-	assert.True(t, m.AutoRefresh(), "auto-refresh flag must not flip while an overlay is active")
 }
 
-// TestCtrlR_NoOverlayTogglesAutoRefresh is the dual: without an overlay the
-// host owns ctrl+r and toggles auto-refresh.
-func TestCtrlR_NoOverlayTogglesAutoRefresh(t *testing.T) {
+// TestCtrlR_NoOverlayWithoutPickerNoOps is the dual: without an overlay the
+// host owns ctrl+r, but if the active screen doesn't implement
+// [RefreshConfigurable] (e.g. messages, forms) nothing happens — the screen
+// must not receive the key either.
+func TestCtrlR_NoOverlayWithoutPickerNoOps(t *testing.T) {
 	m := New(Options{Width: 80, Height: 24})
-	m.SetAutoRefresh(false)
 	fake := &fakeScreen{hasOverlay: false}
 	m.active = fake
 
 	_, _ = m.Update(keyMsg("ctrl+r"))
 
-	assert.True(t, m.AutoRefresh())
 	assert.Empty(t, fake.keys, "ctrl+r must not reach the screen when host owns it")
+}
+
+// pickerScreen extends fakeScreen with the [RefreshConfigurable] capability
+// so we can exercise the host's ctrl+r → OpenRefreshPicker dispatch path
+// without dragging in a real refreshable screen.
+type pickerScreen struct {
+	fakeScreen
+	pickerOpens int
+}
+
+func (s *pickerScreen) OpenRefreshPicker() {
+	s.pickerOpens++
+}
+
+// TestCtrlR_NoOverlayWithPickerCapableScreenInvokesPicker pins the happy
+// path: the dispatcher must call OpenRefreshPicker on screens that opt into
+// [RefreshConfigurable], without forwarding the key.
+func TestCtrlR_NoOverlayWithPickerCapableScreenInvokesPicker(t *testing.T) {
+	m := New(Options{Width: 80, Height: 24})
+	fake := &pickerScreen{}
+	m.active = fake
+
+	_, _ = m.Update(keyMsg("ctrl+r"))
+
+	assert.Equal(t, 1, fake.pickerOpens, "host must invoke OpenRefreshPicker")
+	assert.Empty(t, fake.keys, "key must be consumed by the dispatcher, not forwarded")
 }
 
 // TestEsc_OverlayPreservesScreen pins the q/esc fallback contract:

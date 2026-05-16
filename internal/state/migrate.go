@@ -52,6 +52,16 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		version: 3,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS refresh_intervals (
+				screen_id   TEXT    PRIMARY KEY,
+				interval_ns INTEGER NOT NULL,
+				updated_at  INTEGER NOT NULL
+			)`,
+		},
+	},
 }
 
 // applyMigrations runs every migration newer than the recorded version. The

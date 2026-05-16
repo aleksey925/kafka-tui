@@ -88,8 +88,6 @@ func TestLoad_ProjectOverridesGlobal(t *testing.T) {
 	// scalars: project wins; absent scalars retain global
 	assert.Equal(t, "debug", loaded.Config.Logging.Level)
 	assert.Equal(t, "/tmp/global.log", loaded.Config.Logging.File)
-	assert.Equal(t, "5s", loaded.Config.Refresh.TopicsList)
-	assert.Equal(t, "30s", loaded.Config.Refresh.GroupsList)
 
 	// list replaced (not concatenated)
 	assert.Equal(t, []string{"name", "partitions"}, loaded.Config.Topics.Columns)

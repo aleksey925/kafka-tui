@@ -20,17 +20,16 @@ import (
 type RefreshMode int
 
 const (
-	RefreshOff RefreshMode = iota
-	RefreshAuto
-	// RefreshManual: the user disabled auto-refresh for this screen.
+	// RefreshAuto: a periodic tick is running at the screen's chosen cadence.
+	RefreshAuto RefreshMode = iota
+	// RefreshManual: the user picked "Manual" in the picker (interval=0).
+	// No ticks fire; users press `r` for one-shot refreshes.
 	RefreshManual
-	// RefreshPaused: a modal/search is open and refresh is temporarily paused.
-	RefreshPaused
 	// RefreshOnEdit: the screen reloads itself in response to filesystem
 	// events (no periodic poll).
 	RefreshOnEdit
-	// RefreshNotApplicable: the screen is conceptually static; rendered as
-	// a dash to distinguish from RefreshOff ("supported but turned off").
+	// RefreshNotApplicable: the screen has no refresh concept at all (forms,
+	// detail views, …); rendered as a dash.
 	RefreshNotApplicable
 )
 
@@ -139,7 +138,7 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 	rows := []struct{ key, val string }{
 		{"Context", context},
 		{"Cluster", cluster},
-		{"Refresh", refreshLabel(s, status)},
+		{"Refresh", refreshLabel(status)},
 		{"Mode", mode},
 		{"Filter", filter},
 	}
@@ -165,7 +164,7 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 // cluster names) never butt up against the next column.
 const clusterPaneGutter = 2
 
-func refreshLabel(s theme.Styles, status StatusInfo) string {
+func refreshLabel(status StatusInfo) string {
 	switch status.Mode {
 	case RefreshAuto:
 		body := "auto " + formatDuration(status.Interval)
@@ -175,16 +174,12 @@ func refreshLabel(s theme.Styles, status StatusInfo) string {
 		return body
 	case RefreshManual:
 		return "manual"
-	case RefreshPaused:
-		return s.StatusWarn.Render("paused")
 	case RefreshOnEdit:
 		body := "on edit"
 		if elapsed, ok := elapsedSince(status); ok {
 			body += " · " + formatElapsed(elapsed)
 		}
 		return body
-	case RefreshOff:
-		return "off"
 	case RefreshNotApplicable:
 		return "—"
 	default:
