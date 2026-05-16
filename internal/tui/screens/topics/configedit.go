@@ -125,7 +125,6 @@ func buildEditField(entry configcatalog.Entry, known bool, current string) compo
 		configcatalog.TypeByteSize,
 		configcatalog.TypeDuration,
 		configcatalog.TypeRatio:
-		// FieldText is the default — nothing more to configure.
 	}
 	return field
 }

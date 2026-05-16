@@ -75,10 +75,8 @@ type DetailModel struct {
 	// partsTable so the cursor-driven sync skips no-op rebuilds.
 	lastTopic string
 
-	loading bool
-	loadErr string
-	// manualRefresh is consumed by HandleLoaded to push a one-shot success
-	// toast (auto ticks stay silent).
+	loading       bool
+	loadErr       string
 	manualRefresh bool
 	lastRefresh   time.Time
 
@@ -683,8 +681,6 @@ func loadDetailCmd(svc Service, group string) tea.Cmd {
 		if err != nil {
 			return DetailLoadedMsg{Description: desc, Err: err}
 		}
-		// the partitions metadata fetch is best-effort; failures degrade
-		// to the d.rows-derived view (partial coverage of topic scope).
 		parts, _ := svc.TopicsPartitions(ctx, uniqueTopicsFromRows(rows)...)
 		return DetailLoadedMsg{Description: desc, Rows: rows, TopicPartitions: parts}
 	}

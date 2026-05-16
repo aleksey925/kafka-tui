@@ -202,12 +202,9 @@ func (m *Model) handleCommandKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.applySize()
 		// guard cluster-bound screens so `:topics` / `:groups` from the
 		// clusters picker don't leave the user on a blank placeholder.
-		// the toast is pushed to the active screen so promoteFlash surfaces
-		// it through the global flash bar — k9s-style — instead of an
-		// inline error glued to the command prompt. when the active screen
-		// has no toast queue (e.g. configsrc), bounce to the clusters
-		// picker so the warning has somewhere to land and the next obvious
-		// action is right there.
+		// when the active screen has no toast queue (e.g. configsrc),
+		// bounce to clusters so the warning lands on the next obvious
+		// action.
 		if requiresClient(cmd.Screen) && m.client == nil {
 			if q, ok := activeToastQueue(m.active); ok {
 				q.Push(components.ToastWarning, "connect to a cluster first")

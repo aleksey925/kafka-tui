@@ -28,10 +28,6 @@ const refreshIntervalScreenID = "topics"
 // value yet (no persisted row); subsequent runs read from the picker store.
 const defaultRefreshInterval = 30 * time.Second
 
-// refreshIntervalIOTimeout caps the synchronous load (construction) and save
-// (post-pick) — a stalled disk would otherwise block the cmd loop.
-const refreshIntervalIOTimeout = 500 * time.Millisecond
-
 // Service abstracts the Kafka admin operations the topics screen needs.
 type Service interface {
 	ListTopics(ctx context.Context) ([]kafka.TopicSummary, error)
@@ -98,8 +94,6 @@ type Model struct {
 	sizes      map[string]int64
 	configs    map[string][]kafka.TopicConfig
 
-	// shownWarnings deduplicates batch-fetch warnings across refresh ticks
-	// so a permanent ACL/feature failure doesn't spam a toast every 5s.
 	shownWarnings map[string]struct{}
 
 	table   *components.Table
@@ -150,16 +144,7 @@ func New(opts Options) *Model {
 
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
-	interval := defaultRefreshInterval
-	// persisted user choice (incl. Manual = 0) overrides the default. load
-	// errors degrade to "no persistence" — the screen still mounts.
-	if opts.RefreshIntervals != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
-		if d, ok, err := opts.RefreshIntervals.LoadRefreshInterval(ctx, refreshIntervalScreenID); err == nil && ok {
-			interval = d
-		}
-		cancel()
-	}
+	interval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenID, defaultRefreshInterval)
 
 	return &Model{
 		svc:              opts.Service,
@@ -372,8 +357,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		cmd := m.HandleRefreshTick()
 		return cmd
 	case tea.PasteMsg:
-		// the picker is the only sub-overlay on this screen that owns a
-		// text buffer; route paste there when it's open, otherwise drop.
 		if m.refreshPicker != nil {
 			m.refreshPicker, _ = m.refreshPicker.Update(msg)
 		}
@@ -426,16 +409,7 @@ func (m *Model) handlePickerKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) persistRefreshInterval(d time.Duration) {
-	if m.refreshIntervals == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), refreshIntervalIOTimeout)
-	defer cancel()
-	// the adapter logs the underlying SQLite error before wrapping; the
-	// screen only adds the user-visible toast.
-	if err := m.refreshIntervals.SaveRefreshInterval(ctx, refreshIntervalScreenID, d); err != nil {
-		m.toasts.Push(components.ToastWarning, "couldn't persist refresh interval: "+err.Error())
-	}
+	components.SaveRefreshIntervalOrToast(m.refreshIntervals, refreshIntervalScreenID, d, m.toasts)
 }
 
 // OpenRefreshPicker mounts the host-driven refresh-interval picker.
@@ -754,7 +728,6 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 		m.configs[c.Topic] = c.Configs
 	}
 	for _, w := range msg.Warnings {
-		// dedupe across ticks — a permanent failure should warn once.
 		if _, seen := m.shownWarnings[w]; seen {
 			continue
 		}

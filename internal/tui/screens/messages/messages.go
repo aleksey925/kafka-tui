@@ -155,9 +155,6 @@ type Model struct {
 	// during the dial window before the session attaches.
 	live bool
 
-	// lifeCtx is canceled by Close(); used by [startFollowCmd] so an
-	// in-flight Follow dial bails out (and any late-arriving session can be
-	// detected and closed) when the screen is popped before the dial returns.
 	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
 	lifeCancel context.CancelFunc
 
@@ -165,11 +162,7 @@ type Model struct {
 	// captured edges of the active seek window so `[` / `]` can clamp.
 	fromBoundary map[int32]int64
 	toBoundary   map[int32]int64
-	// fetchGen is bumped on every dispatchSeek / stopFollow; async cmds
-	// stamp this on results, handlers drop messages with stale Gen so
-	// late arrivals from a previous seek/live session can't leak onto
-	// the screen after the user has moved on.
-	fetchGen uint64
+	fetchGen     uint64
 
 	// spinnerFrame advances on LiveTickMsg so the LIVE label always
 	// shows movement on quiet topics.
@@ -696,8 +689,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		m.SetSize(msg.Width, msg.Height)
 		return nil
 	case tea.PasteMsg:
-		// route paste to whichever overlay currently owns a text buffer.
-		// list / detail views have nothing to paste into and drop it.
 		switch {
 		case m.mode == ModeSeek && m.seekPopup != nil && m.seekPopup.stage == stageInput:
 			m.seekPopup.form, _ = m.seekPopup.form.Update(msg)
@@ -729,7 +720,7 @@ func (m *Model) handleAsync(msg tea.Msg) tea.Cmd {
 		return m.handleFollowStarted(msg)
 	case LiveTickMsg:
 		if !m.live || msg.Gen != m.fetchGen {
-			return nil // tick chain dies when live ends or its dispatch goes stale.
+			return nil
 		}
 		m.spinnerFrame++
 		return liveTickCmd(m.fetchGen)
@@ -986,19 +977,11 @@ func (m *Model) handleFollowErr(msg FollowErrMsg) {
 	m.stopFollow()
 }
 
-// startFollowCmd dials the follow session under the screen's lifecycle ctx so
-// a screen pop during the dial both aborts the underlying RPC and lets us
-// detect a late-arriving session and close it before the FollowStartedMsg is
-// routed to a stale handler.
 func startFollowCmd(ctx context.Context, svc Service, topic string, parts []int32, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		sess, err := svc.Follow(ctx, topic, parts)
 		if ctx.Err() != nil {
-			// the screen popped while the dial was in flight; close any
-			// session that did slip through so its kgo consumer / goroutine
-			// don't outlive the model. Drop the msg entirely (returning nil
-			// from a tea.Cmd suppresses dispatch) so a different active
-			// screen never receives a stale FollowStartedMsg.
+			// late-arriving session must be closed so its kgo consumer doesn't outlive the model.
 			if sess != nil {
 				sess.Close()
 			}
@@ -1037,8 +1020,6 @@ func (m *Model) stopFollow() {
 		m.follow = nil
 	}
 	m.live = false
-	// bump generation so in-flight chunks from the closed session are
-	// dropped on arrival.
 	m.fetchGen++
 	// every load-context switch goes through stopFollow first, so clearing
 	// here prevents a stale `r` flag (whose response never arrived) from
@@ -1047,10 +1028,6 @@ func (m *Model) stopFollow() {
 	m.manualRefresh = false
 }
 
-// Close releases background resources before the host swaps screens, so
-// an open follow session doesn't leak its kgo consumer / goroutine.
-// lifeCancel signals [startFollowCmd] that any session it produces after
-// this point must be closed and the message dropped.
 func (m *Model) Close() {
 	m.stopFollow()
 	if m.lifeCancel != nil {
@@ -1193,7 +1170,6 @@ func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.seekPopup.stage == stageInput {
 		return m.handleSeekInput(key)
 	}
-	// stage 1: menu
 	pop := m.seekPopup
 	pop.menu, _ = pop.menu.Update(key)
 	if pop.menu.Canceled() {
@@ -1320,9 +1296,8 @@ func (m *Model) refresh() tea.Cmd {
 	return m.dispatchSeek()
 }
 
-// dispatchSeek bumps fetchGen so any in-flight fetch from the previous
-// view is dropped, clears the table so stale records don't linger during
-// the new fetch, then dispatches the command for the active seek state.
+// dispatchSeek clears the table so stale records don't linger during the
+// new fetch, then dispatches the command for the active seek state.
 func (m *Model) dispatchSeek() tea.Cmd {
 	m.fetchGen++
 	gen := m.fetchGen

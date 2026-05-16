@@ -10,8 +10,6 @@ import (
 )
 
 // stateMessagesView adapts [state.Store] to [messages.ViewStateRepository].
-// Read/write errors are logged and degrade to "no persistence" — failures
-// must never block the user from opening the screen.
 type stateMessagesView struct {
 	store *state.Store
 	log   *slog.Logger

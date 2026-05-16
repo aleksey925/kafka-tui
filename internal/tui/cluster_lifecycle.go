@@ -47,9 +47,6 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	}
 	client, err := m.boot.Dialer.Dial(*clu)
 	if err != nil {
-		// surface the failure wherever the user is. when the active screen
-		// has no toast queue (e.g. configsrc), bounce back to the clusters
-		// picker so the error has somewhere to land instead of vanishing.
 		msg := fmt.Sprintf("connect %q failed: %v", name, err)
 		if q, ok := activeToastQueue(m.active); ok {
 			q.Push(components.ToastError, msg)

@@ -65,10 +65,6 @@ type ConfigsModel struct {
 	width, height int
 	manualRefresh bool
 
-	// lifeCtx is canceled by Close(); used by [loadConfigsCmd] so the
-	// in-flight DescribeAllTopicConfigs RPC is aborted and any late-arriving
-	// [ConfigsLoadedMsg] is dropped instead of being delivered to whichever
-	// screen happens to be active when it returns.
 	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
 	lifeCancel context.CancelFunc
 
@@ -687,9 +683,6 @@ func loadConfigsCmd(lifeCtx context.Context, svc Service, topic string) tea.Cmd 
 		ctx, cancel := context.WithTimeout(lifeCtx, 10*time.Second)
 		defer cancel()
 		cfgs, err := svc.DescribeAllTopicConfigs(ctx, topic)
-		// the screen popped before the RPC returned; drop the result so a
-		// stale ConfigsLoadedMsg can't land on a freshly opened ConfigsModel
-		// for a different topic (or on a different screen type entirely).
 		if lifeCtx.Err() != nil {
 			return nil
 		}

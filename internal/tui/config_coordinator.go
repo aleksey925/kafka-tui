@@ -38,8 +38,7 @@ func (m *Model) watchConfigSnapshots() tea.Cmd {
 	}
 }
 
-// handleConfigSnapshot applies a fresh config snapshot. Updates Bootstrap
-// state and surfaces a toast on the clusters screen. Other screens stay
+// handleConfigSnapshot applies a fresh config snapshot. Other screens stay
 // silent — their data isn't config-derived without re-instantiation.
 func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 	if m.boot == nil {
@@ -79,8 +78,6 @@ func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 	if snap.ActiveClusterChanged {
 		warning := "active cluster changed in config — reconnect to apply"
 		slog.Warn(warning)
-		// route via the screen's toast queue so promoteFlash picks it up;
-		// direct assignment to m.flash would be wiped by promoteFlash.
 		if q, ok := activeToastQueue(m.active); ok {
 			q.Push(components.ToastWarning, warning)
 		}

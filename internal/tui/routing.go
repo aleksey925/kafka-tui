@@ -120,9 +120,7 @@ func (m *Model) routeProduceAction(s *produce.Model) tea.Cmd {
 }
 
 // pendingProduceToast forwards the produce screen's success toast to the
-// underlying screen on send-and-close; without this the user would never
-// see the confirmation. Failed sends keep the form open, so their toast
-// surfaces locally.
+// screen the user lands on after the form closes.
 func pendingProduceToast(s *produce.Model, a produce.Action) *components.Toast {
 	if a.Sent == nil {
 		return nil
@@ -208,8 +206,7 @@ func (m *Model) routeTopicConfigEditAction(s *topics.ConfigEditModel) tea.Cmd {
 }
 
 // pendingEditToast forwards the edit screen's success toast to the
-// underlying configs screen so the user sees confirmation after popping
-// back. Failed saves keep the form open and surface the toast locally.
+// configs screen the user lands on after the form closes.
 func pendingEditToast(s *topics.ConfigEditModel, a topics.ConfigEditAction) *components.Toast {
 	if !a.Saved {
 		return nil
