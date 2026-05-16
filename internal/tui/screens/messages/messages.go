@@ -58,6 +58,7 @@ type ViewState struct {
 type Action struct {
 	Back               bool
 	Produce            string
+	Groups             string
 	PrefillFromMessage *kafka.Message
 }
 
@@ -477,6 +478,7 @@ func (m *Model) activeBindings() []keymap.Binding {
 func (m *Model) listBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "open message detail", Category: "Browse", Hint: true, Handler: func() tea.Cmd { m.openDetail(); return nil }},
+		{Keys: []string{"g"}, Label: "consumer groups for topic", Category: "Browse", Hint: true, Handler: m.actGroups},
 		{Keys: []string{"["}, Label: "previous page", Category: "Browse", Hint: true, Handler: m.loadEarlier},
 		{Keys: []string{"]"}, Label: "next page", Category: "Browse", Hint: true, Handler: m.loadLater},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Browse", Hint: true, Handler: m.refresh},
@@ -503,6 +505,11 @@ func (m *Model) listBindings() []keymap.Binding {
 
 func (m *Model) actBack() tea.Cmd {
 	m.action.Back = true
+	return nil
+}
+
+func (m *Model) actGroups() tea.Cmd {
+	m.action.Groups = m.topic
 	return nil
 }
 

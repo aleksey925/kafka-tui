@@ -974,9 +974,9 @@ func TestForm_Reset_RewindsTextareaViewportScroll(t *testing.T) {
 	f.FocusKey("v")
 	f.View() // populate the viewport with content
 
-	f.HandleViewportKey(keyPressMsg("G")) // scroll to bottom
+	f.HandleViewportKey(keyPressMsg("end")) // scroll to bottom
 	bottom := f.View()
-	require.Contains(t, bottom, "LINE_49", "G must scroll to the bottom")
+	require.Contains(t, bottom, "LINE_49", "end must scroll to the bottom")
 	require.NotContains(t, bottom, "LINE_0", "top must have scrolled off")
 
 	f.Reset()

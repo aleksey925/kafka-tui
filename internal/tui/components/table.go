@@ -68,8 +68,6 @@ type Table struct {
 	selectable bool
 	selected   map[string]struct{}
 
-	gPrimed bool // first `g` of the `gg` jump-to-top sequence
-
 	styles theme.Styles
 }
 
@@ -211,19 +209,12 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 		t.move(+t.pageStep())
 	case "ctrl+b", "pgup":
 		t.move(-t.pageStep())
-	case "G":
+	case "end":
 		t.cursor = max(0, len(t.view)-1)
 		t.clampViewport()
-		t.gPrimed = false
-	case "g":
-		if t.gPrimed {
-			t.cursor = 0
-			t.clampViewport()
-			t.gPrimed = false
-		} else {
-			t.gPrimed = true
-		}
-		return
+	case "home":
+		t.cursor = 0
+		t.clampViewport()
 	case "/":
 		t.searchActive = true
 		t.search = ""
@@ -238,7 +229,6 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 	case " ", "space":
 		t.toggleSelectAtCursor()
 	}
-	t.gPrimed = false
 }
 
 func (t *Table) handleSearchKey(key tea.KeyPressMsg) {

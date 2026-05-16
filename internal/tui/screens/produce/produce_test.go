@@ -482,16 +482,15 @@ func TestTextarea_NormalModeScrollKeysPanViewport(t *testing.T) {
 
 	// pre-condition: after esc the cursor went away (caret cleared) so the
 	// viewport stays where it was last (scrolled to bottom from cursor-follow
-	// during paste). Scroll up to top, then G must scroll back down.
-	_ = m.Update(keyPress("g"))
-	_ = m.Update(keyPress("g"))
+	// during paste). Scroll up to top, then end must scroll back down.
+	_ = m.Update(keyPress("home"))
 	out := m.View()
-	assert.NotContains(t, out, "LAST_ROW", "gg in NORMAL must scroll to top first")
+	assert.NotContains(t, out, "LAST_ROW", "home in NORMAL must scroll to top first")
 
-	_ = m.Update(keyPress("G"))
+	_ = m.Update(keyPress("end"))
 	out = m.View()
 	assert.Contains(t, out, "LAST_ROW",
-		"G in NORMAL on a textarea must scroll the viewport to the bottom")
+		"end in NORMAL on a textarea must scroll the viewport to the bottom")
 }
 
 // Regression: stepping past the newest history entry resets the form the
@@ -1437,6 +1436,8 @@ var keyPressTable = map[string]tea.KeyPressMsg{
 	"up":           {Code: tea.KeyUp},
 	"left":         {Code: tea.KeyLeft},
 	"right":        {Code: tea.KeyRight},
+	"home":         {Code: tea.KeyHome},
+	"end":          {Code: tea.KeyEnd},
 	"ctrl+a":       {Code: 'a', Mod: tea.ModCtrl},
 	"ctrl+e":       {Code: 'e', Mod: tea.ModCtrl},
 	"ctrl+k":       {Code: 'k', Mod: tea.ModCtrl},

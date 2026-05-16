@@ -904,6 +904,34 @@ func TestRoute_TopicsToMessagesAndBack(t *testing.T) {
 	assert.Contains(t, out, "Topics", "popping must restore topics screen")
 }
 
+// TestRoute_MessagesToGroupsAndBack drives the messages→groups action via
+// the `g` hotkey, exercising routeMessagesAction.Groups, newGroups, and
+// the groups screen (filtered by topic). q pops back to messages.
+func TestRoute_MessagesToGroupsAndBack(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool { return strings.Contains(m.Render(), "orders") })
+
+	// drill into messages
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+
+	// `g` pushes the consumer-groups screen filtered by the current topic.
+	_, cmd = m.Update(keyPressRune('g'))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Consumer Groups")
+
+	// q → routeGroupsAction.Back → pop back to messages.
+	_, cmd = m.Update(keyPress("q"))
+	drainCmd(t, m, cmd)
+	out := m.Render()
+	assert.Contains(t, out, "Messages", "popping must restore messages screen")
+	assert.NotContains(t, out, "Consumer Groups", "groups screen must not still be active")
+}
+
 // TestRoute_MessagesToProduce drives the messages→produce action via the
 // `p` hotkey, exercising routeMessagesAction.Produce, newProduce, and
 // the produce screen.

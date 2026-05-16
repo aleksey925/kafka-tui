@@ -179,31 +179,25 @@ func TestViewport_Wrap_OnByDefault(t *testing.T) {
 	assert.True(t, v.Wrap(), "wrap is on by default — matches the most useful mode for editing/reading")
 }
 
-func TestViewport_HandleKey_GgChordScrollsToTop(t *testing.T) {
+func TestViewport_HandleKey_HomeEndJump(t *testing.T) {
 	v := components.NewViewport()
 	v.SetSize(40, 3)
 	v.SetLines([]string{"a", "b", "c", "d", "e"})
-	v.ScrollToBottom()
-	require.Equal(t, 2, v.ScrollOffset())
 
-	require.True(t, v.HandleKey(keyPressMsg("g")), "first g must be consumed (arms chord)")
-	assert.Equal(t, 2, v.ScrollOffset(), "first g does NOT scroll on its own")
+	require.True(t, v.HandleKey(keyPressMsg("end")))
+	assert.Equal(t, 2, v.ScrollOffset())
 
-	require.True(t, v.HandleKey(keyPressMsg("g")), "second g fires the chord")
+	require.True(t, v.HandleKey(keyPressMsg("home")))
 	assert.Equal(t, 0, v.ScrollOffset())
 }
 
-func TestViewport_HandleKey_NonGDisarmsChord(t *testing.T) {
+func TestViewport_HandleKey_GIgnored(t *testing.T) {
 	v := components.NewViewport()
 	v.SetSize(40, 3)
 	v.SetLines([]string{"a", "b", "c", "d", "e"})
 
-	v.HandleKey(keyPressMsg("g")) // arm
-	v.HandleKey(keyPressMsg("j")) // disarm
-	v.HandleKey(keyPressMsg("g")) // arm again
-	v.HandleKey(keyPressMsg("g")) // fire
-
-	assert.Equal(t, 0, v.ScrollOffset())
+	assert.False(t, v.HandleKey(keyPressMsg("g")), "g is no longer part of the viewport keymap")
+	assert.False(t, v.HandleKey(keyPressMsg("G")), "G is no longer part of the viewport keymap")
 }
 
 func TestViewport_HandleKey_WToggleWrap(t *testing.T) {

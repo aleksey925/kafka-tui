@@ -34,8 +34,6 @@ type Viewport struct {
 
 	wrap       bool
 	followTail bool
-
-	gPrimed bool
 }
 
 // NewViewport returns a viewport with wrap on, no cursor, no follow-tail.
@@ -172,24 +170,18 @@ func (v *Viewport) EnsureCursorVisible() {
 	v.clamp()
 }
 
-// Reset clears scroll state and the gg chord. Content, size, wrap, follow-tail
+// Reset clears scroll state. Content, size, wrap, follow-tail
 // and cursor are preserved — callers can clear those explicitly if needed.
 func (v *Viewport) Reset() {
 	v.scrollTop = 0
 	v.hScroll = 0
-	v.gPrimed = false
 }
 
 // HandleKey processes the shared viewport keymap and returns true when a
-// key was consumed. The map matches the de-facto standard across k9s /
-// lazygit / messages-detail: j/k vertical, ctrl+b/f and pgup/pgdn for pages,
-// g/G/home/end for jumps, h/l for hScroll (when wrap off), w toggles wrap.
-// `gg` is a two-key chord — first `g` arms, second fires.
+// key was consumed: j/k vertical, ctrl+b/f and pgup/pgdn for pages,
+// home/end for jumps, h/l for hScroll (when wrap off), w toggles wrap.
 func (v *Viewport) HandleKey(key tea.KeyPressMsg) bool {
 	s := key.String()
-	if v.gPrimed && s != "g" {
-		v.gPrimed = false
-	}
 	switch s {
 	case "j", "down":
 		v.ScrollBy(+1)
@@ -203,15 +195,7 @@ func (v *Viewport) HandleKey(key tea.KeyPressMsg) bool {
 	case "ctrl+b", "pgup":
 		v.PageUp()
 		return true
-	case "g":
-		if v.gPrimed {
-			v.gPrimed = false
-			v.ScrollToTop()
-		} else {
-			v.gPrimed = true
-		}
-		return true
-	case "G", "end":
+	case "end":
 		v.ScrollToBottom()
 		return true
 	case "home":

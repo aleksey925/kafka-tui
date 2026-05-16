@@ -245,7 +245,7 @@ func TestSearchN_JumpsToNextMatch(t *testing.T) {
 	assert.Equal(t, 1, m.Cursor())
 }
 
-func TestNavigation_GgJumpsToTop(t *testing.T) {
+func TestNavigation_HomeJumpsToTop(t *testing.T) {
 	// arrange
 	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\nINFO 4\n")
 	m := logs.New(logs.Options{Path: path})
@@ -254,25 +254,23 @@ func TestNavigation_GgJumpsToTop(t *testing.T) {
 	require.Equal(t, 3, m.Cursor())
 
 	// act
-	_ = m.Update(textKey("g"))
-	_ = m.Update(textKey("g"))
+	_ = m.Update(keyPress("home"))
 
 	// assert
 	assert.Equal(t, 0, m.Cursor())
 }
 
-func TestNavigation_BigGJumpsToBottom(t *testing.T) {
+func TestNavigation_EndJumpsToBottom(t *testing.T) {
 	// arrange
 	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\n")
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	_ = m.Update(textKey("g"))
-	_ = m.Update(textKey("g"))
+	_ = m.Update(keyPress("home"))
 	require.Equal(t, 0, m.Cursor())
 
 	// act
-	_ = m.Update(keyPress("G"))
+	_ = m.Update(keyPress("end"))
 
 	// assert
 	assert.Equal(t, 2, m.Cursor())
@@ -284,8 +282,7 @@ func TestNavigation_JK(t *testing.T) {
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	_ = m.Update(textKey("g"))
-	_ = m.Update(textKey("g"))
+	_ = m.Update(keyPress("home"))
 	require.Equal(t, 0, m.Cursor())
 
 	// act / assert
@@ -371,6 +368,10 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "home":
+		return tea.KeyPressMsg{Code: tea.KeyHome}
+	case "end":
+		return tea.KeyPressMsg{Code: tea.KeyEnd}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])
@@ -397,9 +398,7 @@ func TestNavigation_CtrlFPagesDownAndCtrlBPagesUp(t *testing.T) {
 
 	// the viewer starts at the tail; jump to the top first so ctrl+f has
 	// somewhere to advance into.
-	for range 2 {
-		_ = m.Update(keyPress("g"))
-	}
+	_ = m.Update(keyPress("home"))
 	require.Equal(t, 0, m.Cursor())
 
 	_ = m.Update(ctrlKey('f'))

@@ -91,6 +91,10 @@ func (m *Model) routeMessagesAction(s *messages.Model) tea.Cmd {
 	case a.Back:
 		m.popScreen()
 		return m.activeInit()
+	case a.Groups != "":
+		m.lastTopic = a.Groups
+		m.navGroupFilter = a.Groups
+		return m.pushScreenCmd(ScreenGroups)
 	case a.Produce != "":
 		m.lastTopic = a.Produce
 		m.navTopic = a.Produce

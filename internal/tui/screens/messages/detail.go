@@ -99,7 +99,6 @@ type DetailModel struct {
 
 	width, height int
 	viewport      *components.Viewport
-	gPrimed       bool
 
 	// copyMenu is non-nil only while the `c` popup is open; while open,
 	// it owns the entire input stream of the detail screen (see
@@ -231,9 +230,7 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: d.actScrollUp},
 		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: d.actPageDown},
 		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: d.actPageUp},
-		// `gg` is a two-key chord — first press arms, second fires.
-		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Handler: d.actChordG},
-		{Keys: []string{"G", "end"}, Label: "scroll to bottom", Category: "Movement", Handler: d.actScrollBottom},
+		{Keys: []string{"end"}, Label: "scroll to bottom", Category: "Movement", Handler: d.actScrollBottom},
 		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Handler: d.actScrollTop},
 		{Keys: []string{"h", "left"}, Label: "scroll left (no-wrap)", Category: "Movement", Handler: d.actHScrollLeft},
 		{Keys: []string{"l", "right"}, Label: "scroll right (no-wrap)", Category: "Movement", Handler: d.actHScrollRight},
@@ -286,26 +283,12 @@ func (d *DetailModel) actHScrollRight() tea.Cmd {
 	return nil
 }
 
-func (d *DetailModel) actChordG() tea.Cmd {
-	if d.gPrimed {
-		d.gPrimed = false
-		d.viewport.ScrollToTop()
-		return nil
-	}
-	d.gPrimed = true
-	return nil
-}
-
 func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case EditorOpenedMsg:
 		d.handleEditorOpened(msg)
 		return d, nil
 	case tea.KeyPressMsg:
-		// non-`g` disarms the gg chord.
-		if d.gPrimed && msg.String() != "g" {
-			d.gPrimed = false
-		}
 		// the copy popup owns the input stream while open; no
 		// detail-screen bindings (n/p/1/2/3/scroll/etc.) are evaluated,
 		// so digits route to menu items without colliding with view-mode

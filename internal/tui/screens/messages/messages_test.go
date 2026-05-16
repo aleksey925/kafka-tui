@@ -87,6 +87,12 @@ func TestEsc_RaisesBackAction(t *testing.T) {
 	assert.True(t, m.ConsumeAction().Back)
 }
 
+func TestG_RaisesGroupsAction(t *testing.T) {
+	m := buildModelWith(t)
+	_ = m.Update(keyPress("g"))
+	assert.Equal(t, "orders", m.ConsumeAction().Groups)
+}
+
 func TestEnter_OpensDetailView(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte(`{"k":"v"}`)},
@@ -1441,6 +1447,10 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "home":
+		return tea.KeyPressMsg{Code: tea.KeyHome}
+	case "end":
+		return tea.KeyPressMsg{Code: tea.KeyEnd}
 	}
 	if len(name) == 1 {
 		r := rune(name[0])
@@ -1754,11 +1764,10 @@ func TestDetail_VerticalScroll_JumpsAndClamps(t *testing.T) {
 	assert.Equal(t, 1, d.ScrollOffset())
 	_ = m.Update(keyPressRune('k'))
 	assert.Equal(t, 0, d.ScrollOffset())
-	_ = m.Update(keyPressRune('G'))
+	_ = m.Update(keyPress("end"))
 	_, last, total, ok := d.ScrollSummary()
 	require.True(t, ok)
 	assert.Equal(t, total, last)
-	_ = m.Update(keyPressRune('g'))
-	_ = m.Update(keyPressRune('g'))
+	_ = m.Update(keyPress("home"))
 	assert.Equal(t, 0, d.ScrollOffset())
 }

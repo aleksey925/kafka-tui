@@ -37,17 +37,14 @@ func TestTable_NavigationArrows(t *testing.T) {
 	assert.Equal(t, 1, tbl.Cursor())
 }
 
-func TestTable_NavigationGGandG(t *testing.T) {
+func TestTable_NavigationHomeEnd(t *testing.T) {
 	tbl := components.NewTable(simpleColumns())
 	tbl.SetRows(simpleRows(20))
 
-	tbl, _ = tbl.Update(keyPressMsg("G"))
+	tbl, _ = tbl.Update(keyPressMsg("end"))
 	assert.Equal(t, 19, tbl.Cursor())
 
-	// gg returns to top after two presses
-	tbl, _ = tbl.Update(keyPressMsg("g"))
-	assert.Equal(t, 19, tbl.Cursor()) // first g primes only
-	tbl, _ = tbl.Update(keyPressMsg("g"))
+	tbl, _ = tbl.Update(keyPressMsg("home"))
 	assert.Equal(t, 0, tbl.Cursor())
 }
 
@@ -76,7 +73,7 @@ func TestTable_NavigationClampsAtEdges(t *testing.T) {
 	tbl, _ = tbl.Update(keyPressMsg("k"))
 	assert.Equal(t, 0, tbl.Cursor())
 
-	tbl, _ = tbl.Update(keyPressMsg("G"))
+	tbl, _ = tbl.Update(keyPressMsg("end"))
 	tbl, _ = tbl.Update(keyPressMsg("j"))
 	assert.Equal(t, 2, tbl.Cursor())
 }

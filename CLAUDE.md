@@ -128,8 +128,8 @@ Long content is bounded along the dimension it overflows on:
 
 - **Vertical overflow** (textareas, message detail, log tail, multi-row
   lists) — rendered through a bounded viewport with a single scroll keymap:
-  `j` / `k`, `pgup` / `pgdn`, `ctrl+b` / `ctrl+f`, `g` / `G`, `home` /
-  `end`, plus `w` to toggle wrap. When a cursor is present (INSERT in
+  `j` / `k`, `pgup` / `pgdn`, `ctrl+b` / `ctrl+f`, `home` / `end`, plus
+  `w` to toggle wrap. When a cursor is present (INSERT in
   forms, the selected row in logs) the window auto-follows it; otherwise
   it stays put and responds to explicit scroll keys.
 - **Horizontal overflow** (table cells, frame chrome, single-line previews

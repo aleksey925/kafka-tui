@@ -53,8 +53,6 @@ type Model struct {
 	matches     []int
 	matchCursor int
 
-	gPrimed bool
-
 	width, height int
 
 	toasts *components.Toasts
@@ -191,9 +189,8 @@ func (m *Model) bindings() []keymap.Binding {
 		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: m.actMoveUp},
 		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
 		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
-		// `gg` is a two-key chord; first `g` arms, second fires.
-		{Keys: []string{"g"}, Label: "scroll to top (gg)", Category: "Movement", Hint: true, Handler: m.actChordG},
-		{Keys: []string{"G"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
+		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Hint: true, Handler: m.actScrollTop},
+		{Keys: []string{"end"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Logs", Handler: m.actBack},
 		{Keys: []string{"/"}, Label: "filter lines", Category: "Search", Hint: true},
 	}
@@ -212,14 +209,9 @@ func (m *Model) actScrollBottom() tea.Cmd {
 	return nil
 }
 
-func (m *Model) actChordG() tea.Cmd {
-	if m.gPrimed {
-		m.gPrimed = false
-		m.cursor = 0
-		m.syncViewport()
-		return nil
-	}
-	m.gPrimed = true
+func (m *Model) actScrollTop() tea.Cmd {
+	m.cursor = 0
+	m.syncViewport()
 	return nil
 }
 
@@ -243,18 +235,6 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
-	}
-	if m.gPrimed {
-		m.gPrimed = false
-		if key.String() == "g" {
-			m.cursor = 0
-			m.syncViewport()
-			return nil
-		}
-	}
-	// non-`g` disarms the gg chord so the next `g` doesn't silently fire.
-	if m.gPrimed && key.String() != "g" {
-		m.gPrimed = false
 	}
 	if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
 		return cmd
