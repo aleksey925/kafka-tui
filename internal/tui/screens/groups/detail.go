@@ -110,8 +110,8 @@ func topicColumns() []components.Column {
 	return []components.Column{
 		{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
 		{Title: "Partitions", Width: 10, Sortable: true},
-		{Title: "Total Lag", Width: 12, Sortable: true},
 		{Title: "Members", Width: 10, Sortable: true},
+		{Title: "Total Lag", Width: 12, Sortable: true},
 	}
 }
 
@@ -120,8 +120,8 @@ func partColumns() []components.Column {
 		{Title: "Partition", Width: 9, Sortable: true},
 		{Title: "Committed", Width: 14, Sortable: true},
 		{Title: "End", Width: 14, Sortable: true},
-		{Title: "Lag", Width: 14, Sortable: true},
 		{Title: "Member", Flex: true, MinWidth: 20, Sortable: true},
+		{Title: "Lag", Width: 14, Sortable: true},
 	}
 }
 
@@ -514,8 +514,8 @@ func buildTopicRows(rows []kafka.PartitionLag, partitions map[string][]int32) []
 			Values: []string{
 				topic,
 				strconv.Itoa(partCount),
-				lagCell(totalLag),
 				strconv.Itoa(len(members)),
+				lagCell(totalLag),
 			},
 		})
 	}
@@ -541,8 +541,8 @@ func buildPartitionRows(rows []kafka.PartitionLag, topic string) []components.Ro
 				strconv.FormatInt(int64(p.Partition), 10),
 				offsetCell(p.Committed),
 				offsetCell(p.End),
-				lagCell(p.Lag),
 				p.MemberID,
+				lagCell(p.Lag),
 			},
 		})
 	}
