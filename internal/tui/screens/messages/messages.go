@@ -180,6 +180,10 @@ type Model struct {
 	seekPopup       *seekPopup
 	partitionsPopup *partitionsPopup
 	smartFilterOpen bool
+	// copyMenu is the shared 4-item copy popup. The same component is
+	// wired into the detail screen so the popup behaves identically
+	// regardless of where the user pressed `c`.
+	copyMenu *CopyMenu
 
 	width, height int
 
@@ -240,6 +244,7 @@ func New(opts Options) *Model {
 		seek:       SeekState{Mode: SeekLatest},
 		lifeCtx:    lifeCtx,
 		lifeCancel: lifeCancel,
+		copyMenu:   NewCopyMenu(opts.Clipboard, styles),
 	}
 }
 
@@ -328,6 +333,10 @@ func (m *Model) ConsumeAction() Action {
 
 func (m *Model) CurrentMode() Mode { return m.mode }
 
+// CopyMenuOpen reports whether the list's copy popup is currently
+// displayed. Exposed for tests; mirrors [DetailModel.CopyMenuOpen].
+func (m *Model) CopyMenuOpen() bool { return m.copyMenu.IsOpen() }
+
 func (m *Model) Detail() *DetailModel { return m.detail }
 
 func (m *Model) Following() bool { return m.live }
@@ -405,6 +414,9 @@ func (m *Model) ActiveFilter() string {
 }
 
 func (m *Model) HasOverlay() bool {
+	if m.copyMenu.IsOpen() {
+		return true
+	}
 	return m.mode == ModeDetail || m.mode == ModeSeek || m.mode == ModePartitions || m.mode == ModeSmartFilter
 }
 
@@ -448,6 +460,11 @@ func (m *Model) HelpSections() []help.Section {
 }
 
 func (m *Model) activeBindings() []keymap.Binding {
+	// the copy popup overlays the list — surface its bindings so the
+	// hints bar and help screen reflect what actually fires.
+	if m.copyMenu.IsOpen() {
+		return m.copyMenu.Bindings()
+	}
 	switch m.mode {
 	case ModeList:
 		return m.listBindings()
@@ -468,6 +485,7 @@ func (m *Model) activeBindings() []keymap.Binding {
 func (m *Model) listBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "open message detail", Category: "Browse", Hint: true, Handler: func() tea.Cmd { m.openDetail(); return nil }},
+		{Keys: []string{"c"}, Label: "copy record", Category: "Browse", Hint: true, Handler: m.actCopy},
 		{Keys: []string{"g"}, Label: "consumer groups for topic", Category: "Browse", Hint: true, Handler: m.actGroups},
 		{Keys: []string{"["}, Label: "previous page", Category: "Browse", Hint: true, Handler: m.loadEarlier},
 		{Keys: []string{"]"}, Label: "next page", Category: "Browse", Hint: true, Handler: m.loadLater},
@@ -739,6 +757,12 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
+	// copy popup overlays the list and owns the input stream while open
+	// — checked before the mode switch so the list's own bindings (incl.
+	// the digits that the menu uses to select items) don't fire.
+	if m.copyMenu.IsOpen() {
+		return m.handleCopyKey(key)
+	}
 	switch m.mode {
 	case ModeList:
 		return m.handleListKey(key)
@@ -760,6 +784,34 @@ func (m *Model) handleListKey(key tea.KeyPressMsg) tea.Cmd {
 	}
 	tbl, _ := m.table.Update(key)
 	m.table = tbl
+	return nil
+}
+
+func (m *Model) actCopy() tea.Cmd {
+	if _, ok := m.selected(); !ok {
+		return nil
+	}
+	m.copyMenu.Open()
+	return nil
+}
+
+func (m *Model) handleCopyKey(key tea.KeyPressMsg) tea.Cmd {
+	msg, ok := m.selected()
+	if !ok {
+		// the selected row vanished between Open and this keypress
+		// (unlikely — popup steals input — but live refresh could in
+		// principle drop the underlying message). Close defensively so
+		// the user isn't trapped in a popup with no target.
+		m.copyMenu.Close()
+		return nil
+	}
+	res := m.copyMenu.Update(key, msg)
+	if res.Toast != "" {
+		m.toasts.Push(components.ToastSuccess, res.Toast)
+	}
+	if res.Warn != "" {
+		m.toasts.Push(components.ToastWarning, res.Warn)
+	}
 	return nil
 }
 
@@ -1800,6 +1852,9 @@ func (m *Model) View() string {
 		return m.detail.View()
 	}
 	header := m.renderStateHeader()
+	if m.copyMenu.IsOpen() {
+		return header + "\n" + m.placePopupInBody(m.copyMenu.View(0))
+	}
 	switch m.mode {
 	case ModeList, ModeDetail:
 	case ModeSeek:

@@ -88,7 +88,6 @@ type DetailModel struct {
 	messages  []kafka.Message
 	index     int
 	readOnly  bool
-	clipboard Clipboard
 	writer    FileWriter
 	pager     PagerOpener
 	outputDir string
@@ -100,20 +99,10 @@ type DetailModel struct {
 	width, height int
 	viewport      *components.Viewport
 
-	// copyMenu is non-nil only while the `c` popup is open; while open,
-	// it owns the entire input stream of the detail screen (see
-	// handleCopyMenu).
-	copyMenu *components.Menu
+	// copyMenu owns the `c` popup and the clipboard dispatch — the model
+	// only holds a reference and routes keys to it via handleCopyKey.
+	copyMenu *CopyMenu
 }
-
-// indices of the items built in openCopyMenu — used by
-// dispatchCopySelection to route the selected payload.
-const (
-	copyItemRecord = iota
-	copyItemKey
-	copyItemValue
-	copyItemHeaders
-)
 
 func NewDetailModel(opts DetailOptions) *DetailModel {
 	now := opts.Now
@@ -148,7 +137,6 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		messages:  append([]kafka.Message(nil), opts.Messages...),
 		index:     idx,
 		readOnly:  opts.ReadOnly,
-		clipboard: opts.Clipboard,
 		writer:    writer,
 		pager:     pager,
 		outputDir: dir,
@@ -156,6 +144,7 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		styles:    styles,
 		now:       now,
 		viewport:  vp,
+		copyMenu:  NewCopyMenu(opts.Clipboard, styles),
 	}
 }
 
@@ -213,8 +202,8 @@ func (d *DetailModel) bindings() []keymap.Binding {
 	// while the copy popup owns input, advertise its bindings instead
 	// of the screen's normal set — same pattern as messages.go seek
 	// popup. Keeps the hints bar and help screen accurate.
-	if d.copyMenu != nil {
-		return d.copyMenu.Bindings("Copy")
+	if d.copyMenu.IsOpen() {
+		return d.copyMenu.Bindings()
 	}
 	bs := []keymap.Binding{
 		{Keys: []string{"n"}, Label: "next message", Category: "Browse", Hint: true, Handler: d.actNext},
@@ -261,7 +250,7 @@ func (d *DetailModel) actViewJSON() tea.Cmd   { d.setView(ViewJSON); return nil 
 func (d *DetailModel) actViewRaw() tea.Cmd    { d.setView(ViewRaw); return nil }
 func (d *DetailModel) actViewHex() tea.Cmd    { d.setView(ViewHex); return nil }
 func (d *DetailModel) actToggleWrap() tea.Cmd { d.toggleWrap(); return nil }
-func (d *DetailModel) actCopy() tea.Cmd       { d.openCopyMenu(); return nil }
+func (d *DetailModel) actCopy() tea.Cmd       { d.copyMenu.Open(); return nil }
 func (d *DetailModel) actSaveRecord() tea.Cmd { d.saveRecord(); return nil }
 func (d *DetailModel) actEditor() tea.Cmd     { return d.openEditor() }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
@@ -294,8 +283,8 @@ func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 		// so digits route to menu items without colliding with view-mode
 		// shortcuts. Globals are handled at the host level before this
 		// point, so :/?/ctrl+r/ctrl+c still fire normally.
-		if d.copyMenu != nil {
-			d.handleCopyMenu(msg)
+		if d.copyMenu.IsOpen() {
+			d.handleCopyKey(msg)
 			return d, nil
 		}
 		keymap.Dispatch(d.bindings(), msg)
@@ -342,91 +331,25 @@ func (d *DetailModel) refresh() {
 	d.viewport.SetLines(logical)
 }
 
-func (d *DetailModel) copy(payload, label string) {
-	if d.clipboard == nil {
-		d.action.Warn = "copy " + label + ": clipboard unavailable"
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := d.clipboard.Copy(ctx, payload); err != nil {
-		d.action.Warn = "copy " + label + ": " + err.Error()
-		return
-	}
-	d.action.Toast = "copied " + label + " (" + strconv.Itoa(len(payload)) + " bytes)"
-}
-
 // CopyMenuOpen reports whether the copy popup is currently displayed.
 // Exposed for tests.
-func (d *DetailModel) CopyMenuOpen() bool { return d.copyMenu != nil }
+func (d *DetailModel) CopyMenuOpen() bool { return d.copyMenu.IsOpen() }
 
-func (d *DetailModel) openCopyMenu() {
+func (d *DetailModel) handleCopyKey(key tea.KeyPressMsg) {
 	if len(d.messages) == 0 {
+		// dispatch would copy a zero-value record; close instead so the
+		// user isn't trapped in a menu without a target. Matches the
+		// list-screen handleCopyKey defensive close.
+		d.copyMenu.Close()
 		return
 	}
-	items := []components.MenuItem{
-		{Label: "Record (with metadata)"},
-		{Label: "Key"},
-		{Label: "Value"},
-		{Label: "Headers"},
+	res := d.copyMenu.Update(key, d.Current())
+	if res.Toast != "" {
+		d.action.Toast = res.Toast
 	}
-	d.copyMenu = components.NewMenu(items,
-		components.WithMenuStyles(d.styles),
-		components.WithMenuTitle("Copy"),
-	)
-}
-
-func (d *DetailModel) handleCopyMenu(key tea.KeyPressMsg) {
-	d.copyMenu, _ = d.copyMenu.Update(key)
-	if d.copyMenu.Canceled() {
-		d.copyMenu = nil
-		return
+	if res.Warn != "" {
+		d.action.Warn = res.Warn
 	}
-	if idx, _, ok := d.copyMenu.Selected(); ok {
-		d.dispatchCopySelection(idx)
-		d.copyMenu = nil
-	}
-}
-
-func (d *DetailModel) dispatchCopySelection(idx int) {
-	cur := d.Current()
-	switch idx {
-	case copyItemRecord:
-		meta := recordfmt.Metadata{
-			Topic:     cur.Topic,
-			Partition: cur.Partition,
-			Offset:    cur.Offset,
-			Timestamp: cur.Timestamp,
-		}
-		blob := recordfmt.EncodeWithMetadata(string(cur.Key), cur.Headers, cur.Value, meta)
-		d.copy(string(blob), "record")
-	case copyItemKey:
-		d.copy(string(cur.Key), "key")
-	case copyItemValue:
-		d.copy(string(cur.Value), "value")
-	case copyItemHeaders:
-		d.copy(copyHeadersPayload(cur.Headers), "headers")
-	default:
-		// new menu items must be added to both openCopyMenu and this
-		// switch — surface the gap as a warning instead of silently
-		// dropping the user's keystroke.
-		d.action.Warn = fmt.Sprintf("copy: unknown menu index %d", idx)
-	}
-}
-
-// copyHeadersPayload renders the headers section as `name=value\n` per
-// line — same shape as the `# Headers` section in the recordfmt format,
-// so a paste into the produce form / editor lands cleanly. Distinct
-// from the on-screen [headersText] which quotes values for display.
-func copyHeadersPayload(headers []kafka.Header) string {
-	var b strings.Builder
-	for _, h := range headers {
-		b.WriteString(h.Key)
-		b.WriteByte('=')
-		b.Write(h.Value)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func (d *DetailModel) saveRecord() {
@@ -502,7 +425,7 @@ func (d *DetailModel) View() string {
 	if len(d.messages) == 0 {
 		return d.styles.StatusInfo.Render("(no message)")
 	}
-	if d.copyMenu != nil {
+	if d.copyMenu.IsOpen() {
 		// modal: show the record header for orientation, then center
 		// the popup over the body. Viewport content is hidden until
 		// the popup closes.

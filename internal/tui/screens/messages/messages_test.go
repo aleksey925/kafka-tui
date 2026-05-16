@@ -1463,6 +1463,113 @@ func keyPressRune(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
+// ----- list-screen copy tests -----
+
+func TestList_CopyOpensOnC(t *testing.T) {
+	// arrange
+	cb := &fakeClipboard{}
+	m := buildListWithCopy(t, cb, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("payload")},
+	})
+
+	// act
+	_ = m.Update(keyPressRune('c'))
+
+	// assert
+	assert.True(t, m.CopyMenuOpen())
+	assert.Empty(t, cb.payloads, "popup just opens; no copy until the user picks an item")
+}
+
+func TestList_CopyDispatchesValueOnDigit3(t *testing.T) {
+	// arrange
+	cb := &fakeClipboard{}
+	m := buildListWithCopy(t, cb, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("payload")},
+	})
+	toastsBefore := m.Toasts().Len()
+
+	// act
+	_ = m.Update(keyPressRune('c'))
+	_ = m.Update(keyPressRune('3'))
+
+	// assert
+	assert.False(t, m.CopyMenuOpen())
+	require.Len(t, cb.payloads, 1)
+	assert.Equal(t, "payload", cb.payloads[0])
+	require.Greater(t, m.Toasts().Len(), toastsBefore)
+	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "copied value")
+}
+
+func TestList_CopyEscCancels(t *testing.T) {
+	// arrange
+	cb := &fakeClipboard{}
+	m := buildListWithCopy(t, cb, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("v")},
+	})
+
+	// act
+	_ = m.Update(keyPressRune('c'))
+	require.True(t, m.CopyMenuOpen())
+	_ = m.Update(keyPress("esc"))
+
+	// assert
+	assert.False(t, m.CopyMenuOpen())
+	assert.Empty(t, cb.payloads)
+}
+
+func TestList_CopyOnEmptyList_NoOp(t *testing.T) {
+	// arrange
+	cb := &fakeClipboard{}
+	m := buildListWithCopy(t, cb, nil)
+
+	// act
+	_ = m.Update(keyPressRune('c'))
+
+	// assert: actCopy guards on selected() — empty list means no cursor,
+	// so the popup never opens.
+	assert.False(t, m.CopyMenuOpen())
+}
+
+func TestList_CopySharesDispatchWithDetail(t *testing.T) {
+	// The list and detail screens must produce byte-identical clipboard
+	// payloads for the same record — both route through CopyMenu. This
+	// is the cross-screen invariant the refactor was meant to preserve.
+
+	// arrange
+	msg := kafka.Message{
+		Topic:     "orders",
+		Partition: 0,
+		Offset:    1,
+		Key:       []byte("order-42"),
+		Value:     []byte("payload"),
+		Headers:   []kafka.Header{{Key: "source", Value: []byte("web")}},
+	}
+	listCb := &fakeClipboard{}
+	list := buildListWithCopy(t, listCb, []kafka.Message{msg})
+	detailCb := &fakeClipboard{}
+	detail := newDetail(t, detailCb, []kafka.Message{msg})
+
+	// act: copy the full record from both
+	_ = list.Update(keyPressRune('c'))
+	_ = list.Update(keyPressRune('1'))
+	_, _ = detail.Update(keyPressRune('c'))
+	_, _ = detail.Update(keyPressRune('1'))
+
+	// assert
+	require.Len(t, listCb.payloads, 1)
+	require.Len(t, detailCb.payloads, 1)
+	assert.Equal(t, detailCb.payloads[0], listCb.payloads[0])
+}
+
+func buildListWithCopy(t *testing.T, cb *fakeClipboard, msgs []kafka.Message) *messages.Model {
+	t.Helper()
+	svc := newFakeService()
+	svc.lastN = msgs
+	m := messages.New(messages.Options{Service: svc, Topic: "orders", Clipboard: cb})
+	drive(t, m, m.Init())
+	return m
+}
+
 // ----- detail tests (preserved from previous suite) -----
 
 func newDetail(t *testing.T, cb messages.Clipboard, msgs []kafka.Message) *messages.DetailModel {
