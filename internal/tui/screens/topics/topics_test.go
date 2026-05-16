@@ -67,6 +67,15 @@ func TestNew_DefaultColumns(t *testing.T) {
 	assert.Contains(t, out, "Size")
 }
 
+func TestTopics_BreadcrumbIsEmpty(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "alpha", Partitions: 1, Replicas: 1},
+	}, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+	assert.Empty(t, m.Breadcrumb())
+}
+
 func TestInit_LoadsTopicsAndShowsCounter(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{
 		{Name: "alpha", Partitions: 1, Replicas: 1},

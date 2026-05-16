@@ -232,11 +232,14 @@ func (m *Model) Cursor() int { return m.table.Cursor() }
 
 func (m *Model) Title() string {
 	visible := len(m.visibleTopics())
-	body := fmt.Sprintf("Topics [%d]", visible)
-	if q := m.table.Search(); q != "" {
-		body = fmt.Sprintf("Topics [%d/%d] </%s>", m.table.FilteredCount(), visible, q)
-	} else if m.hiddenIntern > 0 {
+	q := m.table.Search()
+	// hidden-internal count only makes sense without an active filter — once
+	// the user is searching, the filtered count is the headline.
+	var body string
+	if q == "" && m.hiddenIntern > 0 {
 		body = fmt.Sprintf("Topics [%d, +%d internal hidden]", visible, m.hiddenIntern)
+	} else {
+		body = "Topics " + layout.Counter(q, m.table.FilteredCount(), visible)
 	}
 	if m.loading {
 		body += " (loading…)"
@@ -244,13 +247,7 @@ func (m *Model) Title() string {
 	return body
 }
 
-func (m *Model) Breadcrumb() string {
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		return ""
-	}
-	return row.ID
-}
+func (m *Model) Breadcrumb() string { return "" }
 
 func (m *Model) ShowInternal() bool { return m.showInternal }
 

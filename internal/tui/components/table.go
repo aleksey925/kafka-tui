@@ -515,15 +515,13 @@ func (t *Table) computeWidths() []int {
 		fixedTotal += 2
 	}
 	if t.width > 0 && len(flexIdxs) > 0 {
-		// row layout: 2-col cursor gutter + optional "[ ] " (4 cols) +
-		// per-column "  " separators.
+		// row layout: optional "[ ] " (4 cols) + per-column "  " separators.
 		separators := 2 * (len(t.columns) - 1)
-		gutter := 2
 		prefix := 0
 		if t.selectable {
 			prefix = 4
 		}
-		leftover := t.width - fixedTotal - separators - gutter - prefix
+		leftover := t.width - fixedTotal - separators - prefix
 		if leftover > 0 {
 			share := leftover / len(flexIdxs)
 			extra := leftover % len(flexIdxs)
@@ -551,12 +549,12 @@ func (t *Table) renderHeader(widths []int) string {
 		}
 		cells[i] = padCell(title, widths[i], c.Align)
 	}
-	// align with row content: 2-col cursor gutter + multi-select prefix.
-	gutter := "  "
+	// align over the row's "[ ] " multi-select prefix when selectable.
+	prefix := ""
 	if t.selectable {
-		gutter += "    "
+		prefix = "    "
 	}
-	return t.styles.HelpTitle.Render(gutter + strings.Join(cells, "  "))
+	return t.styles.HelpTitle.Render(prefix + strings.Join(cells, "  "))
 }
 
 func (t *Table) renderRow(viewIdx int, widths []int) string {
@@ -570,15 +568,6 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		cells[i] = padCell(v, widths[i], c.Align)
 	}
-	// 2-col gutter: styled arrow on the cursor row, blank elsewhere. A
-	// discrete pointer is used instead of row inversion which mangles
-	// colored cell glyphs (status dots, swatches).
-	var gutter string
-	if viewIdx == t.cursor {
-		gutter = t.styles.HintKey.Render("▶ ")
-	} else {
-		gutter = "  "
-	}
 	prefix := ""
 	if t.selectable {
 		mark := " "
@@ -587,7 +576,48 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 		}
 		prefix = "[" + mark + "] "
 	}
-	return gutter + prefix + strings.Join(cells, "  ")
+	line := prefix + strings.Join(cells, "  ")
+	if viewIdx != t.cursor {
+		return line
+	}
+	// k9s-style highlight: bg-only style preserves per-cell foreground
+	// colors (cluster swatches, group state). Pad to t.width so the
+	// background spans the full table interior when the host sized us.
+	if t.width > 0 {
+		if w := lipgloss.Width(line); w < t.width {
+			line += strings.Repeat(" ", t.width-w)
+		}
+	}
+	return applyRowHighlight(t.styles.TableCursor, line)
+}
+
+// applyRowHighlight wraps line with style's background, re-applying the
+// bg SGR after every inner SGR reset so per-cell fg-styled glyphs
+// (cluster swatches, group state) don't punch holes in the highlight.
+//
+// lipgloss v2 emits "\x1b[m" (short form) as its only reset; "\x1b[0m"
+// is also handled for robustness against pre-styled content originating
+// outside lipgloss. Compound resets like "\x1b[0;1m" or bare bg-default
+// "\x1b[49m" are not handled — lipgloss does not produce them today.
+//
+// The opening SGR is extracted by probing the style with a sentinel
+// character and slicing what lipgloss put in front of it. The sentinel
+// is SOH (0x01) rather than NUL (0x00) so we don't tempt future
+// C-string-aware sanitizers; the regression test
+// TestTable_CursorRowHighlightSurvivesNestedANSIResets catches silent
+// breakage if the probe ever stops returning the prefix.
+func applyRowHighlight(style lipgloss.Style, line string) string {
+	const sentinel = "\x01"
+	probe := style.Render(sentinel)
+	idx := strings.Index(probe, sentinel)
+	if idx <= 0 {
+		// no SGR emitted (style disabled / no color) — render as-is.
+		return style.Render(line)
+	}
+	openSGR := probe[:idx]
+	line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+openSGR)
+	line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+openSGR)
+	return openSGR + line + "\x1b[0m"
 }
 
 func padCell(s string, width int, align lipgloss.Position) string {

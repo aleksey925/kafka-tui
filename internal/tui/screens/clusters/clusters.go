@@ -304,20 +304,10 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 }
 
 func (m *Model) Title() string {
-	total := len(m.clusters)
-	if q := m.table.Search(); q != "" {
-		return fmt.Sprintf("Clusters [%d/%d] </%s>", m.table.FilteredCount(), total, q)
-	}
-	return fmt.Sprintf("Clusters [%d]", total)
+	return "Clusters " + layout.Counter(m.table.Search(), m.table.FilteredCount(), len(m.clusters))
 }
 
-func (m *Model) Breadcrumb() string {
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		return ""
-	}
-	return row.ID
-}
+func (m *Model) Breadcrumb() string { return "" }
 
 func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 

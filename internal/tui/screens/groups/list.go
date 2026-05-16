@@ -220,34 +220,18 @@ func (m *Model) Title() string {
 		}
 	case ModeList:
 	}
-	total := len(m.groups)
-	body := fmt.Sprintf("Consumer Groups [%d]", total)
+	prefix := "Consumer Groups"
 	if m.filterTopic != "" {
-		body = fmt.Sprintf("Consumer Groups · %s [%d]", m.filterTopic, total)
+		prefix += " · " + m.filterTopic
 	}
-	if q := m.table.Search(); q != "" {
-		prefix := "Consumer Groups"
-		if m.filterTopic != "" {
-			prefix = "Consumer Groups · " + m.filterTopic
-		}
-		body = fmt.Sprintf("%s [%d/%d] </%s>", prefix, m.table.FilteredCount(), total, q)
-	}
+	body := prefix + " " + layout.Counter(m.table.Search(), m.table.FilteredCount(), len(m.groups))
 	if m.loading {
 		body += " (loading…)"
 	}
 	return body
 }
 
-func (m *Model) Breadcrumb() string {
-	if m.mode != ModeList {
-		return ""
-	}
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		return ""
-	}
-	return row.ID
-}
+func (m *Model) Breadcrumb() string { return "" }
 
 // LatestFlash returns the freshest live toast from the active sub-mode's queue.
 func (m *Model) LatestFlash() (components.Toast, bool) {

@@ -98,6 +98,13 @@ func TestTitle_AppliesAngleBracketFilter(t *testing.T) {
 	assert.Contains(t, m.Title(), "Consumer Groups [1/2] </g1>")
 }
 
+func TestGroups_BreadcrumbIsEmptyInList(t *testing.T) {
+	m := buildModelWith(t, []kafka.GroupListInfo{
+		{Group: "g1", State: "Stable", Coordinator: 1},
+	})
+	assert.Empty(t, m.Breadcrumb())
+}
+
 func TestInit_FilterTopicShowsHeader(t *testing.T) {
 	svc := newFakeService()
 	svc.filteredGroups = map[string][]kafka.GroupListInfo{

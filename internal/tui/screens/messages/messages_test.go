@@ -1704,16 +1704,38 @@ func TestDetailEsc_ReturnsToList(t *testing.T) {
 	assert.Equal(t, messages.ModeList, m.CurrentMode())
 }
 
-func TestMessages_BreadcrumbTracksDetailNavigation(t *testing.T) {
+func TestMessages_BreadcrumbInDetailUsesHumanFormat(t *testing.T) {
 	m := buildModelWithMessages(t, []kafka.Message{
 		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
 		{Topic: "orders", Partition: 2, Offset: 42, Value: []byte("b")},
 	})
 	m.SetSize(80, 20)
 	_ = m.Update(keyPress("enter"))
-	require.Equal(t, "msg-0-1", m.Breadcrumb())
+	require.Equal(t, "part 0, offset 1", m.Breadcrumb())
 	_ = m.Update(keyPressRune('n'))
-	assert.Equal(t, "msg-2-42", m.Breadcrumb())
+	assert.Equal(t, "part 2, offset 42", m.Breadcrumb())
+}
+
+func TestMessages_BreadcrumbInListIsEmpty(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
+	})
+	m.SetSize(80, 20)
+	assert.Empty(t, m.Breadcrumb())
+}
+
+func TestMessages_DetailTitleDropsLineCounter(t *testing.T) {
+	m := buildModelWithMessages(t, []kafka.Message{
+		{Topic: "orders", Partition: 0, Offset: 1, Value: []byte("a")},
+	})
+	m.SetSize(80, 20)
+	_ = m.Update(keyPress("enter"))
+	title := m.Title()
+	assert.NotContains(t, title, " · L", "detail title must no longer carry the L%d-%d/%d scroll counter")
+	assert.True(t,
+		strings.Contains(title, " · wrap") || strings.Contains(title, " · nowrap"),
+		"detail title must still carry the wrap/nowrap indicator (got %q)", title,
+	)
 }
 
 // stripANSI removes terminal escape sequences so tests can compare plain text.

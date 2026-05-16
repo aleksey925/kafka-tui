@@ -67,6 +67,15 @@ func TestNew_InitializesUnknownStatusForEveryCluster(t *testing.T) {
 	assert.Equal(t, clusters.StatusUnknown, m.Status("stage"))
 }
 
+func TestClusters_BreadcrumbIsEmpty(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "prod", Brokers: []string{"a:9092"}},
+		},
+	})
+	assert.Empty(t, m.Breadcrumb())
+}
+
 func TestSkipTarget_SingleClusterAutoSkips(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{{Name: "only", Brokers: []string{"a:9092"}}},

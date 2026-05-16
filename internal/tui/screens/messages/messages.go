@@ -354,11 +354,7 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 }
 
 func (m *Model) Title() string {
-	total := len(m.messages)
-	body := fmt.Sprintf("Messages · %s [%d]", m.topic, total)
-	if q := m.table.Search(); q != "" {
-		body = fmt.Sprintf("Messages · %s [%d/%d] </%s>", m.topic, m.table.FilteredCount(), total, q)
-	}
+	body := "Messages · " + m.topic + " " + layout.Counter(m.table.Search(), m.table.FilteredCount(), len(m.messages))
 	if m.Following() {
 		body += " " + liveSpinnerFrame(m.spinnerFrame) + " LIVE"
 	}
@@ -372,28 +368,18 @@ func (m *Model) Title() string {
 }
 
 func (m *Model) detailTitleSuffix() string {
-	out := ""
-	if first, last, total, ok := m.detail.ScrollSummary(); ok {
-		out += fmt.Sprintf(" · L%d-%d/%d", first, last, total)
-	}
 	if m.detail.Wrap() {
-		out += " · wrap"
-	} else {
-		out += " · nowrap"
+		return " · wrap"
 	}
-	return out
+	return " · nowrap"
 }
 
 func (m *Model) Breadcrumb() string {
 	if m.mode == ModeDetail && m.detail != nil {
 		cur := m.detail.Current()
-		return formatRowID(cur.Partition, cur.Offset)
+		return formatRowDisplay(cur.Partition, cur.Offset)
 	}
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		return ""
-	}
-	return row.ID
+	return ""
 }
 
 func (m *Model) Messages() []kafka.Message {
@@ -2083,6 +2069,10 @@ func columnSpec(key string) components.Column {
 
 func formatRowID(partition int32, offset int64) string {
 	return "msg-" + strconv.FormatInt(int64(partition), 10) + "-" + strconv.FormatInt(offset, 10)
+}
+
+func formatRowDisplay(partition int32, offset int64) string {
+	return fmt.Sprintf("part %d, offset %d", partition, offset)
 }
 
 func parseRowID(id string) (int32, int64, bool) {

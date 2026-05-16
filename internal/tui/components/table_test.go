@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -247,9 +248,18 @@ func TestTable_ViewRendersHeaderAndRows(t *testing.T) {
 	assert.Contains(t, out, "state")
 	assert.Contains(t, out, "alpha")
 	assert.Contains(t, out, "beta")
-	// cursor row uses the inverted-bg Cursor style — the ANSI sequence for
-	// the accent background must appear somewhere in the output.
-	assert.Contains(t, out, "\x1b[")
+	// cursor row uses the bg-only TableCursor style. The SGR for a
+	// background color (parameter 48) must appear on the cursor row line.
+	lines := strings.Split(out, "\n")
+	var cursorLine string
+	for _, l := range lines {
+		if strings.Contains(l, "alpha") {
+			cursorLine = l
+			break
+		}
+	}
+	require.NotEmpty(t, cursorLine, "expected to find cursor row containing 'alpha'")
+	assert.Contains(t, cursorLine, "\x1b[48")
 }
 
 func TestTable_ViewEmpty(t *testing.T) {
@@ -528,8 +538,8 @@ func TestTable_AlignsTruncatedWideCharCells(t *testing.T) {
 	out := tbl.View()
 	lines := strings.Split(out, "\n")
 	require.GreaterOrEqual(t, len(lines), 2, "expected at least header + 1 row")
-	// gutter (2) + col-a (4) + separator (2) + col-b (3) = 11 cells.
-	const expected = 11
+	// col-a (4) + separator (2) + col-b (3) = 9 cells.
+	const expected = 9
 	assert.Equal(t, expected, ansi.StringWidth(lines[1]),
 		"wide-char overflow in col-a must pad to the full column width so col-b stays aligned")
 }
@@ -570,4 +580,128 @@ func TestTable_SortArrowDoesNotBreakFlexWidth(t *testing.T) {
 		"header must not exceed SetTotalWidth when sort is active")
 	assert.LessOrEqual(t, ansi.StringWidth(lines[1]), totalWidth,
 		"row must not exceed SetTotalWidth when sort is active")
+}
+
+func TestTable_CursorRowHighlightSpansFullWidth(t *testing.T) {
+	const totalWidth = 40
+	cols := []components.Column{
+		{Title: "name", Flex: true},
+		{Title: "state", Width: 8},
+	}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "ok"}},
+		{ID: "b", Values: []string{"beta", "fail"}},
+	})
+	tbl.SetTotalWidth(totalWidth)
+
+	// act
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+
+	// assert
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + at least one row")
+	cursorLine := lines[1]
+	assert.Contains(t, cursorLine, "\x1b[48", "cursor row must carry a background SGR")
+	assert.Equal(t, totalWidth, ansi.StringWidth(cursorLine),
+		"cursor row must pad to SetTotalWidth so the highlight spans the full interior")
+}
+
+func TestTable_NonCursorRowsNotPadded(t *testing.T) {
+	const totalWidth = 40
+	cols := []components.Column{
+		{Title: "name", Width: 6},
+		{Title: "state", Width: 8},
+	}
+	tbl := components.NewTable(cols)
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "ok"}},
+		{ID: "b", Values: []string{"beta", "fail"}},
+	})
+	tbl.SetTotalWidth(totalWidth)
+
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+	require.GreaterOrEqual(t, len(lines), 3, "expected header + 2 rows")
+	// row at index 2 is the non-cursor row.
+	nonCursor := lines[2]
+	assert.NotContains(t, nonCursor, "\x1b[48", "non-cursor row must not carry a background SGR")
+	assert.Less(t, ansi.StringWidth(nonCursor), totalWidth,
+		"non-cursor row must not be padded to full width")
+}
+
+func TestTable_CursorRowHighlightSurvivesNestedANSIResets(t *testing.T) {
+	const totalWidth = 30
+	cols := []components.Column{
+		{Title: "dot", Width: 1},
+		{Title: "name", Flex: true},
+	}
+	tbl := components.NewTable(cols)
+	// pre-styled cell content emits an inner reset (e.g. cluster swatch
+	// ●). Without re-applying the bg after every such reset, the
+	// highlight would drop right after the styled glyph — leaving only
+	// the first cell painted while "alpha" and trailing padding go
+	// unhighlighted.
+	preStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("#e06c75")).Render("●")
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{preStyled, "alpha"}},
+	})
+	tbl.SetTotalWidth(totalWidth)
+
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + 1 row")
+	cursorLine := lines[1]
+	// any reset that appears before "alpha" must be immediately followed
+	// by a re-applied bg SGR (parameter 48) — otherwise the highlight
+	// breaks right after the styled dot. Both reset forms must be
+	// handled because lipgloss v2 emits the short "\x1b[m" variant.
+	alphaIdx := strings.Index(cursorLine, "alpha")
+	require.Positive(t, alphaIdx, "cursor row must contain 'alpha'")
+	prefix := cursorLine[:alphaIdx]
+	require.True(t,
+		strings.Contains(prefix, "\x1b[0m") || strings.Contains(prefix, "\x1b[m"),
+		"prefix before 'alpha' must contain an inner SGR reset (got %q)", prefix,
+	)
+	for _, reset := range []string{"\x1b[0m", "\x1b[m"} {
+		rest := prefix
+		for {
+			i := strings.Index(rest, reset)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(reset):]
+			// the first ~24 bytes after a reset must contain the bg SGR
+			// (lipgloss emits truecolor as "\x1b[48;2;R;G;Bm", well
+			// under that). Anything else means the bg got dropped.
+			head := rest
+			if len(head) > 24 {
+				head = head[:24]
+			}
+			assert.Contains(t, head, "\x1b[48",
+				"inner %q reset must be followed by a re-applied bg SGR (got %q)", reset, head,
+			)
+		}
+	}
+}
+
+func TestTable_HeaderAlignmentMatchesRowsWithSelectable(t *testing.T) {
+	cols := []components.Column{
+		{Title: "name", Width: 6},
+		{Title: "state", Width: 6},
+	}
+	tbl := components.NewTable(cols, components.WithSelectable(true))
+	tbl.SetRows([]components.Row{
+		{ID: "a", Values: []string{"alpha", "ok"}},
+	})
+
+	out := tbl.View()
+	lines := strings.Split(out, "\n")
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + 1 row")
+	header := ansi.Strip(lines[0])
+	row := ansi.Strip(lines[1])
+	// "name" in the header must sit over "alpha" in the row, both offset
+	// by 4 cells to leave room for the row's "[ ] " multi-select prefix.
+	assert.Equal(t, strings.Index(header, "name"), strings.Index(row, "alpha"),
+		"header 'name' column must align with row 'alpha' content column")
 }

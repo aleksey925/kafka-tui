@@ -150,7 +150,7 @@ func (m *Model) frameOrRaw(body, title, breadcrumb string) string {
 	combined := title
 	if breadcrumb != "" {
 		if combined != "" {
-			combined += "  ·  " + breadcrumb
+			combined += " · " + breadcrumb
 		} else {
 			combined = breadcrumb
 		}
@@ -174,7 +174,7 @@ func (m *Model) renderHelp() string {
 	title := "Help"
 	if m.active != nil {
 		if name := m.active.Title(); name != "" {
-			title = "Help  ·  " + name
+			title = "Help · " + name
 		}
 	}
 

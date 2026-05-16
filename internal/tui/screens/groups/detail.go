@@ -605,7 +605,7 @@ func (d *DetailModel) headerBlock() []string {
 		d.styles.StatusInfo.Render("Members: " + strconv.Itoa(len(d.desc.Members))),
 		d.styles.StatusInfo.Render("Total Lag: " + formatThousands(d.totalLag())),
 	}
-	sep := d.styles.StatusInfo.Render("  ·  ")
+	sep := d.styles.StatusInfo.Render(" · ")
 	return []string{strings.Join(chips, sep), ""}
 }
 

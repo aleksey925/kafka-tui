@@ -137,7 +137,7 @@ type Model struct {
 }
 
 // Topic is intentionally not a form field — it's fixed by the caller
-// (header shows "Produce → <topic>").
+// (header shows "Produce · <topic>").
 const (
 	fieldPartition   = "partition"
 	fieldCompression = "compression"
@@ -320,7 +320,7 @@ func (m *Model) LatestFlash() (components.Toast, bool) {
 }
 
 func (m *Model) Title() string {
-	return "Produce → " + m.topic
+	return "Produce · " + m.topic
 }
 
 func (m *Model) Breadcrumb() string { return "" }

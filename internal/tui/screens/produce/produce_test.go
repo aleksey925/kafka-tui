@@ -47,7 +47,7 @@ func TestNew_RendersHeaderAndFields(t *testing.T) {
 
 	// Topic appears in the screen title (rendered by the host frame), not
 	// as an editable form field.
-	assert.Equal(t, "Produce → orders", m.Title())
+	assert.Equal(t, "Produce · orders", m.Title())
 	for _, want := range []string{"Partition", "Compression", "Key", "Headers", "Value"} {
 		assert.Contains(t, out, want)
 	}
