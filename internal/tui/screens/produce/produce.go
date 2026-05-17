@@ -382,9 +382,9 @@ func (m *Model) globalBindings() []keymap.Binding {
 // is the readline kill-to-line-start handled by the lineedit-backed form.
 func (m *Model) normalBindings() []keymap.Binding {
 	return []keymap.Binding{
-		{Keys: []string{"+", "_", "shift++", "shift+-"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
+		{Keys: []string{"+", "_", "shift++", "shift+-"}, DisplayKeys: []string{"+", "_"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
 		{Keys: []string{"tab", "down", "j"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
-		{Keys: []string{"shift+tab", "up", "k"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
+		{Keys: []string{"shift+tab", "up", "k"}, Label: "previous field", Category: "Form", Hint: true, Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
 		{Keys: []string{"e"}, Label: "open record in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
 		{Keys: []string{"p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},

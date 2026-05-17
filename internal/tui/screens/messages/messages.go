@@ -561,10 +561,10 @@ func (m *Model) partitionsBindings() []keymap.Binding {
 	// keys for the input pane are universal and aren't surfaced here.
 	if m.partitionsPopup != nil && m.partitionsPopup.focus == focusList {
 		bs = append(bs,
-			keymap.Binding{Keys: []string{"space", " "}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
+			keymap.Binding{Keys: []string{"space", " "}, DisplayKeys: []string{"space"}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
 			keymap.Binding{Keys: []string{"a"}, Label: "toggle all", Category: "Partition filter", Handler: m.actPartToggleAll},
-			keymap.Binding{Keys: []string{"up", "k"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
-			keymap.Binding{Keys: []string{"down", "j"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
+			keymap.Binding{Keys: []string{"k", "up"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
+			keymap.Binding{Keys: []string{"j", "down"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
 			keymap.Binding{Keys: []string{"home"}, Label: "first partition", Category: "Partition filter", Handler: m.actPartCursorTo(0)},
 			keymap.Binding{Keys: []string{"end"}, Label: "last partition", Category: "Partition filter", Handler: m.actPartCursorTo(-1)},
 		)

@@ -17,8 +17,15 @@ import (
 // when it fires.
 type Binding struct {
 	// Keys is one or more keystroke strings (matching tea.KeyPressMsg.String()
-	// values). The first entry is the canonical form shown in help / hints.
+	// values). Order matters: the first entry is canonical for [Display];
+	// pick it by context (vim-first for lists, tab-first for form fields).
 	Keys []string
+
+	// DisplayKeys, if non-empty, overrides Keys for [Display] only —
+	// dispatch still uses Keys. Used to suppress protocol-duplicate aliases
+	// of the same physical key from the rendered hint. Must be a subset of
+	// Keys; enforced by [Validate].
+	DisplayKeys []string
 
 	Label string
 
@@ -39,13 +46,17 @@ type Binding struct {
 }
 
 func (b Binding) Display() string {
-	switch len(b.Keys) {
+	keys := b.Keys
+	if len(b.DisplayKeys) > 0 {
+		keys = b.DisplayKeys
+	}
+	switch len(keys) {
 	case 0:
 		return ""
 	case 1:
-		return b.Keys[0]
+		return keys[0]
 	default:
-		return strings.Join(b.Keys, " / ")
+		return strings.Join(keys, " / ")
 	}
 }
 
@@ -96,6 +107,11 @@ func Validate(bindings []Binding) error {
 				continue
 			}
 			seen[k] = b.Display() + " (" + b.Label + ")"
+		}
+		for _, dk := range b.DisplayKeys {
+			if !slices.Contains(b.Keys, dk) {
+				errs = append(errs, fmtIdx(i)+" ("+b.Display()+"): DisplayKeys "+dk+" not in Keys")
+			}
 		}
 	}
 	if len(errs) == 0 {

@@ -156,21 +156,53 @@ func TestValidate_HappyPath(t *testing.T) {
 func TestBinding_Display(t *testing.T) {
 	// arrange
 	cases := []struct {
-		name     string
-		keys     []string
-		expected string
+		name        string
+		keys        []string
+		displayKeys []string
+		expected    string
 	}{
-		{"single", []string{"a"}, "a"},
-		{"alias", []string{"enter", "m"}, "enter / m"},
-		{"empty", nil, ""},
+		{"single", []string{"a"}, nil, "a"},
+		{"alias", []string{"enter", "m"}, nil, "enter / m"},
+		{"empty", nil, nil, ""},
+		{"display_keys_override_to_subset", []string{"+", "_", "shift++", "shift+-"}, []string{"+", "_"}, "+ / _"},
+		{"display_keys_override_to_single", []string{"space", " "}, []string{"space"}, "space"},
+		{"display_keys_empty_falls_back_to_keys", []string{"a", "b"}, []string{}, "a / b"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			b := keymap.Binding{Keys: tc.keys, Label: "x"}
+			b := keymap.Binding{Keys: tc.keys, DisplayKeys: tc.displayKeys, Label: "x"}
 			assert.Equal(t, tc.expected, b.Display())
 		})
 	}
+}
+
+func TestValidate_DetectsDisplayKeyNotInKeys(t *testing.T) {
+	// arrange — DisplayKeys must be a subset of Keys; a typo there would
+	// render a hint that nothing dispatches.
+	bs := []keymap.Binding{
+		{Keys: []string{"+", "_"}, DisplayKeys: []string{"+", "="}, Label: "fullscreen"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DisplayKeys = not in Keys")
+}
+
+func TestValidate_DisplayKeysSubsetOfKeysIsHappy(t *testing.T) {
+	// arrange
+	bs := []keymap.Binding{
+		{Keys: []string{"+", "_", "shift++", "shift+-"}, DisplayKeys: []string{"+", "_"}, Label: "fullscreen"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
 }
 
 // key builds a tea.KeyPressMsg whose String() returns the given printable
