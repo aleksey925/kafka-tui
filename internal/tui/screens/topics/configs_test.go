@@ -132,7 +132,7 @@ func TestConfigsScreen_HelpToggleShowsDocumentation(t *testing.T) {
 	driveConfigs(t, m, m.Init())
 
 	require.False(t, m.HelpOpen())
-	_ = m.Update(keyPressRune('h'))
+	_ = m.Update(keyPressRune('i'))
 	require.True(t, m.HelpOpen())
 
 	out := m.View()
@@ -207,7 +207,7 @@ func TestConfigsScreen_HelpRendersAsCenteredPopup(t *testing.T) {
 	m.SetSize(120, 30)
 	driveConfigs(t, m, m.Init())
 
-	_ = m.Update(keyPressRune('h'))
+	_ = m.Update(keyPressRune('i'))
 	require.True(t, m.HelpOpen())
 
 	out := m.View()

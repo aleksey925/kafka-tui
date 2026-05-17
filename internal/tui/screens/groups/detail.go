@@ -403,11 +403,6 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	if d.toasts != nil {
 		_, _ = d.toasts.Update(key)
 	}
-	if d.activeTable().SearchActive() {
-		d.forwardToActive(key)
-		d.syncPartitions()
-		return d, nil
-	}
 	if cmd, ok := keymap.Dispatch(d.bindings(), key); ok {
 		d.syncPartitions()
 		return d, cmd
@@ -415,13 +410,6 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	d.forwardToActive(key)
 	d.syncPartitions()
 	return d, nil
-}
-
-func (d *DetailModel) activeTable() *components.Table {
-	if d.focus == FocusPartitions {
-		return d.partsTable
-	}
-	return d.topicsTable
 }
 
 func (d *DetailModel) forwardToActive(key tea.KeyPressMsg) {

@@ -298,7 +298,7 @@ func (m *Model) listBindings() []keymap.Binding {
 		{Keys: []string{"enter", "m"}, Label: "browse messages", Category: "Topic", Hint: true, Handler: m.actMessages},
 		{Keys: []string{"c"}, Label: "topic configs", Category: "Topic", Hint: true, Handler: m.actConfigs},
 		{Keys: []string{"g"}, Label: "consumer groups for topic", Category: "Topic", Hint: true, Handler: m.actGroups},
-		{Keys: []string{"i"}, Label: "toggle internal topics", Category: "Topic", Handler: m.actToggleInternal},
+		{Keys: []string{"i"}, Label: "toggle internal topics", Category: "Topic", Hint: true, Handler: m.actToggleInternal},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Topic", Handler: m.actQuit},
 	}

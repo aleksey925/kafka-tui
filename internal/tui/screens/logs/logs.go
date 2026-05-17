@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,12 +47,18 @@ type Model struct {
 	loadErr  string
 	readOff  int64
 	follow   bool
-	cursor   int
 	viewport *components.Viewport
 
 	search      string
+	searchRe    *regexp.Regexp // compiled from search for Unicode-safe case-insensitive matching
 	matches     []int
 	matchCursor int
+
+	// rendered mirrors m.lines with per-line match-highlight and level
+	// colorization baked in. Rebuilt by syncViewport whenever lines /
+	// search / styles change; reused by scrollToMatch (wrap path) so we
+	// don't reflow ~all lines on every n/N keystroke.
+	rendered []string
 
 	width, height int
 
@@ -109,7 +116,24 @@ func (m *Model) Following() bool { return m.follow }
 
 func (m *Model) Missing() bool { return m.missing }
 
-func (m *Model) Cursor() int { return m.cursor }
+// ScrollOffset reports the first visible visual-line index. Exposed for
+// tests that assert on scroll position; production has no need.
+func (m *Model) ScrollOffset() int { return m.viewport.ScrollOffset() }
+
+// IsAtBottom reports whether the viewport is parked at the tail. Used
+// by the follow-mode tests to assert auto-stick behavior.
+func (m *Model) IsAtBottom() bool { return m.viewport.IsAtBottom() }
+
+// MatchCursor reports the index into Matches() of the currently-active
+// search match (the one reached by the last `n`/`N`). Exposed for tests.
+func (m *Model) MatchCursor() int { return m.matchCursor }
+
+// Matches returns the logical line indices of all current search matches.
+func (m *Model) Matches() []int {
+	out := make([]int, len(m.matches))
+	copy(out, m.matches)
+	return out
+}
 
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
 
@@ -128,6 +152,11 @@ func (m *Model) Title() string {
 		// trailing query is wrapped in `</…>` so users learn one shape.
 		body = fmt.Sprintf("Logs · %d matches / %d lines </%s>", len(m.matches), len(m.lines), m.search)
 	}
+	if m.viewport.Wrap() {
+		body += " · wrap"
+	} else {
+		body += " · nowrap"
+	}
 	if m.follow {
 		body += " ● LIVE"
 	}
@@ -136,15 +165,24 @@ func (m *Model) Title() string {
 
 func (m *Model) Breadcrumb() string { return m.path }
 
-// SetSearch rebuilds match indices and jumps to the first match so the user
-// sees the result of each keystroke live.
+// SetSearch rebuilds match indices and jumps to the first match so the
+// user sees the result of each keystroke live. With no matches, only the
+// highlighting state is refreshed; the scroll position is left alone.
 func (m *Model) SetSearch(query string) {
 	m.search = query
+	if query == "" {
+		m.searchRe = nil
+	} else {
+		// QuoteMeta + (?i) gives Unicode-correct case-insensitive
+		// substring matching where naive strings.ToLower would mis-slice
+		// on case-foldings that change byte length (ß → ss, İ → i̇ …).
+		m.searchRe = regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
+	}
 	m.recomputeMatches()
 	m.matchCursor = 0
+	m.syncViewport()
 	if len(m.matches) > 0 {
-		m.cursor = m.matches[0]
-		m.syncViewport()
+		m.scrollToMatch()
 	}
 }
 
@@ -155,17 +193,31 @@ func (m *Model) SetSize(w, h int) {
 	m.syncViewport()
 }
 
-// syncViewport pushes the current lines/cursor/size into the bounded scroller.
-// SetCursor calls EnsureCursorVisible, so the scrollTop tracks the selected
-// row automatically — the legacy clampViewport logic now lives in there.
+// syncViewport rebuilds m.rendered (match highlight + level colorize)
+// and pushes the optionally wrapped representation into the shared
+// viewport. This screen is cursorless (less-style) so no cursor is set
+// on the viewport — search jumps reposition the scroll directly via
+// scrollToMatch. Idempotent.
 func (m *Model) syncViewport() {
 	m.viewport.SetSize(m.width, m.bodyHeight())
-	m.viewport.SetLines(m.lines)
 	if len(m.lines) == 0 {
-		m.viewport.ClearCursor()
+		m.rendered = nil
+		m.viewport.SetLines(nil)
 		return
 	}
-	m.viewport.SetCursor(m.cursor)
+	if cap(m.rendered) >= len(m.lines) {
+		m.rendered = m.rendered[:len(m.lines)]
+	} else {
+		m.rendered = make([]string, len(m.lines))
+	}
+	for i := range m.lines {
+		m.rendered[i] = m.renderLine(i)
+	}
+	visual := m.rendered
+	if m.viewport.Wrap() && m.width > 0 {
+		visual = components.WrapLines(m.rendered, m.width)
+	}
+	m.viewport.SetLines(visual)
 }
 
 func (m *Model) KeyHints() []layout.KeyHint {
@@ -181,36 +233,26 @@ func (m *Model) bindings() []keymap.Binding {
 	if m.follow {
 		followLabel = "stop follow"
 	}
-	return []keymap.Binding{
+	bs := []keymap.Binding{
 		{Keys: []string{"f"}, Label: followLabel, Category: "Logs", Hint: true, Handler: m.toggleFollow},
 		{Keys: []string{"n"}, Label: "next match", Category: "Search", Hint: true, Handler: m.actNextMatch},
 		{Keys: []string{"N"}, Label: "previous match", Category: "Search", Hint: true, Handler: m.actPrevMatch},
-		{Keys: []string{"j", "down"}, Label: "scroll down", Category: "Movement", Handler: m.actMoveDown},
-		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: m.actMoveUp},
-		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: m.actPageDown},
-		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: m.actPageUp},
-		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Hint: true, Handler: m.actScrollTop},
-		{Keys: []string{"end"}, Label: "scroll to bottom", Category: "Movement", Hint: true, Handler: m.actScrollBottom},
+		{Keys: []string{"w"}, Label: "toggle wrap", Category: "View", Hint: true, Handler: m.actToggleWrap},
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Logs", Handler: m.actBack},
 		{Keys: []string{"/"}, Label: "filter lines", Category: "Search", Hint: true},
 	}
+	// cursorless less-style viewer — the helper's default mode (cursor
+	// is nil and v.Cursor() < 0) scrolls the window directly, which is
+	// exactly what j/k/pgup/pgdn/home/end should do here.
+	bs = append(bs, components.ScrollBindings(m.viewport, nil)...)
+	return bs
 }
 
 func (m *Model) actNextMatch() tea.Cmd { m.jumpMatch(+1); return nil }
 func (m *Model) actPrevMatch() tea.Cmd { m.jumpMatch(-1); return nil }
 func (m *Model) actBack() tea.Cmd      { m.action.Back = true; return nil }
-func (m *Model) actMoveDown() tea.Cmd  { m.move(+1); return nil }
-func (m *Model) actMoveUp() tea.Cmd    { m.move(-1); return nil }
-func (m *Model) actPageDown() tea.Cmd  { m.move(+m.pageStep()); return nil }
-func (m *Model) actPageUp() tea.Cmd    { m.move(-m.pageStep()); return nil }
-func (m *Model) actScrollBottom() tea.Cmd {
-	m.cursor = max(0, len(m.lines)-1)
-	m.syncViewport()
-	return nil
-}
-
-func (m *Model) actScrollTop() tea.Cmd {
-	m.cursor = 0
+func (m *Model) actToggleWrap() tea.Cmd {
+	m.viewport.SetWrap(!m.viewport.Wrap())
 	m.syncViewport()
 	return nil
 }
@@ -242,54 +284,51 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) move(delta int) {
-	if len(m.lines) == 0 {
-		m.cursor = 0
-		return
-	}
-	m.cursor = clamp(m.cursor+delta, 0, len(m.lines)-1)
-	m.syncViewport()
-}
-
-func (m *Model) pageStep() int {
-	h := m.bodyHeight()
-	if h > 1 {
-		return h - 1
-	}
-	return 1
-}
-
 func (m *Model) jumpMatch(direction int) {
 	if len(m.matches) == 0 {
 		return
 	}
 	m.matchCursor = (m.matchCursor + direction + len(m.matches)) % len(m.matches)
-	m.cursor = m.matches[m.matchCursor]
-	m.syncViewport()
+	m.scrollToMatch()
+}
+
+// scrollToMatch positions the viewport so the currently-selected match
+// (m.matches[m.matchCursor]) is on screen. The match line is logical;
+// we project to visual coordinates first so wrap-mode jumps land on the
+// correct visual row. Wrap-off short-circuits because the visual index
+// equals the logical one — CursorVisualLine would just return lineIdx.
+func (m *Model) scrollToMatch() {
+	if len(m.matches) == 0 || len(m.lines) == 0 {
+		return
+	}
+	target := m.matches[m.matchCursor]
+	visual := target
+	if m.viewport.Wrap() && m.width > 0 {
+		visual = components.CursorVisualLine(m.rendered, target, 0, m.width, true)
+	}
+	m.viewport.ScrollTo(visual)
 }
 
 func (m *Model) recomputeMatches() {
 	m.matches = m.matches[:0]
-	if m.search == "" {
+	if m.searchRe == nil {
 		return
 	}
-	needle := strings.ToLower(m.search)
 	for i, line := range m.lines {
-		if strings.Contains(strings.ToLower(line), needle) {
+		if m.searchRe.MatchString(line) {
 			m.matches = append(m.matches, i)
 		}
 	}
 }
 
 func (m *Model) bodyHeight() int {
+	// the host already strips its own chrome (header / flash bar /
+	// frame inset) before calling SetSize, so m.height is the inner
+	// body area and the screen can use it whole.
 	if m.height <= 0 {
 		return len(m.lines)
 	}
-	body := m.height - 4
-	if body < 1 {
-		return 1
-	}
-	return body
+	return m.height
 }
 
 func (m *Model) toggleFollow() tea.Cmd {
@@ -320,20 +359,17 @@ func (m *Model) handleLoaded(msg LoadedMsg) tea.Cmd {
 	// while m.lines still holds the pre-rotation tail. on the very first
 	// cold load m.lines is nil, so we treat that as initial-open.
 	isFirstLoad := m.lines == nil
-	prevCursor := m.cursor
 	m.lines = msg.Lines
 	m.readOff = msg.NextOffset
 	m.trimLines()
-	switch {
-	case isFirstLoad, m.follow:
-		// initial open and follow-mode want the tail. anything else
-		// preserves the user's reading position across reloads.
-		m.cursor = max(0, len(m.lines)-1)
-	default:
-		m.cursor = clamp(prevCursor, 0, max(0, len(m.lines)-1))
-	}
 	m.recomputeMatches()
 	m.syncViewport()
+	if isFirstLoad || m.follow {
+		// initial open and follow-mode want the tail. anything else
+		// preserves the user's reading position across reloads — the
+		// viewport's scroll offset survives SetLines automatically.
+		m.viewport.ScrollToBottom()
+	}
 	return m.followTick()
 }
 
@@ -354,14 +390,17 @@ func (m *Model) handleAppended(msg AppendedMsg) tea.Cmd {
 		return tickCmd(m.followInterval)
 	}
 	if len(msg.Lines) > 0 {
-		atBottom := m.cursor >= len(m.lines)-1
+		// snapshot the at-bottom state BEFORE SetLines: that way appended
+		// lines auto-stick to the bottom for users tailing the live tip,
+		// while users scrolled up keep their reading position.
+		atBottom := m.viewport.IsAtBottom()
 		m.lines = append(m.lines, msg.Lines...)
 		m.trimLines()
-		if atBottom {
-			m.cursor = len(m.lines) - 1
-		}
 		m.recomputeMatches()
 		m.syncViewport()
+		if atBottom {
+			m.viewport.ScrollToBottom()
+		}
 	}
 	if msg.Truncated {
 		// log rotation: restart from the beginning
@@ -388,11 +427,6 @@ func (m *Model) trimLines() {
 	}
 	drop := len(m.lines) - m.maxLines
 	m.lines = m.lines[drop:]
-	if m.cursor >= drop {
-		m.cursor -= drop
-	} else {
-		m.cursor = 0
-	}
 }
 
 func (m *Model) View() string {
@@ -410,38 +444,78 @@ func (m *Model) renderBody() string {
 	if len(m.lines) == 0 {
 		return m.styles.StatusInfo.Render("(empty)")
 	}
-	// sync first so scroll position reflects any cursor moves since the last
-	// frame; renderBody is the single consumer of viewport state in logs.
+	// sync first so scroll position reflects any cursor moves since the
+	// last frame; renderBody is the single consumer of viewport state.
 	m.syncViewport()
-	h := m.bodyHeight()
-	start := m.viewport.ScrollOffset()
-	end := min(start+h, len(m.lines))
-	out := make([]string, 0, end-start)
-	for i := start; i < end; i++ {
-		out = append(out, m.renderLine(i))
+	if m.bodyHeight() <= 0 {
+		// unsized renderer (e.g. test harness without SetSize); dump the
+		// rendered logical lines so callers can still assert on content.
+		return strings.Join(m.rendered, "\n")
 	}
-	return strings.Join(out, "\n")
+	return m.viewport.View()
 }
 
+// renderLine applies level color and match highlight by walking the raw
+// line once and segmenting at every boundary where either flag changes.
+// This keeps both styles on lines where they overlap (e.g. searching
+// "ERROR" on an ERROR-level row): the level token still gets its color,
+// and the matched range gets reverse video composed on top. Skipping the
+// pre-pass on the raw line is what kept detectLevel from finding the
+// token in the previous string-replace approach.
 func (m *Model) renderLine(idx int) string {
 	line := m.lines[idx]
-	rendered := m.colorizeLevel(line)
-	prefix := "  "
-	if idx == m.cursor {
-		prefix = m.styles.HintKey.Render("> ")
+	tag, levelStart := detectLevel(line)
+	levelEnd := -1
+	if levelStart >= 0 {
+		levelEnd = levelStart + len(tag)
 	}
-	return prefix + rendered
-}
-
-// colorizeLevel finds the first level token and applies a theme color.
-// Case-sensitive — slog text handlers emit uppercase levels.
-func (m *Model) colorizeLevel(line string) string {
-	tag, idx := detectLevel(line)
-	if idx < 0 {
+	var matches [][]int
+	if m.searchRe != nil {
+		matches = m.searchRe.FindAllStringIndex(line, -1)
+	}
+	if levelStart < 0 && len(matches) == 0 {
 		return line
 	}
-	style := m.levelStyle(tag)
-	return line[:idx] + style.Render(tag) + line[idx+len(tag):]
+	var levelStyle lipgloss.Style
+	if levelStart >= 0 {
+		levelStyle = m.levelStyle(tag)
+	}
+	inLevel := func(pos int) bool { return pos >= levelStart && pos < levelEnd }
+	inMatch := func(pos int) bool {
+		for _, mm := range matches {
+			if pos >= mm[0] && pos < mm[1] {
+				return true
+			}
+		}
+		return false
+	}
+	render := func(seg string, lvl, mtch bool) string {
+		switch {
+		case lvl && mtch:
+			return levelStyle.Reverse(true).Render(seg)
+		case lvl:
+			return levelStyle.Render(seg)
+		case mtch:
+			return lipgloss.NewStyle().Reverse(true).Render(seg)
+		default:
+			return seg
+		}
+	}
+	var b strings.Builder
+	segStart := 0
+	prevLevel, prevMatch := inLevel(0), inMatch(0)
+	for i := 1; i <= len(line); i++ {
+		var curLevel, curMatch bool
+		if i < len(line) {
+			curLevel, curMatch = inLevel(i), inMatch(i)
+		}
+		if i == len(line) || curLevel != prevLevel || curMatch != prevMatch {
+			b.WriteString(render(line[segStart:i], prevLevel, prevMatch))
+			segStart = i
+			prevLevel, prevMatch = curLevel, curMatch
+		}
+	}
+	return b.String()
 }
 
 func (m *Model) levelStyle(tag string) lipgloss.Style {
@@ -595,14 +669,4 @@ func readAll(path string, off int64) ([]string, int64, error) {
 		return nil, off, fmt.Errorf("logs: read %s: %w", path, scanErr)
 	}
 	return lines, size, nil
-}
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

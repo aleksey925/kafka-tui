@@ -82,7 +82,10 @@ func TestTable_NavigationClampsAtEdges(t *testing.T) {
 	assert.Equal(t, 2, tbl.Cursor())
 }
 
-func TestTable_FuzzySearchFiltersAndCountsMatches(t *testing.T) {
+func TestTable_NavigatesAcrossSearchMatchesWithNandShiftN(t *testing.T) {
+	// SetSearch keeps the table's own n/N jump-to-match machinery in
+	// play even though the `/` prompt is now host-driven. This is the
+	// only coverage that pins the matchCursor wrap-around behavior.
 	tbl := components.NewTable(simpleColumns())
 	tbl.SetRows([]components.Row{
 		{ID: "1", Values: []string{"orders", "active"}},
@@ -90,49 +93,25 @@ func TestTable_FuzzySearchFiltersAndCountsMatches(t *testing.T) {
 		{ID: "3", Values: []string{"order-history", "stale"}},
 		{ID: "4", Values: []string{"users", "active"}},
 	})
+	tbl.SetSearch("ord")
 
-	tbl, _ = tbl.Update(keyPressMsg("/"))
-	require.True(t, tbl.SearchActive())
-	for _, ch := range "ord" {
-		tbl, _ = tbl.Update(keyPressRune(ch))
-	}
-	tbl, _ = tbl.Update(keyPressMsg("enter"))
-
-	assert.False(t, tbl.SearchActive())
-	assert.Equal(t, "ord", tbl.Search())
-
-	// only `orders` and `order-history` match → cursor still on first.
+	// only `orders` (id=1) and `order-history` (id=3) match; cursor sits
+	// on the first match by virtue of being position 0.
 	row, ok := tbl.SelectedRow()
 	require.True(t, ok)
 	assert.Equal(t, "1", row.ID)
 
-	// jump to next match
 	tbl, _ = tbl.Update(keyPressMsg("n"))
 	row, _ = tbl.SelectedRow()
-	assert.Equal(t, "3", row.ID)
+	assert.Equal(t, "3", row.ID, "n jumps to next match")
 
-	// wrap around
 	tbl, _ = tbl.Update(keyPressMsg("n"))
 	row, _ = tbl.SelectedRow()
-	assert.Equal(t, "1", row.ID)
+	assert.Equal(t, "1", row.ID, "n wraps to first match")
 
-	// previous goes back
 	tbl, _ = tbl.Update(keyPressMsg("N"))
 	row, _ = tbl.SelectedRow()
-	assert.Equal(t, "3", row.ID)
-}
-
-func TestTable_SearchEscapeClears(t *testing.T) {
-	tbl := components.NewTable(simpleColumns())
-	tbl.SetRows(simpleRows(4))
-
-	tbl, _ = tbl.Update(keyPressMsg("/"))
-	tbl, _ = tbl.Update(keyPressRune('a'))
-	tbl, _ = tbl.Update(keyPressMsg("esc"))
-
-	assert.False(t, tbl.SearchActive())
-	assert.Empty(t, tbl.Search())
-	assert.Len(t, tbl.Rows(), 4)
+	assert.Equal(t, "3", row.ID, "N walks back")
 }
 
 func TestTable_SortCycleAscDescNone(t *testing.T) {
@@ -314,16 +293,12 @@ func TestTable_SearchSurvivesRowReplacement(t *testing.T) {
 		{ID: "a", Values: []string{"orders", "ok"}},
 		{ID: "b", Values: []string{"events", "ok"}},
 	})
-	tbl, _ = tbl.Update(keyPressMsg("/"))
-	for _, ch := range "ord" {
-		tbl, _ = tbl.Update(keyPressRune(ch))
-	}
+	tbl.SetSearch("ord")
 
 	tbl.SetRows([]components.Row{
 		{ID: "a", Values: []string{"orders", "ok"}},
 		{ID: "c", Values: []string{"order-history", "ok"}},
 	})
-	tbl, _ = tbl.Update(keyPressMsg("enter"))
 
 	assert.Equal(t, "ord", tbl.Search())
 	row, _ := tbl.SelectedRow()

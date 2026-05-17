@@ -57,10 +57,9 @@ type Table struct {
 	height   int // 0 = fit-all, no scrolling
 	width    int // 0 disables flex distribution
 
-	search       string
-	searchActive bool
-	matches      []int // indices into `view` that contain matches
-	matchCursor  int
+	search      string
+	matches     []int // indices into `view` that contain matches
+	matchCursor int
 
 	sortCol int
 	sortDir SortDirection
@@ -159,14 +158,11 @@ func (t *Table) SetSort(col int, dir SortDirection) {
 
 func (t *Table) Search() string { return t.search }
 
-func (t *Table) SearchActive() bool { return t.searchActive }
-
-// SetSearch replaces the search query and re-applies the filter without
-// touching the inline prompt state. Used by hosts that render the search
-// prompt themselves and just want live row filtering.
+// SetSearch replaces the search query and re-applies the filter. Used by
+// hosts that render the search prompt themselves and just want live row
+// filtering.
 func (t *Table) SetSearch(query string) {
 	t.search = query
-	t.searchActive = false
 	t.rebuildView()
 }
 
@@ -219,10 +215,6 @@ func (t *Table) Update(msg tea.Msg) (*Table, tea.Cmd) {
 	if !ok {
 		return t, nil
 	}
-	if t.searchActive {
-		t.handleSearchKey(key)
-		return t, nil
-	}
 	t.handleNormalKey(key)
 	return t, nil
 }
@@ -243,9 +235,6 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 	case "home":
 		t.cursor = 0
 		t.clampViewport()
-	case "/":
-		t.searchActive = true
-		t.search = ""
 	case "n":
 		t.jumpMatch(+1)
 	case "N":
@@ -256,28 +245,6 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 		t.cycleSort(false)
 	case " ", "space":
 		t.toggleSelectAtCursor()
-	}
-}
-
-func (t *Table) handleSearchKey(key tea.KeyPressMsg) {
-	switch key.String() {
-	case "esc":
-		t.searchActive = false
-		t.search = ""
-		t.rebuildView()
-	case "enter":
-		t.searchActive = false
-		t.rebuildView()
-	case "backspace":
-		if n := len(t.search); n > 0 {
-			t.search = t.search[:n-1]
-			t.rebuildView()
-		}
-	default:
-		if text := key.Text; text != "" {
-			t.search += text
-			t.rebuildView()
-		}
 	}
 }
 

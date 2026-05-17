@@ -428,11 +428,18 @@ func TestForm_SegmentedArrowKeysCycleValue(t *testing.T) {
 		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
 			Value: "none", Options: []string{"none", "gzip", "snappy", "lz4"}},
 	})
+	// the inline control renders as `◂ value ▸` — a horizontal widget.
+	// Only horizontal-motion keys (right/l, left/h) cycle it; vertical
+	// keys (up/down, j/k) are reserved for field-nav at the screen
+	// level and must NOT mutate the value here.
 	f, _ = f.Update(keyPressMsg("right"))
 	got, _ := f.Field("c")
 	assert.Equal(t, "gzip", got.Value)
 
-	f, _ = f.Update(keyPressMsg("right"))
+	f, _ = f.Update(keyPressMsg("l"))
+	got, _ = f.Field("c")
+	assert.Equal(t, "snappy", got.Value)
+
 	f, _ = f.Update(keyPressMsg("right"))
 	got, _ = f.Field("c")
 	assert.Equal(t, "lz4", got.Value)
@@ -445,13 +452,23 @@ func TestForm_SegmentedArrowKeysCycleValue(t *testing.T) {
 	got, _ = f.Field("c")
 	assert.Equal(t, "lz4", got.Value)
 
-	// up/down also cycle (consistent with FieldDropdown)
-	f, _ = f.Update(keyPressMsg("down"))
+	f, _ = f.Update(keyPressMsg("h"))
 	got, _ = f.Field("c")
-	assert.Equal(t, "none", got.Value)
-	f, _ = f.Update(keyPressMsg("up"))
-	got, _ = f.Field("c")
-	assert.Equal(t, "lz4", got.Value)
+	assert.Equal(t, "snappy", got.Value)
+}
+
+func TestForm_SegmentedInlineIgnoresVerticalKeys(t *testing.T) {
+	// regression guard: j/k/up/down must not cycle the inline value.
+	// They are claimed by field-nav at the screen level.
+	f := components.NewForm([]components.Field{
+		{Key: "c", Label: "Compression", Kind: components.FieldSegmented,
+			Value: "none", Options: []string{"none", "gzip", "snappy"}},
+	})
+	for _, k := range []string{"down", "up", "j", "k"} {
+		f, _ = f.Update(keyPressMsg(k))
+		got, _ := f.Field("c")
+		assert.Equal(t, "none", got.Value, "key %q must not cycle inline segmented", k)
+	}
 }
 
 func TestForm_SegmentedEnterTogglesPopup(t *testing.T) {

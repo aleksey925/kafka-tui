@@ -3,7 +3,6 @@ package components
 import (
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -155,6 +154,23 @@ func (v *Viewport) ScrollToBottom() {
 	v.scrollTop = len(v.lines) - v.height
 }
 
+// ScrollTo positions the visible window so the given visual line falls
+// inside it. The line is clamped to the buffer. Used by cursorless
+// viewers (less-style) that want to scroll to a specific position —
+// e.g. the next search match — without introducing a persistent cursor.
+func (v *Viewport) ScrollTo(line int) {
+	if v.height <= 0 || len(v.lines) == 0 {
+		return
+	}
+	line = max(0, min(len(v.lines)-1, line))
+	if line < v.scrollTop {
+		v.scrollTop = line
+	} else if line >= v.scrollTop+v.height {
+		v.scrollTop = line - v.height + 1
+	}
+	v.clamp()
+}
+
 // EnsureCursorVisible nudges scrollTop so cursorLine falls inside the
 // visible window. No-op when the cursor is unset or geometry is unknown.
 func (v *Viewport) EnsureCursorVisible() {
@@ -175,47 +191,6 @@ func (v *Viewport) EnsureCursorVisible() {
 func (v *Viewport) Reset() {
 	v.scrollTop = 0
 	v.hScroll = 0
-}
-
-// HandleKey processes the shared viewport keymap and returns true when a
-// key was consumed: j/k vertical, ctrl+b/f and pgup/pgdn for pages,
-// home/end for jumps, h/l for hScroll (when wrap off), w toggles wrap.
-func (v *Viewport) HandleKey(key tea.KeyPressMsg) bool {
-	s := key.String()
-	switch s {
-	case "j", "down":
-		v.ScrollBy(+1)
-		return true
-	case "k", "up":
-		v.ScrollBy(-1)
-		return true
-	case "ctrl+f", "pgdown":
-		v.PageDown()
-		return true
-	case "ctrl+b", "pgup":
-		v.PageUp()
-		return true
-	case "end":
-		v.ScrollToBottom()
-		return true
-	case "home":
-		v.ScrollToTop()
-		return true
-	case "h", "left":
-		if !v.wrap {
-			v.HScrollBy(-v.HStep())
-			return true
-		}
-	case "l", "right":
-		if !v.wrap {
-			v.HScrollBy(+v.HStep())
-			return true
-		}
-	case "w":
-		v.SetWrap(!v.wrap)
-		return true
-	}
-	return false
 }
 
 // View renders the visible window. With wrap on, returns the slice as-is —
@@ -249,7 +224,7 @@ func (v *Viewport) View() string {
 // PageStep is the vertical jump used by PageDown / PageUp — one screenful
 // minus one line so the user keeps a row of context across the boundary.
 // Exposed for screens that build their own scroll commands instead of using
-// HandleKey.
+// the shared [ScrollBindings] helper.
 func (v *Viewport) PageStep() int {
 	if v.height <= 1 {
 		return 1

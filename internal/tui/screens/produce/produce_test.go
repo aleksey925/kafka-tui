@@ -876,7 +876,7 @@ func TestSend_PropagatesCompressionAndKey(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
 	m.Form().FocusKey("compression")
-	_ = m.Update(keyPress("j")) // none → gzip
+	_ = m.Update(keyPress("l"))
 	typeText(m, "key", "k1")
 	typeText(m, "value", "v1")
 

@@ -221,8 +221,12 @@ func (r *ResetModel) bindings() []keymap.Binding {
 			{Keys: []string{"esc"}, Label: "cancel reset", Category: "Reset", Hint: true, Handler: r.actCancel},
 		}
 	case StepParams:
+		// the params form always has exactly one field (shift / timestamp /
+		// offset depending on strategy), so tab / shift+tab / arrows have
+		// nothing to navigate. We deliberately omit those bindings — Form
+		// still consumes the keys internally as no-ops, so nothing surprises
+		// the user, but help doesn't lie about "next form field" either.
 		return []keymap.Binding{
-			{Keys: []string{"tab"}, Label: "next form field", Category: "Reset"},
 			{Keys: []string{"enter"}, Label: "next step", Category: "Reset", Hint: true, Handler: r.actAdvanceFromParams},
 			{Keys: []string{"esc"}, Label: "cancel reset", Category: "Reset", Hint: true, Handler: r.actCancel},
 		}

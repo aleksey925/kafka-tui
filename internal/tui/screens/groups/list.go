@@ -422,11 +422,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-	if m.table.SearchActive() {
-		tbl, _ := m.table.Update(key)
-		m.table = tbl
-		return nil
-	}
 	return m.handleListKey(key)
 }
 

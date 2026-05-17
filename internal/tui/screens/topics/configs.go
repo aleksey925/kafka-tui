@@ -50,7 +50,10 @@ type ConfigsModel struct {
 	visible []int // indexes into rows after applying search
 	cursor  int   // index into visible
 
-	scrollTop int // first visible line in the viewport
+	// viewport owns the visible window. The screen tracks `cursor` in row
+	// space (skipping category headers), then projects to a visual line
+	// index when handing the cursor to the viewport via syncToViewport.
+	viewport *components.Viewport
 
 	// focusKey is consumed once on the first successful load to restore
 	// the cursor position after returning from the edit screen.
@@ -93,12 +96,17 @@ func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 		styles = theme.DefaultStyles()
 	}
 	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+	vp := components.NewViewport()
+	// rows are formatted columns — wrap would break alignment, so we
+	// stay in truncate mode and expose h/l for horizontal panning.
+	vp.SetWrap(false)
 	return &ConfigsModel{
 		svc:        opts.Service,
 		topic:      opts.Topic,
 		readOnly:   opts.ReadOnly,
 		focusKey:   opts.FocusKey,
 		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		viewport:   vp,
 		now:        now,
 		styles:     styles,
 		lifeCtx:    lifeCtx,
@@ -198,7 +206,8 @@ func (m *ConfigsModel) ActiveFilter() string { return m.search }
 
 func (m *ConfigsModel) SetSize(w, h int) {
 	m.width, m.height = w, h
-	m.clampViewport()
+	m.viewport.SetSize(w, m.listHeight())
+	m.syncToViewport()
 }
 
 func (m *ConfigsModel) KeyHints() []layout.KeyHint {
@@ -211,16 +220,22 @@ func (m *ConfigsModel) HelpSections() []help.Section {
 
 func (m *ConfigsModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
-		{Keys: []string{"up", "k"}, Label: "previous", Category: "Topic", Handler: m.actUp},
-		{Keys: []string{"down", "j"}, Label: "next", Category: "Topic", Handler: m.actDown},
-		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Topic", Handler: m.actPageUp},
-		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Topic", Handler: m.actPageDown},
 		{Keys: []string{"enter", "e"}, Label: "edit value", Category: "Topic", Hint: true, Handler: m.actEdit},
-		{Keys: []string{"h"}, Label: "show docs", Category: "Topic", Hint: true, Handler: m.actToggleHelp},
+		{Keys: []string{"i"}, Label: "show docs", Category: "Topic", Hint: true, Handler: m.actToggleHelp},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Topic", Hint: true, Handler: m.actRefresh},
 		{Keys: []string{"esc", "q"}, Label: "back / close docs", Category: "Topic", Handler: m.actBackOrClose},
 		{Keys: []string{"/"}, Label: "filter rows", Category: "Topic", Hint: true},
 	}
+	// cursor lives in row space (skips category headers) so the viewport's
+	// built-in cursor mode does not fit — we route the vertical keys
+	// through callbacks that maintain m.cursor and then resync.
+	cursor := &components.ScrollCursor{
+		Move:     m.moveCursor,
+		PageStep: m.pageStep,
+		ToTop:    func() { m.setCursor(0) },
+		ToBottom: func() { m.setCursor(len(m.visible) - 1) },
+	}
+	bs = append(bs, components.ScrollBindings(m.viewport, cursor)...)
 	return bs
 }
 
@@ -247,41 +262,22 @@ func (m *ConfigsModel) actRefresh() tea.Cmd {
 	return loadConfigsCmd(m.lifeCtx, m.svc, m.topic)
 }
 
-func (m *ConfigsModel) actUp() tea.Cmd {
-	if m.cursor > 0 {
-		m.cursor--
-	}
-	m.clampViewport()
-	return nil
+func (m *ConfigsModel) moveCursor(delta int) {
+	m.setCursor(m.cursor + delta)
 }
 
-func (m *ConfigsModel) actDown() tea.Cmd {
-	if m.cursor+1 < len(m.visible) {
-		m.cursor++
-	}
-	m.clampViewport()
-	return nil
-}
-
-func (m *ConfigsModel) actPageUp() tea.Cmd {
-	m.cursor -= m.pageStep()
-	if m.cursor < 0 {
+func (m *ConfigsModel) setCursor(idx int) {
+	if len(m.visible) == 0 {
 		m.cursor = 0
+		m.syncToViewport()
+		return
 	}
-	m.clampViewport()
-	return nil
-}
-
-func (m *ConfigsModel) actPageDown() tea.Cmd {
-	m.cursor += m.pageStep()
-	if m.cursor >= len(m.visible) {
-		m.cursor = len(m.visible) - 1
+	idx = max(idx, 0)
+	if idx >= len(m.visible) {
+		idx = len(m.visible) - 1
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	m.clampViewport()
-	return nil
+	m.cursor = idx
+	m.syncToViewport()
 }
 
 func (m *ConfigsModel) pageStep() int {
@@ -417,7 +413,7 @@ func (m *ConfigsModel) rebuildVisibleAt(prevKey string) {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
-	m.clampViewport()
+	m.syncToViewport()
 }
 
 // jumpToKey moves the cursor onto the row identified by key when it is
@@ -427,7 +423,7 @@ func (m *ConfigsModel) jumpToKey(key string) {
 	for i, idx := range m.visible {
 		if m.rows[idx].cfg.Key == key {
 			m.cursor = i
-			m.clampViewport()
+			m.syncToViewport()
 			return
 		}
 	}
@@ -475,15 +471,17 @@ func (m *ConfigsModel) renderList() string {
 	if len(m.visible) == 0 {
 		return m.styles.StatusInfo.Render("(no rows)")
 	}
-
-	allLines, _ := m.buildListLines(m.keyColumnWidth())
-	avail := m.listHeight()
-	if avail <= 0 || len(allLines) <= avail {
-		return strings.Join(allLines, "\n")
+	// syncToViewport pushes the current state into the viewport on each
+	// frame; the View slice it returns is what the host actually renders.
+	m.syncToViewport()
+	if m.listHeight() <= 0 {
+		// viewport returns "" when unsized — render directly so the
+		// screen survives the window between New() and first SetSize
+		// (and unsized test harnesses).
+		lines, _ := m.buildListLines(m.keyColumnWidth())
+		return strings.Join(lines, "\n")
 	}
-	// scrollTop is maintained by [clampViewport]; here we only slice.
-	end := min(m.scrollTop+avail, len(allLines))
-	return strings.Join(allLines[m.scrollTop:end], "\n")
+	return m.viewport.View()
 }
 
 // buildListLines flattens the categorized rows into a slice of rendered
@@ -547,30 +545,23 @@ func (m *ConfigsModel) listHeight() int {
 	return m.height - listChromeRows
 }
 
-func (m *ConfigsModel) clampViewport() {
-	avail := m.listHeight()
-	if avail <= 0 {
-		m.scrollTop = 0
+// syncToViewport is the single point that refreshes the viewport from
+// the screen's source of truth (m.rows / m.visible / m.cursor). Call it
+// after every state change that affects what should be rendered: cursor
+// move, filter change, resize, fresh load. Idempotent.
+func (m *ConfigsModel) syncToViewport() {
+	m.viewport.SetSize(m.width, m.listHeight())
+	if len(m.visible) == 0 {
+		m.viewport.SetLines(nil)
+		m.viewport.ClearCursor()
 		return
 	}
-	keyW := m.keyColumnWidth()
-	allLines, cursorLine := m.buildListLines(keyW)
-	if len(allLines) <= avail {
-		m.scrollTop = 0
-		return
-	}
+	lines, cursorLine := m.buildListLines(m.keyColumnWidth())
+	m.viewport.SetLines(lines)
 	if cursorLine >= 0 {
-		if cursorLine < m.scrollTop {
-			m.scrollTop = cursorLine
-		} else if cursorLine >= m.scrollTop+avail {
-			m.scrollTop = cursorLine - avail + 1
-		}
-	}
-	if m.scrollTop+avail > len(allLines) {
-		m.scrollTop = len(allLines) - avail
-	}
-	if m.scrollTop < 0 {
-		m.scrollTop = 0
+		m.viewport.SetCursor(cursorLine)
+	} else {
+		m.viewport.ClearCursor()
 	}
 }
 

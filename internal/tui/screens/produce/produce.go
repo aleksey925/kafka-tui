@@ -383,8 +383,8 @@ func (m *Model) globalBindings() []keymap.Binding {
 func (m *Model) normalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"+", "_", "shift++", "shift+-"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
-		{Keys: []string{"tab", "down"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
-		{Keys: []string{"shift+tab", "up"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
+		{Keys: []string{"tab", "down", "j"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
+		{Keys: []string{"shift+tab", "up", "k"}, Label: "previous field", Category: "Form", Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
 		{Keys: []string{"e"}, Label: "open record in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
 		{Keys: []string{"p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
@@ -542,9 +542,10 @@ func (m *Model) handleNormal(key tea.KeyPressMsg) tea.Cmd {
 		m.form = f
 		return cmd
 	}
-	// bounded fields: in NORMAL the viewport keymap (j/k/pgup/pgdn/g/G/...)
-	// pans the visible window without entering INSERT. tab/up/down keep
-	// their field-nav meaning because normalBindings ran first.
+	// bounded fields: in NORMAL the remaining scroll keys (pgup/pgdn,
+	// ctrl+b/f, home/end, h/l) pan the visible window without entering
+	// INSERT. j/k/up/down/tab/shift+tab are claimed by normalBindings above
+	// for field-nav, so they never reach the field's viewport here.
 	if kind == components.FieldTextarea || kind == components.FieldList {
 		if m.form.HandleViewportKey(key) {
 			return nil
