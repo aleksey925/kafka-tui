@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -178,6 +179,43 @@ func TestViewport_NoWrap_HScroll_TruncatesAndShifts(t *testing.T) {
 func TestViewport_Wrap_OnByDefault(t *testing.T) {
 	v := components.NewViewport()
 	assert.True(t, v.Wrap(), "wrap is on by default — matches the most useful mode for editing/reading")
+}
+
+func TestViewport_CursorHighlight_SurvivesHScroll(t *testing.T) {
+	// arrange — ansi.TruncateLeft strips an opening SGR placed before the
+	// panned window, so the highlight must be applied after truncation.
+	v := components.NewViewport()
+	v.SetSize(5, 2)
+	v.SetWrap(false)
+	v.SetLines([]string{"abcdefghij", "klmnopqrst"})
+	v.SetCursor(1)
+	v.SetCursorStyle(lipgloss.NewStyle().Background(lipgloss.Color("#3a3a3a")))
+	v.HScrollBy(+3)
+
+	// act
+	out := v.View()
+	lines := strings.Split(out, "\n")
+
+	// assert
+	require.Len(t, lines, 2)
+	assert.NotContains(t, lines[0], "\x1b[48", "non-cursor row must not carry a background SGR")
+	assert.Contains(t, lines[1], "\x1b[48", "cursor row must carry a background SGR after hScroll")
+	assert.Contains(t, lines[1], "nopqr", "cursor row content shifts with hScroll")
+}
+
+func TestViewport_CursorHighlight_OptInOnly(t *testing.T) {
+	// arrange
+	v := components.NewViewport()
+	v.SetSize(10, 2)
+	v.SetWrap(false)
+	v.SetLines([]string{"alpha", "beta"})
+	v.SetCursor(0)
+
+	// act
+	out := v.View()
+
+	// assert
+	assert.Equal(t, "alpha\nbeta", out)
 }
 
 func TestWindowScrollBindings_HomeEndJump(t *testing.T) {

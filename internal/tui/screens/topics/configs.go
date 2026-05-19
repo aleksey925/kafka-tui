@@ -100,6 +100,7 @@ func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 	// rows are formatted columns — wrap would break alignment, so we
 	// stay in truncate mode and expose h/l for horizontal panning.
 	vp.SetWrap(false)
+	vp.SetCursorStyle(styles.TableCursor)
 	return &ConfigsModel{
 		svc:        opts.Service,
 		topic:      opts.Topic,
@@ -504,21 +505,13 @@ func (m *ConfigsModel) buildListLines(keyW int) ([]string, int) {
 		if vi == m.cursor {
 			cursorLine = len(lines)
 		}
-		lines = append(lines, m.renderRow(r, keyW, vi == m.cursor))
+		lines = append(lines, m.renderRow(r, keyW))
 	}
 	return lines, cursorLine
 }
 
-func (m *ConfigsModel) renderRow(r configRow, keyW int, selected bool) string {
-	cursor := "  "
-	if selected {
-		cursor = m.styles.Cursor.Render("▸ ")
-	}
-	body := padRight(r.cfg.Key, keyW) + "  " + r.cfg.Value
-	if selected {
-		body = m.styles.CommandHL.Render(body)
-	}
-	return cursor + body
+func (m *ConfigsModel) renderRow(r configRow, keyW int) string {
+	return padRight(r.cfg.Key, keyW) + "  " + r.cfg.Value
 }
 
 func (m *ConfigsModel) keyColumnWidth() int {

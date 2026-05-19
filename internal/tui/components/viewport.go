@@ -3,6 +3,7 @@ package components
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -18,6 +19,12 @@ import (
 // bottom the window auto-follows the tail, otherwise it stays put so the user
 // can read what they scrolled to.
 //
+// When SetCursorStyle is configured, the viewport also paints the cursor
+// line with that style after its own truncate / hScroll pass — so the
+// k9s-style background highlight survives horizontal panning. Off by
+// default; cursorless viewers (message detail, log tail when unpaused)
+// stay un-styled.
+//
 // Wrap mode is the default — hardwrap by character via [ansi.Hardwrap], which
 // preserves ANSI sequences across breaks. With wrap off, lines are truncated
 // to width with the horizontal scroll offset honored first via
@@ -31,8 +38,10 @@ type Viewport struct {
 	scrollTop int
 	hScroll   int
 
-	wrap       bool
-	followTail bool
+	wrap           bool
+	followTail     bool
+	cursorStyle    lipgloss.Style
+	hasCursorStyle bool
 }
 
 // NewViewport returns a viewport with wrap on, no cursor, no follow-tail.
@@ -88,6 +97,15 @@ func (v *Viewport) SetCursor(line int) {
 func (v *Viewport) ClearCursor() { v.cursorLine = -1 }
 
 func (v *Viewport) Cursor() int { return v.cursorLine }
+
+// SetCursorStyle configures the bg-only style used to paint the cursor
+// line in [Viewport.View]. Until called, the cursor line renders as-is.
+// Painted after TruncateLeft / Truncate so the highlight survives
+// horizontal panning.
+func (v *Viewport) SetCursorStyle(s lipgloss.Style) {
+	v.cursorStyle = s
+	v.hasCursorStyle = true
+}
 
 func (v *Viewport) SetWrap(on bool) {
 	if v.wrap == on {
@@ -195,7 +213,13 @@ func (v *Viewport) Reset() {
 
 // View renders the visible window. With wrap on, returns the slice as-is —
 // content is assumed already wrapped to width. With wrap off, each visible
-// line is truncated to width after applying hScroll.
+// line is truncated to width after applying hScroll. When a cursor style
+// is configured (via SetCursorStyle), the cursor line is painted after
+// the truncate pass so the bg SGR survives both [ansi.TruncateLeft] —
+// which would otherwise strip an opening SGR placed before the panned
+// window — and [ansi.Truncate] dropping the trailing reset. Caveat: the
+// cursor index is the visual line, so when wrap=on a logical row wrapped
+// across multiple visual lines only paints the line marked as cursor.
 func (v *Viewport) View() string {
 	if v.height <= 0 || len(v.lines) == 0 {
 		return ""
@@ -206,16 +230,18 @@ func (v *Viewport) View() string {
 		return ""
 	}
 	visible := v.lines[start:end]
-	if v.wrap || v.width <= 0 {
-		return strings.Join(visible, "\n")
-	}
 	out := make([]string, len(visible))
 	for i, line := range visible {
 		s := line
-		if v.hScroll > 0 {
-			s = ansi.TruncateLeft(s, v.hScroll, "")
+		if !v.wrap && v.width > 0 {
+			if v.hScroll > 0 {
+				s = ansi.TruncateLeft(s, v.hScroll, "")
+			}
+			s = ansi.Truncate(s, v.width, "")
 		}
-		s = ansi.Truncate(s, v.width, "")
+		if v.hasCursorStyle && v.cursorLine >= 0 && start+i == v.cursorLine {
+			s = HighlightRow(v.cursorStyle, v.width, s)
+		}
 		out[i] = s
 	}
 	return strings.Join(out, "\n")
