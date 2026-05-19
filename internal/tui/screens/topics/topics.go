@@ -118,6 +118,9 @@ type Model struct {
 
 	action Action
 
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+
 	now    func() time.Time
 	styles theme.Styles
 }
@@ -146,6 +149,8 @@ func New(opts Options) *Model {
 
 	interval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenID, defaultRefreshInterval)
 
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
+
 	return &Model{
 		svc:              opts.Service,
 		readOnly:         opts.ReadOnly,
@@ -161,6 +166,8 @@ func New(opts Options) *Model {
 		styles:           styles,
 		refresher:        components.NewRefresher(interval, now),
 		refreshIntervals: opts.RefreshIntervals,
+		lifeCtx:          lifeCtx,
+		lifeCancel:       lifeCancel,
 	}
 }
 
@@ -667,6 +674,10 @@ func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
 // screens so an in-flight clone goroutine doesn't keep its kgo.Client
 // pinned until the outer context times out. Safe when nothing is in flight.
 func (m *Model) Close() {
+	if m.lifeCancel != nil {
+		m.lifeCancel()
+		m.lifeCancel = nil
+	}
 	if m.cloneCxl != nil {
 		m.cloneCxl()
 		m.cloneCxl = nil
@@ -850,7 +861,7 @@ func (m *Model) renderCloningOverlay() string {
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	return loadCmd(m.svc)
+	return loadCmd(m.svc, m.lifeCtx)
 }
 
 // AutoRefreshTick emits a tick for the configured refresh interval. Hosts
@@ -916,11 +927,14 @@ type RefreshTickMsg struct{}
 // and configs. The three batches run concurrently so wall-clock load time
 // is bound by the slowest single RPC, not by topic count. A whole-category
 // failure is surfaced as one warning toast.
-func loadCmd(svc Service) tea.Cmd {
+func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
 		topics, err := svc.ListTopics(ctx)
+		if parentCtx.Err() != nil {
+			return nil
+		}
 		if err != nil {
 			return TopicsLoadedMsg{Err: err}
 		}
@@ -950,6 +964,10 @@ func loadCmd(svc Service) tea.Cmd {
 			cfgMap, cfgErr = svc.DescribeTopicConfigsBatch(ctx, names...)
 		}()
 		wg.Wait()
+
+		if parentCtx.Err() != nil {
+			return nil
+		}
 
 		return TopicsLoadedMsg{
 			Topics:     topics,
