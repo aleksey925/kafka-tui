@@ -41,6 +41,13 @@ type Flags struct {
 
 	ClusterName string
 	Inline      CLICluster
+
+	// VaultAddr and VaultToken override the corresponding fields of
+	// cfg.Vault loaded from YAML. They accept the same placeholder syntax
+	// (${env:...}, ${file:...}) as YAML values, resolved by the loader
+	// during the env+file phase before the vault client is constructed.
+	VaultAddr  string
+	VaultToken string
 }
 
 type ParseError struct {
@@ -81,6 +88,9 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 	fs.StringVar(&flags.Inline.SASLMechanism, "sasl-mechanism", "", "SASL mechanism (PLAIN|SCRAM-SHA-256|SCRAM-SHA-512)")
 	fs.StringVar(&flags.Inline.SASLUsername, "sasl-username", "", "SASL username")
 	fs.StringVar(&flags.Inline.SASLPassword, "sasl-password", "", "SASL password")
+
+	fs.StringVar(&flags.VaultAddr, "vault-addr", "", "Vault address; overrides vault.address from config")
+	fs.StringVar(&flags.VaultToken, "vault-token", "", "Vault token; overrides vault.token from config")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {

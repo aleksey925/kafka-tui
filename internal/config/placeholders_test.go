@@ -354,55 +354,6 @@ func TestResolveStruct__nilPointerSkipped(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestResolveAll__success(t *testing.T) {
-	// arrange
-	t.Setenv("PW", "p4ss")
-	type creds struct {
-		Token    string
-		Password string
-	}
-	c := &creds{Token: "${env:PW}", Password: "${vault:k/p#pw}"}
-	v := &stubVault{values: map[string]string{"k/p#pw": "vault-secret"}}
-
-	// act
-	err := config.ResolveAll(c, v)
-
-	// assert
-	require.NoError(t, err)
-	assert.Equal(t, &creds{Token: "p4ss", Password: "vault-secret"}, c)
-}
-
-func TestResolveAll__noVaultButVaultPlaceholderRemains__error(t *testing.T) {
-	// arrange
-	type creds struct {
-		Password string
-	}
-	c := &creds{Password: "${vault:k/p#pw}"}
-
-	// act
-	err := config.ResolveAll(c, nil)
-
-	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unresolved placeholder")
-}
-
-func TestResolveAll__envFailureBeforeVault(t *testing.T) {
-	// arrange
-	unsetEnv(t, "KT_NOPE")
-	type creds struct {
-		V string
-	}
-	c := &creds{V: "${env:KT_NOPE}"}
-
-	// act
-	err := config.ResolveAll(c, &stubVault{})
-
-	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "KT_NOPE")
-}
-
 func TestLoad_PlaceholderResolution_EnvFile(t *testing.T) {
 	// arrange
 	homeDir := t.TempDir()
@@ -494,7 +445,9 @@ func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
 	loaded, err := config.Load(config.LoaderOptions{
 		HomeDir:  homeDir,
 		StartDir: t.TempDir(),
-		Vault:    v,
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			return v, nil
+		},
 	})
 
 	// assert
@@ -502,6 +455,164 @@ func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
 	require.Len(t, loaded.Clusters, 1)
 	require.NotNil(t, loaded.Clusters[0].SASL)
 	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+}
+
+func TestLoad_PlaceholderResolution_VaultBuilderNotInvokedWithoutPlaceholders(t *testing.T) {
+	// arrange — user filled in vault.address (e.g. copied examples/config.yaml
+	// as-is) but no ${vault:...} placeholder is present anywhere. The loader
+	// must not invoke the builder, so a missing token does not block startup.
+	homeDir := t.TempDir()
+	cfgDir := filepath.Join(homeDir, ".kafka-tui")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o755))
+
+	cfgYAML := []byte("vault:\n  address: https://vault.example.com\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config.yaml"), cfgYAML, 0o644))
+	clustersYAML := []byte("clusters:\n  - name: dev\n    brokers: [\"b:9092\"]\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "clusters.yaml"), clustersYAML, 0o644))
+
+	builderCalled := false
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			builderCalled = true
+			return nil, errors.New("builder should not be called when no ${vault:...} present")
+		},
+	})
+
+	// assert
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.False(t, builderCalled, "builder must be skipped when no vault placeholder is present")
+}
+
+type extraVaultTarget struct {
+	Password string
+	Note     string
+}
+
+func TestLoad_ResolveTargets_VaultPlaceholderInExtraTarget(t *testing.T) {
+	// arrange — placeholder lives on an external target (a stand-in for
+	// *cli.Flags). Loader must resolve it using the same vault client built
+	// from cfg.Vault.
+	homeDir := t.TempDir()
+	cfgDir := filepath.Join(homeDir, ".kafka-tui")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o755))
+	cfgYAML := []byte("vault:\n  address: https://vault.example.com\n  token: t\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config.yaml"), cfgYAML, 0o644))
+
+	target := &extraVaultTarget{Password: "${vault:kv/db#pw}", Note: "plain"}
+	v := &stubVault{values: map[string]string{"kv/db#pw": "s3cret"}}
+
+	// act
+	_, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			return v, nil
+		},
+		ResolveTargets: []any{target},
+	})
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "s3cret", target.Password)
+	assert.Equal(t, "plain", target.Note)
+}
+
+func TestLoad_ResolveTargets_VaultBuilderReceivesMergedConfig(t *testing.T) {
+	// arrange — vault settings come from an extra target (CLI override) and
+	// must reach the VaultBuilder closure after env+file resolution. This
+	// guards the phase order in resolvePlaceholders.
+	homeDir := t.TempDir()
+	cfgDir := filepath.Join(homeDir, ".kafka-tui")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o755))
+	// YAML has no vault section; the CLI is the sole source.
+	clustersYAML := []byte(
+		"clusters:\n" +
+			"  - name: prod\n" +
+			"    brokers: [\"b:9092\"]\n" +
+			"    sasl:\n" +
+			"      mechanism: PLAIN\n" +
+			"      username: u\n" +
+			"      password: \"${vault:kv/db#pw}\"\n",
+	)
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "clusters.yaml"), clustersYAML, 0o644))
+
+	t.Setenv("KT_CLI_VAULT_ADDR", "https://from-env-vault")
+	cliOverride := &struct{ VaultAddr string }{VaultAddr: "${env:KT_CLI_VAULT_ADDR}"}
+
+	var seenAddr string
+	v := &stubVault{values: map[string]string{"kv/db#pw": "p4ss"}}
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+		VaultBuilder: func(vc config.VaultConfig) (config.VaultResolver, error) {
+			// merging is the caller's responsibility — emulate main.go's
+			// vaultBuilderWithCLIOverride here so the test exercises the
+			// real wiring.
+			if cliOverride.VaultAddr != "" {
+				vc.Address = cliOverride.VaultAddr
+			}
+			seenAddr = vc.Address
+			return v, nil
+		},
+		ResolveTargets: []any{cliOverride},
+	})
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "https://from-env-vault", seenAddr,
+		"builder must observe the CLI override after env+file phase materialized it")
+	require.Len(t, loaded.Clusters, 1)
+	require.NotNil(t, loaded.Clusters[0].SASL)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+}
+
+func TestLoad_ResolveTargets_ExtraTargetIsFrozenAcrossReloads(t *testing.T) {
+	// arrange — once a target has been fully resolved, subsequent Load calls
+	// must NOT re-invoke vault for it (the placeholder is gone). This locks
+	// in the documented asymmetry: YAML refreshes from disk every reload,
+	// CLI-supplied values are frozen for the process lifetime.
+	homeDir := t.TempDir()
+	cfgDir := filepath.Join(homeDir, ".kafka-tui")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o755))
+	cfgYAML := []byte("vault:\n  address: https://v\n  token: t\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config.yaml"), cfgYAML, 0o644))
+
+	target := &extraVaultTarget{Password: "${vault:kv/db#pw}"}
+	calls := 0
+	v := &stubVault{values: map[string]string{"kv/db#pw": "first"}}
+
+	opts := config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			calls++
+			return v, nil
+		},
+		ResolveTargets: []any{target},
+	}
+
+	// act — first load resolves the placeholder
+	_, err := config.Load(opts)
+	require.NoError(t, err)
+	require.Equal(t, "first", target.Password)
+	require.Equal(t, 1, calls)
+
+	// rotate the secret and reload
+	v.values["kv/db#pw"] = "rotated"
+	_, err = config.Load(opts)
+	require.NoError(t, err)
+
+	// assert — frozen: target keeps the first value, builder is not even
+	// invoked because no ${vault:...} remains anywhere
+	assert.Equal(t, "first", target.Password)
+	assert.Equal(t, 1, calls, "builder must not be re-invoked once no placeholder remains")
 }
 
 func TestLoad_PlaceholderResolution_MissingEnv__loadError(t *testing.T) {

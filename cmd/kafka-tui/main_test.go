@@ -123,6 +123,80 @@ func TestProduceHistory_NilStoreReturnsNil(t *testing.T) {
 	assert.Nil(t, produceHistory(nil, 0, nil))
 }
 
+func TestMergeVaultConfig(t *testing.T) {
+	tests := []struct {
+		name  string
+		yaml  config.VaultConfig
+		flags *cli.Flags
+		want  config.VaultConfig
+	}{
+		{
+			name:  "no flags keeps yaml",
+			yaml:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+			flags: &cli.Flags{},
+			want:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+		},
+		{
+			name:  "address flag overrides yaml",
+			yaml:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+			flags: &cli.Flags{VaultAddr: "https://cli"},
+			want:  config.VaultConfig{Address: "https://cli", Token: "y-tok"},
+		},
+		{
+			name:  "token flag overrides yaml",
+			yaml:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+			flags: &cli.Flags{VaultToken: "c-tok"},
+			want:  config.VaultConfig{Address: "https://yaml", Token: "c-tok"},
+		},
+		{
+			name:  "both flags override yaml",
+			yaml:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+			flags: &cli.Flags{VaultAddr: "https://cli", VaultToken: "c-tok"},
+			want:  config.VaultConfig{Address: "https://cli", Token: "c-tok"},
+		},
+		{
+			name:  "whitespace-only flag does not blank a valid yaml value",
+			yaml:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+			flags: &cli.Flags{VaultAddr: "   ", VaultToken: "\t"},
+			want:  config.VaultConfig{Address: "https://yaml", Token: "y-tok"},
+		},
+		{
+			name:  "flags fill empty yaml",
+			yaml:  config.VaultConfig{},
+			flags: &cli.Flags{VaultAddr: "https://cli", VaultToken: "c-tok"},
+			want:  config.VaultConfig{Address: "https://cli", Token: "c-tok"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeVaultConfig(tt.yaml, tt.flags)
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestNewVaultResolver_RejectsSelfReferentialAddress(t *testing.T) {
+	_, err := newVaultResolver(config.VaultConfig{
+		Address: "${vault:secret/foo#addr}",
+		Token:   "t",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vault.address cannot itself be a ${vault:...}")
+}
+
+func TestNewVaultResolver_RejectsSelfReferentialToken(t *testing.T) {
+	_, err := newVaultResolver(config.VaultConfig{
+		Address: "https://vault.example.com",
+		Token:   "${vault:secret/foo#token}",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vault.token cannot itself be a ${vault:...}")
+}
+
 func TestResolveLogPath_FallbackToDefaultWhenLoadFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	flags := &cli.Flags{ConfigPath: filepath.Join(t.TempDir(), "missing-dir-that-does-not-exist")}

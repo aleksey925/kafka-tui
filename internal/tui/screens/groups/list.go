@@ -302,7 +302,7 @@ func (m *Model) HelpSections() []help.Section {
 
 func (m *Model) activeBindings() []keymap.Binding {
 	if m.refreshPicker != nil {
-		return m.refreshPicker.Bindings("Refresh interval")
+		return m.refreshPicker.Bindings()
 	}
 	switch m.mode {
 	case ModeList:

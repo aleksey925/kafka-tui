@@ -308,23 +308,6 @@ func HintsFromBindings(bindings []keymap.Binding) []KeyHint {
 	return out
 }
 
-// KeyHints renders the bottom row of `key label` pairs.
-func KeyHints(s theme.Styles, hints []KeyHint) string {
-	if len(hints) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for i, h := range hints {
-		if i > 0 {
-			b.WriteString("  ")
-		}
-		b.WriteString(s.HintKey.Render(h.Key))
-		b.WriteString(" ")
-		b.WriteString(s.HintLabel.Render(h.Label))
-	}
-	return b.String()
-}
-
 // CommandRows is the height a rendered command/search prompt occupies when
 // active (top border + body + bottom border).
 const CommandRows = 3

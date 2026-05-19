@@ -161,19 +161,19 @@ samples covering all fields below live in [`examples/`](examples/).
 
 #### `config.yaml` — UI behavior
 
-| Section     | Field                      | Description                                                                                                           |
-| ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`.                                                                       |
-|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                   |
-|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                 |
-| `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`. |
-| `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                              |
-| `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                               |
-| `produce`   | `history_size`             | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                |
-|             | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                |
-| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                          |
-| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere.                                     |
-|             | `token`                    | Vault token. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).                      |
+| Section     | Field                      | Description                                                                                                                       |
+| ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`.                                                                                   |
+|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                               |
+|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                             |
+| `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`.             |
+| `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                                          |
+| `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                                           |
+| `produce`   | `history_size`             | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                            |
+|             | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
+| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                                      |
+| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                 |
+|             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)). |
 
 Lists (`columns`) replace wholesale across layers; everything else is merged scalar-by-scalar.
 
@@ -205,7 +205,9 @@ Any string field may contain one or more placeholders. Resolution runs in two ph
 | `${vault:path}`       | Read the whole KV v2 secret as a map.    |
 | `${vault:path#key}`   | Read a single field from a KV v2 secret. |
 
-Vault token resolution: `config → $VAULT_TOKEN → ~/.vault-token`.
+Vault address resolution: `--vault-addr CLI → vault.address in config`.
+
+Vault token resolution: `--vault-token CLI → vault.token in config → $VAULT_TOKEN → ~/.vault-token`.
 
 ## Development
 

@@ -60,24 +60,6 @@ func TestHeader_OnlyTitleWithoutCluster(t *testing.T) {
 	assert.NotContains(t, out, "read-only")
 }
 
-func TestKeyHints_RendersPairs(t *testing.T) {
-	s := theme.DefaultStyles()
-	out := layout.KeyHints(s, []layout.KeyHint{
-		{Key: ":", Label: "command"},
-		{Key: "?", Label: "help"},
-	})
-
-	assert.Contains(t, out, ":")
-	assert.Contains(t, out, "command")
-	assert.Contains(t, out, "?")
-	assert.Contains(t, out, "help")
-}
-
-func TestKeyHints_EmptyList(t *testing.T) {
-	s := theme.DefaultStyles()
-	assert.Empty(t, layout.KeyHints(s, nil))
-}
-
 func TestCommandLine_RendersBufferAndError(t *testing.T) {
 	s := theme.DefaultStyles()
 

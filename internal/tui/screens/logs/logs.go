@@ -241,9 +241,6 @@ func (m *Model) bindings() []keymap.Binding {
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Logs", Handler: m.actBack},
 		{Keys: []string{"/"}, Label: "filter lines", Category: "Search", Hint: true},
 	}
-	// cursorless less-style viewer — the helper's default mode (cursor
-	// is nil and v.Cursor() < 0) scrolls the window directly, which is
-	// exactly what j/k/pgup/pgdn/home/end should do here.
 	bs = append(bs, components.ScrollBindings(m.viewport, nil)...)
 	return bs
 }

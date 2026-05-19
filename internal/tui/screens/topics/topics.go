@@ -331,7 +331,7 @@ func (m *Model) pickerBindings() []keymap.Binding {
 	if m.refreshPicker == nil {
 		return nil
 	}
-	return m.refreshPicker.Bindings("Refresh interval")
+	return m.refreshPicker.Bindings()
 }
 
 func (m *Model) Update(msg tea.Msg) tea.Cmd {

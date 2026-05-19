@@ -243,6 +243,39 @@ How to apply: any goroutine or background command that calls the network
 or sleeps for a tick — stamp it or scope it. No exceptions for "this
 fetch is fast enough to not race".
 
+## Placeholder pipeline
+
+*Applies the single-source rule above: one pipeline resolves placeholders in
+every input, regardless of where the input came from.*
+
+Strings supplied through any source (YAML config, YAML clusters, CLI flags)
+support `${env:...}`, `${file:...}`, `${vault:...}` placeholders. Resolution
+is a single staged pipeline; phase order is load-bearing:
+
+1. **env+file** runs on every input, including CLI-supplied targets. This
+   is what materializes the vault client's own address and token before the
+   vault phase reads them.
+2. **vault** runs over every input using a lazy client so the client is
+   built only when an actual `${vault:...}` is encountered.
+3. **completeness check** scans every input for any remaining `${...}`. A
+   leftover placeholder is a hard startup error rather than a value
+   silently passed to runtime.
+
+Why: vault.address / vault.token themselves may be supplied as `${env:...}`
+or `${file:...}` placeholders, so the env+file phase must materialize them
+before the vault phase builds the client from cfg.Vault. Symmetrically,
+`${vault:...}` can legitimately appear in CLI flag values (e.g. a SASL
+password), so the vault phase must walk CLI targets, not only YAML.
+`${vault:...}` is NOT allowed in vault.address / vault.token themselves —
+that would be a self-referential lookup.
+
+Deviation: CLI-supplied values are resolved **once at process start and
+frozen**. YAML is re-read from disk on every watcher reload, so a rotated
+vault secret referenced from YAML picks up the new value on next reload;
+the same `${vault:...}` referenced from a CLI flag does not. This is by
+design — CLI flags model "process invocation context" and shouldn't drift
+mid-process.
+
 ## Optional subsystems and graceful degradation
 
 Non-essential subsystems — persistence stores (history, view state,

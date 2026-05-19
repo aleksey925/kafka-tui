@@ -43,24 +43,6 @@ func VaultOnlyResolvers(v VaultResolver) Resolvers {
 	return Resolvers{Vault: v}
 }
 
-// ResolveAll runs the two-phase resolution on target: first env+file, then vault.
-// target must be a pointer to a struct (or a struct containing strings).
-//
-// If vault is nil, the second phase is skipped — any remaining ${vault:...}
-// placeholders cause an error so unresolved secrets cannot leak into the
-// running configuration.
-func ResolveAll(target any, vault VaultResolver) error {
-	if err := EnvFileResolvers().ResolveStruct(target); err != nil {
-		return err
-	}
-	if vault != nil {
-		if err := VaultOnlyResolvers(vault).ResolveStruct(target); err != nil {
-			return err
-		}
-	}
-	return assertNoPlaceholders(target)
-}
-
 // ResolveString leaves placeholder kinds whose resolver is nil intact so
 // callers can run multiple phases.
 func (r Resolvers) ResolveString(s string) (string, error) {

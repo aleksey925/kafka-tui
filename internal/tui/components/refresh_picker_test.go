@@ -208,7 +208,7 @@ func TestRefreshPicker_ResetClearsConfirmedAndCanceled(t *testing.T) {
 
 func TestRefreshPicker_BindingsListPresetsOnlyWhenListFocused(t *testing.T) {
 	p := components.NewRefreshPicker(0)
-	listBs := p.Bindings("Refresh")
+	listBs := p.Bindings()
 	hasNextPreset := false
 	for _, b := range listBs {
 		if b.Label == "next preset" {
@@ -219,7 +219,7 @@ func TestRefreshPicker_BindingsListPresetsOnlyWhenListFocused(t *testing.T) {
 	assert.True(t, hasNextPreset, "list-focus bindings must include navigation entries")
 
 	_, _ = p.Update(key("tab"))
-	inputBs := p.Bindings("Refresh")
+	inputBs := p.Bindings()
 	for _, b := range inputBs {
 		assert.NotEqual(t, "next preset", b.Label,
 			"input focus must not advertise list navigation — those keys feed the buffer")
