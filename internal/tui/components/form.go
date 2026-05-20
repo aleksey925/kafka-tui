@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
@@ -280,6 +281,17 @@ func (f *Form) FocusKey(key string) {
 	}
 }
 
+// Bindings returns the navigation keystrokes Update() recognizes, as
+// advertise-only entries (no Handler) so screens embedding the form
+// merge them into their own help/hints from one place. Mirrors
+// [Menu.Bindings]. Passing category="" hides every entry from help.
+func (f *Form) Bindings(category string) []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "next field", Category: category},
+		{Keys: []string{"shift+tab"}, Label: "previous field", Category: category},
+	}
+}
+
 func (f *Form) FocusNext() {
 	if len(f.fields) == 0 {
 		return
@@ -333,6 +345,14 @@ func (f *Form) fieldViewport(key string, kind FieldKind) *Viewport {
 // NORMAL mode after their own bindings have had a chance to claim the key —
 // it lets the user pan around a long textarea / headers list without entering
 // INSERT. No-op (returns false) when the focused field is not bounded.
+//
+// Uses [WindowScrollBindings] so the field's caret / row cursor (set on the
+// viewport for rendering purposes) does not get dragged along by j/k —
+// list-row navigation is an INSERT-mode concern, not a NORMAL pan action.
+// Wrap toggling (w) is not exposed: textareas pre-wrap inside
+// [buildTextareaVisualLines] and list rows are pre-built to width, so
+// flipping the viewport's wrap flag would not change anything the user
+// sees on these fields.
 func (f *Form) HandleViewportKey(key tea.KeyPressMsg) bool {
 	if len(f.fields) == 0 {
 		return false
@@ -342,7 +362,8 @@ func (f *Form) HandleViewportKey(key tea.KeyPressMsg) bool {
 	if v == nil {
 		return false
 	}
-	return v.HandleKey(key)
+	_, ok := keymap.Dispatch(WindowScrollBindings(v), key)
+	return ok
 }
 
 // SetEditing toggles whether text-like fields render their caret.
@@ -1009,23 +1030,8 @@ func updateSegmented(fld *Field, key tea.KeyPressMsg) {
 	if len(fld.Options) == 0 {
 		return
 	}
-	idx := indexOf(fld.Options, fld.Value)
-	switch key.String() {
-	case "right", "down", "j", "l":
-		if idx < 0 {
-			idx = 0
-		} else {
-			idx = (idx + 1) % len(fld.Options)
-		}
-		fld.Value = fld.Options[idx]
-	case "left", "up", "k", "h":
-		if idx < 0 {
-			idx = 0
-		} else {
-			idx = (idx - 1 + len(fld.Options)) % len(fld.Options)
-		}
-		fld.Value = fld.Options[idx]
-	case "enter":
+	s := key.String()
+	if s == "enter" {
 		if fld.popupOpen {
 			fld.popupOpen = false
 			fld.popupOriginal = ""
@@ -1033,12 +1039,41 @@ func updateSegmented(fld *Field, key tea.KeyPressMsg) {
 			fld.popupOpen = true
 			fld.popupOriginal = fld.Value
 		}
-	case "esc":
-		if fld.popupOpen {
-			fld.Value = fld.popupOriginal
-			fld.popupOpen = false
-			fld.popupOriginal = ""
+		return
+	}
+	if s == "esc" && fld.popupOpen {
+		fld.Value = fld.popupOriginal
+		fld.popupOpen = false
+		fld.popupOriginal = ""
+		return
+	}
+	// inline renders as `◂ value ▸` — a horizontal control. We accept
+	// only horizontal-motion keys there so j/k stay free for field-nav
+	// and so the keypress direction matches the visual orientation.
+	// In the popup the same control becomes a vertical list, so j/k and
+	// up/down become natural and we accept the full motion set.
+	next := []string{"right", "l"}
+	prev := []string{"left", "h"}
+	if fld.popupOpen {
+		next = append(next, "down", "j")
+		prev = append(prev, "up", "k")
+	}
+	idx := indexOf(fld.Options, fld.Value)
+	switch {
+	case slices.Contains(next, s):
+		if idx < 0 {
+			idx = 0
+		} else {
+			idx = (idx + 1) % len(fld.Options)
 		}
+		fld.Value = fld.Options[idx]
+	case slices.Contains(prev, s):
+		if idx < 0 {
+			idx = 0
+		} else {
+			idx = (idx - 1 + len(fld.Options)) % len(fld.Options)
+		}
+		fld.Value = fld.Options[idx]
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,11 +70,23 @@ type LoaderOptions struct {
 	ConfigPath     string
 	CLIClusterName string
 
-	// Vault, when non-nil, runs the second phase of placeholder resolution and
-	// fails the load if any ${vault:...} value cannot be looked up. When nil,
-	// vault placeholders are left intact — the call site is expected to wire
-	// the vault client in a later step.
-	Vault VaultResolver
+	// VaultBuilder, when non-nil, is invoked from the lazy vault resolver
+	// after the env+file phase. Returning (nil, nil) means "no vault
+	// configured" — any remaining ${vault:...} placeholder then fails the
+	// load via the final assertNoPlaceholders pass.
+	//
+	// Invariant: if the builder reads any field outside cfg.Vault (e.g. a
+	// CLI flag captured by closure), the struct holding that field MUST be
+	// present in ResolveTargets so it is materialized before the builder
+	// runs. Otherwise the builder will read raw "${env:...}" / "${file:...}"
+	// strings as if they were already-resolved values.
+	VaultBuilder func(VaultConfig) (VaultResolver, error)
+
+	// ResolveTargets are additional pointers (typically *cli.Flags) routed
+	// through the same placeholder pipeline as the loaded YAML — see
+	// CLAUDE.md § Placeholder pipeline. Targets are mutated in place and
+	// frozen after the first Load.
+	ResolveTargets []any
 }
 
 type Loaded struct {
@@ -139,7 +152,7 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 		clusters = cf.Clusters
 	}
 
-	if resolveErr := resolvePlaceholders(&cfg, clusters, opts.Vault); resolveErr != nil {
+	if resolveErr := resolvePlaceholders(&cfg, clusters, opts.ResolveTargets, opts.VaultBuilder); resolveErr != nil {
 		return nil, resolveErr
 	}
 
@@ -288,13 +301,15 @@ func readYAMLFileIfExists(path string) ([]byte, error) {
 	return data, nil
 }
 
-// resolvePlaceholders runs the env+file phase always, then the vault phase
-// when a vault resolver is configured. Errors propagate so the loader can
-// refuse to start with unresolved placeholders. The final assertNoPlaceholders
-// pass runs unconditionally — when vault is nil any leftover ${vault:...}
-// must surface as a hard startup error rather than slipping into runtime
-// fields like SASL passwords.
-func resolvePlaceholders(cfg *Config, clusters []Cluster, vault VaultResolver) error {
+// resolvePlaceholders runs the placeholder pipeline (env+file → vault →
+// assert) over cfg, clusters, and any extra targets. Phase order is
+// load-bearing; see CLAUDE.md § Placeholder pipeline.
+func resolvePlaceholders(
+	cfg *Config,
+	clusters []Cluster,
+	extras []any,
+	buildVault func(VaultConfig) (VaultResolver, error),
+) error {
 	envFile := EnvFileResolvers()
 	if err := envFile.ResolveStruct(cfg); err != nil {
 		return err
@@ -302,19 +317,76 @@ func resolvePlaceholders(cfg *Config, clusters []Cluster, vault VaultResolver) e
 	if err := envFile.ResolveStruct(clusters); err != nil {
 		return err
 	}
-	if vault != nil {
-		vaultPhase := VaultOnlyResolvers(vault)
-		if err := vaultPhase.ResolveStruct(cfg); err != nil {
+	for _, t := range extras {
+		if err := envFile.ResolveStruct(t); err != nil {
 			return err
 		}
-		if err := vaultPhase.ResolveStruct(clusters); err != nil {
-			return err
-		}
+	}
+	if err := resolveVaultPhase(cfg, clusters, extras, buildVault); err != nil {
+		return err
 	}
 	if err := assertNoPlaceholders(cfg); err != nil {
 		return err
 	}
-	return assertNoPlaceholders(clusters)
+	if err := assertNoPlaceholders(clusters); err != nil {
+		return err
+	}
+	for _, t := range extras {
+		if err := assertNoPlaceholders(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveVaultPhase(
+	cfg *Config,
+	clusters []Cluster,
+	extras []any,
+	buildVault func(VaultConfig) (VaultResolver, error),
+) error {
+	if buildVault == nil {
+		return nil
+	}
+	// lazy: builder fires only on the first ${vault:...} encounter
+	// (CLAUDE.md § Placeholder pipeline).
+	lazy := &lazyVaultResolver{vc: cfg.Vault, build: buildVault}
+	vaultPhase := VaultOnlyResolvers(lazy)
+	if err := vaultPhase.ResolveStruct(cfg); err != nil {
+		return err
+	}
+	if err := vaultPhase.ResolveStruct(clusters); err != nil {
+		return err
+	}
+	for _, t := range extras {
+		if err := vaultPhase.ResolveStruct(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type lazyVaultResolver struct {
+	vc    VaultConfig
+	build func(VaultConfig) (VaultResolver, error)
+
+	once  sync.Once
+	inner VaultResolver
+	err   error
+}
+
+func (l *lazyVaultResolver) Lookup(path, key string) (string, error) {
+	l.once.Do(func() {
+		l.inner, l.err = l.build(l.vc)
+	})
+	if l.err != nil {
+		return "", l.err
+	}
+	if l.inner == nil {
+		return "", errors.New("vault is not configured (set vault.address or --vault-addr)")
+	}
+	//nolint:wrapcheck // resolveVault wraps with "config: vault lookup for %s: %w" upstream.
+	return l.inner.Lookup(path, key)
 }
 
 func remarshalInto(dst, src any) error {

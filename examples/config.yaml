@@ -38,8 +38,10 @@ clipboard:
   # auto = native + osc52 in parallel; native uses pbcopy / xclip / wl-copy
   method: auto
 
+# vault: applies to the whole section — only required when ${vault:...}
+# placeholders appear in any config file.
 vault:
-  # only required when ${vault:...} placeholders appear in any config file
+  # address resolution: --vault-addr CLI flag → this field
   address: https://vault.example.com
-  # token resolution: this field → $VAULT_TOKEN → ~/.vault-token → error
+  # token resolution: --vault-token CLI flag → this field → $VAULT_TOKEN → ~/.vault-token → error
   token: ${env:VAULT_TOKEN:-}

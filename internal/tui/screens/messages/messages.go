@@ -519,11 +519,11 @@ func (m *Model) actGroups() tea.Cmd {
 // through this slice.
 func (m *Model) seekBindings() []keymap.Binding {
 	if m.seekPopup != nil && m.seekPopup.stage == stageInput {
-		return []keymap.Binding{
+		bs := []keymap.Binding{
 			{Keys: []string{"enter"}, Label: "apply seek", Category: "Seek", Hint: true, Handler: m.actSeekApply},
 			{Keys: []string{"esc"}, Label: "back to strategy menu", Category: "Seek", Hint: true, Handler: m.actSeekBackToMenu},
-			{Keys: []string{"tab"}, Label: "next form field", Category: "Form"},
 		}
+		return append(bs, m.seekPopup.form.Bindings("Form")...)
 	}
 	if m.seekPopup != nil && m.seekPopup.menu != nil {
 		return m.seekPopup.menu.Bindings("Seek")
@@ -555,16 +555,16 @@ func (m *Model) partitionsBindings() []keymap.Binding {
 	bs := []keymap.Binding{
 		{Keys: []string{"enter"}, Label: "apply partition filter", Category: "Partition filter", Hint: true, Handler: m.actPartApply},
 		{Keys: []string{"esc"}, Label: "back", Category: "Partition filter", Hint: true, Handler: m.actPartCancel},
-		{Keys: []string{"tab"}, Label: "switch focus (list ↔ input)", Category: "Partition filter", Hint: true, Handler: m.actPartToggleFocus},
+		keymap.FocusToggle("switch focus (list ↔ input)", "Partition filter", m.actPartToggleFocus),
 	}
 	// list-pane keys only fire when the list is focused; text-editing
 	// keys for the input pane are universal and aren't surfaced here.
 	if m.partitionsPopup != nil && m.partitionsPopup.focus == focusList {
 		bs = append(bs,
-			keymap.Binding{Keys: []string{"space", " "}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
+			keymap.Binding{Keys: []string{"space", " "}, DisplayKeys: []string{"space"}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
 			keymap.Binding{Keys: []string{"a"}, Label: "toggle all", Category: "Partition filter", Handler: m.actPartToggleAll},
-			keymap.Binding{Keys: []string{"up", "k"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
-			keymap.Binding{Keys: []string{"down", "j"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
+			keymap.Binding{Keys: []string{"k", "up"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
+			keymap.Binding{Keys: []string{"j", "down"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
 			keymap.Binding{Keys: []string{"home"}, Label: "first partition", Category: "Partition filter", Handler: m.actPartCursorTo(0)},
 			keymap.Binding{Keys: []string{"end"}, Label: "last partition", Category: "Partition filter", Handler: m.actPartCursorTo(-1)},
 		)

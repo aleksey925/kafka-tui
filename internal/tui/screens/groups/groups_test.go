@@ -399,6 +399,42 @@ func TestDetail_TabSwitchesFocus(t *testing.T) {
 	assert.Equal(t, groups.FocusTopics, d.Focus())
 }
 
+// TestDetail_ShiftTabSwitchesFocus pins the reverse half of the app-wide
+// tab / shift+tab navigation convention so the consumer-group view stays
+// in sync with forms and the refresh picker.
+func TestDetail_ShiftTabSwitchesFocus(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "a", Partition: 0, Lag: 5, MemberID: "m"},
+	})
+	require.Equal(t, groups.FocusTopics, d.Focus())
+	d, _ = d.Update(keyPress("shift+tab"))
+	assert.Equal(t, groups.FocusPartitions, d.Focus())
+	d, _ = d.Update(keyPress("shift+tab"))
+	assert.Equal(t, groups.FocusTopics, d.Focus())
+}
+
+// TestDetail_SearchLeavesPartitionsPaneIntact: a topic-name filter must
+// not cascade into the partitions table — partition rows don't carry the
+// topic name, so propagating the same query would empty the lower pane
+// every time the user filtered.
+func TestDetail_SearchLeavesPartitionsPaneIntact(t *testing.T) {
+	d := newDetailWithRows(t, []kafka.PartitionLag{
+		{Topic: "alpha", Partition: 0, Lag: 5, MemberID: "member-a-0"},
+		{Topic: "alpha", Partition: 1, Lag: 3, MemberID: "member-a-1"},
+		{Topic: "beta", Partition: 0, Lag: 1, MemberID: "member-b-0"},
+	})
+	require.Equal(t, "alpha", d.FocusedTopic())
+
+	d.SetSearch("alpha")
+
+	out := d.View()
+	assert.NotContains(t, out, "beta",
+		"topics pane must hide non-matching rows")
+	assert.Contains(t, out, "member-a-0",
+		"partitions pane must still render alpha's partitions")
+	assert.Contains(t, out, "member-a-1")
+}
+
 // TestDetail_EnterDrillsIntoPartitions covers `enter` from the topics
 // pane: it moves focus to partitions without leaving the screen.
 func TestDetail_EnterDrillsIntoPartitions(t *testing.T) {
@@ -1349,6 +1385,8 @@ func keyPress(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	case "tab":
 		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "up":

@@ -4,10 +4,12 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 )
 
 func TestViewport_View_ReturnsVisibleWindow(t *testing.T) {
@@ -179,41 +181,93 @@ func TestViewport_Wrap_OnByDefault(t *testing.T) {
 	assert.True(t, v.Wrap(), "wrap is on by default — matches the most useful mode for editing/reading")
 }
 
-func TestViewport_HandleKey_HomeEndJump(t *testing.T) {
+func TestViewport_CursorHighlight_SurvivesHScroll(t *testing.T) {
+	// arrange — ansi.TruncateLeft strips an opening SGR placed before the
+	// panned window, so the highlight must be applied after truncation.
+	v := components.NewViewport()
+	v.SetSize(5, 2)
+	v.SetWrap(false)
+	v.SetLines([]string{"abcdefghij", "klmnopqrst"})
+	v.SetCursor(1)
+	v.SetCursorStyle(lipgloss.NewStyle().Background(lipgloss.Color("#3a3a3a")))
+	v.HScrollBy(+3)
+
+	// act
+	out := v.View()
+	lines := strings.Split(out, "\n")
+
+	// assert
+	require.Len(t, lines, 2)
+	assert.NotContains(t, lines[0], "\x1b[48", "non-cursor row must not carry a background SGR")
+	assert.Contains(t, lines[1], "\x1b[48", "cursor row must carry a background SGR after hScroll")
+	assert.Contains(t, lines[1], "nopqr", "cursor row content shifts with hScroll")
+}
+
+func TestViewport_CursorHighlight_OptInOnly(t *testing.T) {
+	// arrange
+	v := components.NewViewport()
+	v.SetSize(10, 2)
+	v.SetWrap(false)
+	v.SetLines([]string{"alpha", "beta"})
+	v.SetCursor(0)
+
+	// act
+	out := v.View()
+
+	// assert
+	assert.Equal(t, "alpha\nbeta", out)
+}
+
+func TestWindowScrollBindings_HomeEndJump(t *testing.T) {
 	v := components.NewViewport()
 	v.SetSize(40, 3)
 	v.SetLines([]string{"a", "b", "c", "d", "e"})
+	bs := components.WindowScrollBindings(v)
 
-	require.True(t, v.HandleKey(keyPressMsg("end")))
+	_, ok := keymap.Dispatch(bs, keyPressMsg("end"))
+	require.True(t, ok)
 	assert.Equal(t, 2, v.ScrollOffset())
 
-	require.True(t, v.HandleKey(keyPressMsg("home")))
+	_, ok = keymap.Dispatch(bs, keyPressMsg("home"))
+	require.True(t, ok)
 	assert.Equal(t, 0, v.ScrollOffset())
 }
 
-func TestViewport_HandleKey_GIgnored(t *testing.T) {
+func TestWindowScrollBindings_GIgnored(t *testing.T) {
 	v := components.NewViewport()
 	v.SetSize(40, 3)
 	v.SetLines([]string{"a", "b", "c", "d", "e"})
+	bs := components.WindowScrollBindings(v)
 
-	assert.False(t, v.HandleKey(keyPressMsg("g")), "g is no longer part of the viewport keymap")
-	assert.False(t, v.HandleKey(keyPressMsg("G")), "G is no longer part of the viewport keymap")
+	_, ok := keymap.Dispatch(bs, keyPressMsg("g"))
+	assert.False(t, ok, "g is not part of the viewport keymap")
+	_, ok = keymap.Dispatch(bs, keyPressMsg("G"))
+	assert.False(t, ok, "G is not part of the viewport keymap")
 }
 
-func TestViewport_HandleKey_WToggleWrap(t *testing.T) {
+func TestWindowScrollBindings_UnknownKeyNotConsumed(t *testing.T) {
 	v := components.NewViewport()
-	require.True(t, v.Wrap())
+	bs := components.WindowScrollBindings(v)
 
-	require.True(t, v.HandleKey(keyPressMsg("w")))
-	assert.False(t, v.Wrap())
-
-	require.True(t, v.HandleKey(keyPressMsg("w")))
-	assert.True(t, v.Wrap())
+	_, ok := keymap.Dispatch(bs, keyPressMsg("ctrl+s"))
+	assert.False(t, ok)
 }
 
-func TestViewport_HandleKey_UnknownKeyNotConsumed(t *testing.T) {
+func TestWindowScrollBindings_IgnoresViewportCursor(t *testing.T) {
+	// the form path mounts a caret cursor on the textarea viewport so the
+	// caret renders, but j/k in NORMAL must pan the window — not drag the
+	// caret along. This is the contract that distinguishes WindowScrollBindings
+	// from the cursor-aware ScrollBindings default.
 	v := components.NewViewport()
-	assert.False(t, v.HandleKey(keyPressMsg("ctrl+s")))
+	v.SetSize(40, 3)
+	v.SetLines([]string{"a", "b", "c", "d", "e"})
+	v.SetCursor(0)
+	bs := components.WindowScrollBindings(v)
+
+	_, ok := keymap.Dispatch(bs, keyPressMsg("j"))
+	require.True(t, ok)
+	assert.Equal(t, 1, v.ScrollOffset(), "j must scroll the window")
+	assert.Equal(t, 0, v.Cursor(), "j must NOT move the viewport cursor")
 }
 
 func TestWrapLines_HardwrapsByWidth(t *testing.T) {

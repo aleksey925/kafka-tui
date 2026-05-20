@@ -283,3 +283,19 @@ func TestCLICluster_HasInlineCluster(t *testing.T) {
 		})
 	}
 }
+
+func TestParse__vaultFlags__capturedOnFlags(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	f, err := Parse([]string{
+		"--vault-addr", "https://vault.example.com",
+		"--vault-token", "hvs.xxx",
+	}, &out, &errOut)
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "https://vault.example.com", f.VaultAddr)
+	assert.Equal(t, "hvs.xxx", f.VaultToken)
+}

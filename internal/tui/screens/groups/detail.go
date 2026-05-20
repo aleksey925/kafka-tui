@@ -110,8 +110,8 @@ func topicColumns() []components.Column {
 	return []components.Column{
 		{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
 		{Title: "Partitions", Width: 10, Sortable: true},
-		{Title: "Total Lag", Width: 12, Sortable: true},
 		{Title: "Members", Width: 10, Sortable: true},
+		{Title: "Total Lag", Width: 12, Sortable: true},
 	}
 }
 
@@ -120,8 +120,8 @@ func partColumns() []components.Column {
 		{Title: "Partition", Width: 9, Sortable: true},
 		{Title: "Committed", Width: 14, Sortable: true},
 		{Title: "End", Width: 14, Sortable: true},
-		{Title: "Lag", Width: 14, Sortable: true},
 		{Title: "Member", Flex: true, MinWidth: 20, Sortable: true},
+		{Title: "Lag", Width: 14, Sortable: true},
 	}
 }
 
@@ -173,11 +173,10 @@ func (d *DetailModel) FocusedTopic() string {
 	return ""
 }
 
-// SetSearch forwards a host-driven filter query to both sub-tables —
-// `tab` switches focus, not the filter.
+// SetSearch narrows the topics table only — partition rows have no
+// topic-name column, so a shared query would empty the lower pane.
 func (d *DetailModel) SetSearch(query string) {
 	d.topicsTable.SetSearch(query)
-	d.partsTable.SetSearch(query)
 	d.syncPartitions()
 }
 
@@ -221,7 +220,7 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 
 func (d *DetailModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
-		{Keys: []string{"tab"}, Label: "switch table", Category: "Group", Hint: true, Handler: d.actToggleFocus},
+		keymap.FocusToggle("switch table", "Group", d.actToggleFocus),
 		{Keys: []string{"enter"}, Label: "open partitions", Category: "Group", Hint: true, Handler: d.actDrillIn},
 		{Keys: []string{"t"}, Label: "jump to topic messages", Category: "Group", Hint: true, Handler: d.actTopicJump},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Hint: true, Handler: d.actRefresh},
@@ -403,11 +402,6 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	if d.toasts != nil {
 		_, _ = d.toasts.Update(key)
 	}
-	if d.activeTable().SearchActive() {
-		d.forwardToActive(key)
-		d.syncPartitions()
-		return d, nil
-	}
 	if cmd, ok := keymap.Dispatch(d.bindings(), key); ok {
 		d.syncPartitions()
 		return d, cmd
@@ -415,13 +409,6 @@ func (d *DetailModel) handleKey(key tea.KeyPressMsg) (*DetailModel, tea.Cmd) {
 	d.forwardToActive(key)
 	d.syncPartitions()
 	return d, nil
-}
-
-func (d *DetailModel) activeTable() *components.Table {
-	if d.focus == FocusPartitions {
-		return d.partsTable
-	}
-	return d.topicsTable
 }
 
 func (d *DetailModel) forwardToActive(key tea.KeyPressMsg) {
@@ -514,8 +501,8 @@ func buildTopicRows(rows []kafka.PartitionLag, partitions map[string][]int32) []
 			Values: []string{
 				topic,
 				strconv.Itoa(partCount),
-				lagCell(totalLag),
 				strconv.Itoa(len(members)),
+				lagCell(totalLag),
 			},
 		})
 	}
@@ -541,8 +528,8 @@ func buildPartitionRows(rows []kafka.PartitionLag, topic string) []components.Ro
 				strconv.FormatInt(int64(p.Partition), 10),
 				offsetCell(p.Committed),
 				offsetCell(p.End),
-				lagCell(p.Lag),
 				p.MemberID,
+				lagCell(p.Lag),
 			},
 		})
 	}

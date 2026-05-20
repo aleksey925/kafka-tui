@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 )
 
@@ -43,8 +44,10 @@ func TestBindings_WellFormed(t *testing.T) {
 }
 
 func TestDetailBindings_WellFormed(t *testing.T) {
-	// arrange
-	d := &DetailModel{}
+	// arrange — bindings() consults the shared viewport (via ScrollBindings)
+	// to decide whether h/l surface; a zero-value DetailModel has no viewport
+	// so we attach one here, matching the real constructor's invariant.
+	d := &DetailModel{viewport: components.NewViewport()}
 
 	// act + assert (read-write)
 	d.readOnly = false

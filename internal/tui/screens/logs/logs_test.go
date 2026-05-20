@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,51 +183,70 @@ func TestRotation_KeepsFollowTickAlive(t *testing.T) {
 	assert.True(t, isTick, "expected a FollowTickMsg to keep LIVE mode alive after rotation")
 }
 
-// Regression: handleLoaded used to unconditionally snap the cursor to the
-// bottom of the new content on every reload — so a user reading mid-file
-// while not following would be yanked to the end every time a LoadedMsg
-// arrived (e.g. the race window where follow is toggled off between
-// loadCmd and its message).
-func TestHandleLoaded_PreservesCursorWhenNotFollowing(t *testing.T) {
-	// arrange
-	path := writeLog(t, "1\n2\n3\n4\n5\n")
+// Regression: handleLoaded used to unconditionally snap to the bottom
+// on every reload — so a user reading mid-file while not following would
+// be yanked to the end every time a LoadedMsg arrived (e.g. the race
+// window where follow is toggled off between loadCmd and its message).
+func TestHandleLoaded_PreservesScrollWhenNotFollowing(t *testing.T) {
+	// arrange — buffer must exceed body height so the viewport actually
+	// scrolls. With m.SetSize(80, 10) the body is 10 rows, so 30 lines
+	// leaves plenty of room to step away from the tail.
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = strconv.Itoa(i)
+	}
+	path := writeLog(t, strings.Join(lines, "\n")+"\n")
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	require.Equal(t, 4, m.Cursor(), "initial load should snap to bottom")
-	// scroll up to a middle row.
-	for range 2 {
+	require.True(t, m.IsAtBottom(), "initial load should park at bottom")
+	for range 5 {
 		_ = m.Update(keyPress("k"))
 	}
-	require.Equal(t, 2, m.Cursor())
+	preReloadOffset := m.ScrollOffset()
+	require.False(t, m.IsAtBottom(), "must have moved away from tail")
 
-	// act — directly inject a reload with fresh content (simulating the
-	// rotation path arriving while follow is off).
+	// act — inject a same-length reload (simulating a rotation tail).
+	freshLines := make([]string, 30)
+	for i := range freshLines {
+		freshLines[i] = "fresh-" + strconv.Itoa(i)
+	}
 	_ = m.Update(logs.LoadedMsg{
-		Lines:      []string{"a", "b", "c", "d", "e"},
-		NextOffset: 10,
+		Lines:      freshLines,
+		NextOffset: 60,
 	})
 
-	// assert
-	assert.Equal(t, 2, m.Cursor(),
-		"cursor index must be preserved across reload when not following")
+	// assert — scroll position survives the reload.
+	assert.Equal(t, preReloadOffset, m.ScrollOffset(),
+		"scroll offset must be preserved across reload when not following")
 }
 
-func TestSearch_FindsMatchingLine(t *testing.T) {
-	// arrange
-	path := writeLog(t, "INFO alpha\nINFO bravo\nINFO charlie\n")
+func TestSearch_ScrollsToBringFirstMatchIntoView(t *testing.T) {
+	// arrange — enough lines that the match is off-screen by default.
+	lines := []string{}
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("INFO line %d", i))
+	}
+	lines[20] = "INFO bravo target"
+	path := writeLog(t, strings.Join(lines, "\n")+"\n")
 	m := logs.New(logs.Options{Path: path})
-	m.SetSize(80, 10)
+	m.SetSize(80, 10) // body = 6 rows
 	drive(t, m, m.Init())
+	require.True(t, m.IsAtBottom())
 
 	// act — host owns the prompt; drive the screen via SetSearch.
-	m.SetSearch("bra")
+	m.SetSearch("bravo")
 
-	// assert
-	assert.Equal(t, 1, m.Cursor())
+	// assert — single match registered and scrolled into view. The
+	// rendered output wraps the match in ANSI inverse codes so we check
+	// for the substring "bravo" only; "target" sits after the closing
+	// code and a literal "bravo target" no longer exists in the buffer.
+	assert.Equal(t, []int{20}, m.Matches())
+	assert.Equal(t, 0, m.MatchCursor())
+	assert.Contains(t, m.View(), "bravo")
 }
 
-func TestSearchN_JumpsToNextMatch(t *testing.T) {
+func TestSearchN_CyclesMatchCursorAndScrollsIntoView(t *testing.T) {
 	// arrange
 	path := writeLog(t, "INFO alpha\nINFO bravo alpha\nINFO charlie\nINFO alpha tail\n")
 	m := logs.New(logs.Options{Path: path})
@@ -234,62 +254,77 @@ func TestSearchN_JumpsToNextMatch(t *testing.T) {
 	drive(t, m, m.Init())
 
 	m.SetSearch("alpha")
-	require.Equal(t, 0, m.Cursor())
+	require.Equal(t, []int{0, 1, 3}, m.Matches())
+	require.Equal(t, 0, m.MatchCursor())
 
-	// act
+	// act / assert — n cycles forward through the match list, N backward.
 	_ = m.Update(textKey("n"))
-	assert.Equal(t, 1, m.Cursor())
+	assert.Equal(t, 1, m.MatchCursor())
 	_ = m.Update(textKey("n"))
-	assert.Equal(t, 3, m.Cursor())
+	assert.Equal(t, 2, m.MatchCursor())
+	_ = m.Update(textKey("n"))
+	assert.Equal(t, 0, m.MatchCursor(), "wraps around")
 	_ = m.Update(textKey("N"))
-	assert.Equal(t, 1, m.Cursor())
+	assert.Equal(t, 2, m.MatchCursor())
 }
 
-func TestNavigation_HomeJumpsToTop(t *testing.T) {
-	// arrange
-	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\nINFO 4\n")
+func TestNavigation_HomeScrollsToTop(t *testing.T) {
+	// arrange — enough lines so the viewport actually scrolls.
+	lines := []string{}
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("INFO %d", i))
+	}
+	path := writeLog(t, strings.Join(lines, "\n")+"\n")
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
-	require.Equal(t, 3, m.Cursor())
+	require.True(t, m.IsAtBottom())
 
 	// act
 	_ = m.Update(keyPress("home"))
 
 	// assert
-	assert.Equal(t, 0, m.Cursor())
+	assert.Equal(t, 0, m.ScrollOffset())
 }
 
-func TestNavigation_EndJumpsToBottom(t *testing.T) {
+func TestNavigation_EndScrollsToBottom(t *testing.T) {
 	// arrange
-	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\n")
+	lines := []string{}
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("INFO %d", i))
+	}
+	path := writeLog(t, strings.Join(lines, "\n")+"\n")
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
 	_ = m.Update(keyPress("home"))
-	require.Equal(t, 0, m.Cursor())
+	require.Equal(t, 0, m.ScrollOffset())
 
 	// act
 	_ = m.Update(keyPress("end"))
 
 	// assert
-	assert.Equal(t, 2, m.Cursor())
+	assert.True(t, m.IsAtBottom())
 }
 
-func TestNavigation_JK(t *testing.T) {
+func TestNavigation_JKScrollsWindow(t *testing.T) {
 	// arrange
-	path := writeLog(t, "INFO 1\nINFO 2\nINFO 3\n")
+	lines := []string{}
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("INFO %d", i))
+	}
+	path := writeLog(t, strings.Join(lines, "\n")+"\n")
 	m := logs.New(logs.Options{Path: path})
 	m.SetSize(80, 10)
 	drive(t, m, m.Init())
 	_ = m.Update(keyPress("home"))
-	require.Equal(t, 0, m.Cursor())
+	require.Equal(t, 0, m.ScrollOffset())
 
-	// act / assert
+	// act / assert — j scrolls the window down one visual line at a time.
 	_ = m.Update(textKey("j"))
-	assert.Equal(t, 1, m.Cursor())
+	assert.Equal(t, 1, m.ScrollOffset())
 	_ = m.Update(textKey("k"))
-	assert.Equal(t, 0, m.Cursor())
+	assert.Equal(t, 0, m.ScrollOffset())
 }
 
 func TestColorize_LevelsHaveDistinctRendering(t *testing.T) {
@@ -393,20 +428,20 @@ func TestNavigation_CtrlFPagesDownAndCtrlBPagesUp(t *testing.T) {
 	}
 	path := writeLog(t, strings.Join(lines, "\n"))
 	m := logs.New(logs.Options{Path: path})
-	m.SetSize(80, 12) // bodyHeight ≈ 12-2(chrome) -> non-trivial pageStep
+	m.SetSize(80, 12) // host strips chrome upstream — body height is the full 12
 	drive(t, m, m.Init())
 
 	// the viewer starts at the tail; jump to the top first so ctrl+f has
 	// somewhere to advance into.
 	_ = m.Update(keyPress("home"))
-	require.Equal(t, 0, m.Cursor())
+	require.Equal(t, 0, m.ScrollOffset())
 
 	_ = m.Update(ctrlKey('f'))
-	cursorAfterDown := m.Cursor()
-	require.Positive(t, cursorAfterDown, "ctrl+f must move cursor down")
+	afterDown := m.ScrollOffset()
+	require.Positive(t, afterDown, "ctrl+f must scroll the window down")
 
 	_ = m.Update(ctrlKey('b'))
-	assert.Less(t, m.Cursor(), cursorAfterDown, "ctrl+b must move cursor up")
+	assert.Less(t, m.ScrollOffset(), afterDown, "ctrl+b must scroll the window up")
 }
 
 func ctrlKey(r rune) tea.KeyPressMsg {

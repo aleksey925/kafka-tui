@@ -57,10 +57,9 @@ type Table struct {
 	height   int // 0 = fit-all, no scrolling
 	width    int // 0 disables flex distribution
 
-	search       string
-	searchActive bool
-	matches      []int // indices into `view` that contain matches
-	matchCursor  int
+	search      string
+	matches     []int // indices into `view` that contain matches
+	matchCursor int
 
 	sortCol int
 	sortDir SortDirection
@@ -159,14 +158,11 @@ func (t *Table) SetSort(col int, dir SortDirection) {
 
 func (t *Table) Search() string { return t.search }
 
-func (t *Table) SearchActive() bool { return t.searchActive }
-
-// SetSearch replaces the search query and re-applies the filter without
-// touching the inline prompt state. Used by hosts that render the search
-// prompt themselves and just want live row filtering.
+// SetSearch replaces the search query and re-applies the filter. Used by
+// hosts that render the search prompt themselves and just want live row
+// filtering.
 func (t *Table) SetSearch(query string) {
 	t.search = query
-	t.searchActive = false
 	t.rebuildView()
 }
 
@@ -219,10 +215,6 @@ func (t *Table) Update(msg tea.Msg) (*Table, tea.Cmd) {
 	if !ok {
 		return t, nil
 	}
-	if t.searchActive {
-		t.handleSearchKey(key)
-		return t, nil
-	}
 	t.handleNormalKey(key)
 	return t, nil
 }
@@ -243,9 +235,6 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 	case "home":
 		t.cursor = 0
 		t.clampViewport()
-	case "/":
-		t.searchActive = true
-		t.search = ""
 	case "n":
 		t.jumpMatch(+1)
 	case "N":
@@ -256,28 +245,6 @@ func (t *Table) handleNormalKey(key tea.KeyPressMsg) {
 		t.cycleSort(false)
 	case " ", "space":
 		t.toggleSelectAtCursor()
-	}
-}
-
-func (t *Table) handleSearchKey(key tea.KeyPressMsg) {
-	switch key.String() {
-	case "esc":
-		t.searchActive = false
-		t.search = ""
-		t.rebuildView()
-	case "enter":
-		t.searchActive = false
-		t.rebuildView()
-	case "backspace":
-		if n := len(t.search); n > 0 {
-			t.search = t.search[:n-1]
-			t.rebuildView()
-		}
-	default:
-		if text := key.Text; text != "" {
-			t.search += text
-			t.rebuildView()
-		}
 	}
 }
 
@@ -621,44 +588,7 @@ func (t *Table) renderRow(viewIdx int, widths []int) string {
 	if viewIdx != t.cursor {
 		return line
 	}
-	// k9s-style highlight: bg-only style preserves per-cell foreground
-	// colors (cluster swatches, group state). Pad to t.width so the
-	// background spans the full table interior when the host sized us.
-	if t.width > 0 {
-		if w := lipgloss.Width(line); w < t.width {
-			line += strings.Repeat(" ", t.width-w)
-		}
-	}
-	return applyRowHighlight(t.styles.TableCursor, line)
-}
-
-// applyRowHighlight wraps line with style's background, re-applying the
-// bg SGR after every inner SGR reset so per-cell fg-styled glyphs
-// (cluster swatches, group state) don't punch holes in the highlight.
-//
-// lipgloss v2 emits "\x1b[m" (short form) as its only reset; "\x1b[0m"
-// is also handled for robustness against pre-styled content originating
-// outside lipgloss. Compound resets like "\x1b[0;1m" or bare bg-default
-// "\x1b[49m" are not handled — lipgloss does not produce them today.
-//
-// The opening SGR is extracted by probing the style with a sentinel
-// character and slicing what lipgloss put in front of it. The sentinel
-// is SOH (0x01) rather than NUL (0x00) so we don't tempt future
-// C-string-aware sanitizers; the regression test
-// TestTable_CursorRowHighlightSurvivesNestedANSIResets catches silent
-// breakage if the probe ever stops returning the prefix.
-func applyRowHighlight(style lipgloss.Style, line string) string {
-	const sentinel = "\x01"
-	probe := style.Render(sentinel)
-	idx := strings.Index(probe, sentinel)
-	if idx <= 0 {
-		// no SGR emitted (style disabled / no color) — render as-is.
-		return style.Render(line)
-	}
-	openSGR := probe[:idx]
-	line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+openSGR)
-	line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+openSGR)
-	return openSGR + line + "\x1b[0m"
+	return HighlightRow(t.styles.TableCursor, t.width, line)
 }
 
 func padCell(s string, width int, align lipgloss.Position) string {

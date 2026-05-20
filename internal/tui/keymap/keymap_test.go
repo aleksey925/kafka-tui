@@ -156,21 +156,128 @@ func TestValidate_HappyPath(t *testing.T) {
 func TestBinding_Display(t *testing.T) {
 	// arrange
 	cases := []struct {
-		name     string
-		keys     []string
-		expected string
+		name        string
+		keys        []string
+		displayKeys []string
+		expected    string
 	}{
-		{"single", []string{"a"}, "a"},
-		{"alias", []string{"enter", "m"}, "enter / m"},
-		{"empty", nil, ""},
+		{"single", []string{"a"}, nil, "a"},
+		{"alias", []string{"enter", "m"}, nil, "enter / m"},
+		{"empty", nil, nil, ""},
+		{"display_keys_override_to_subset", []string{"+", "_", "shift++", "shift+-"}, []string{"+", "_"}, "+ / _"},
+		{"display_keys_override_to_single", []string{"space", " "}, []string{"space"}, "space"},
+		{"display_keys_empty_falls_back_to_keys", []string{"a", "b"}, []string{}, "a / b"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			b := keymap.Binding{Keys: tc.keys, Label: "x"}
+			b := keymap.Binding{Keys: tc.keys, DisplayKeys: tc.displayKeys, Label: "x"}
 			assert.Equal(t, tc.expected, b.Display())
 		})
 	}
+}
+
+func TestValidate_DetectsDisplayKeyNotInKeys(t *testing.T) {
+	// arrange — DisplayKeys must be a subset of Keys; a typo there would
+	// render a hint that nothing dispatches.
+	bs := []keymap.Binding{
+		{Keys: []string{"+", "_"}, DisplayKeys: []string{"+", "="}, Label: "fullscreen"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DisplayKeys = not in Keys")
+}
+
+func TestValidate_DisplayKeysSubsetOfKeysIsHappy(t *testing.T) {
+	// arrange
+	bs := []keymap.Binding{
+		{Keys: []string{"+", "_", "shift++", "shift+-"}, DisplayKeys: []string{"+", "_"}, Label: "fullscreen"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
+}
+
+func TestValidate_TabWithoutShiftTabFails(t *testing.T) {
+	// arrange — half-bound tab convention: forward navigation works,
+	// reverse silently doesn't. Without this guard a new two-pane screen
+	// can ship with tab-only and the contract drifts.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "switch table"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shift+tab")
+}
+
+func TestValidate_ShiftTabWithoutTabFails(t *testing.T) {
+	// arrange — symmetric to the previous case.
+	bs := []keymap.Binding{
+		{Keys: []string{"shift+tab"}, Label: "prev field"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tab")
+}
+
+func TestValidate_TabAndShiftTabPaired(t *testing.T) {
+	// arrange — paired bindings (next/prev) are the form-style usage; the
+	// validator must accept them as a valid pairing.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab", "down"}, Label: "next field"},
+		{Keys: []string{"shift+tab", "up"}, Label: "prev field"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
+}
+
+func TestValidate_TabAndShiftTabOnSameBinding(t *testing.T) {
+	// arrange — two-pane toggle: a single binding covers both directions.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab", "shift+tab"}, Label: "switch table"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
+}
+
+func TestFocusToggle_BuildsPairedBinding(t *testing.T) {
+	// arrange
+	handler := func() tea.Cmd { return nil }
+
+	// act
+	b := keymap.FocusToggle("switch table", "Group", handler)
+
+	// assert — keys, label, category, hint, handler all set so the
+	// resulting binding passes Validate without needing extra fields.
+	assert.Equal(t, []string{"tab", "shift+tab"}, b.Keys)
+	assert.Equal(t, "switch table", b.Label)
+	assert.Equal(t, "Group", b.Category)
+	assert.True(t, b.Hint)
+	assert.NotNil(t, b.Handler)
+	require.NoError(t, keymap.Validate([]keymap.Binding{b}))
 }
 
 // key builds a tea.KeyPressMsg whose String() returns the given printable

@@ -3,7 +3,7 @@ package components
 import (
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -19,6 +19,12 @@ import (
 // bottom the window auto-follows the tail, otherwise it stays put so the user
 // can read what they scrolled to.
 //
+// When SetCursorStyle is configured, the viewport also paints the cursor
+// line with that style after its own truncate / hScroll pass — so the
+// k9s-style background highlight survives horizontal panning. Off by
+// default; cursorless viewers (message detail, log tail when unpaused)
+// stay un-styled.
+//
 // Wrap mode is the default — hardwrap by character via [ansi.Hardwrap], which
 // preserves ANSI sequences across breaks. With wrap off, lines are truncated
 // to width with the horizontal scroll offset honored first via
@@ -32,8 +38,10 @@ type Viewport struct {
 	scrollTop int
 	hScroll   int
 
-	wrap       bool
-	followTail bool
+	wrap           bool
+	followTail     bool
+	cursorStyle    lipgloss.Style
+	hasCursorStyle bool
 }
 
 // NewViewport returns a viewport with wrap on, no cursor, no follow-tail.
@@ -89,6 +97,15 @@ func (v *Viewport) SetCursor(line int) {
 func (v *Viewport) ClearCursor() { v.cursorLine = -1 }
 
 func (v *Viewport) Cursor() int { return v.cursorLine }
+
+// SetCursorStyle configures the bg-only style used to paint the cursor
+// line in [Viewport.View]. Until called, the cursor line renders as-is.
+// Painted after TruncateLeft / Truncate so the highlight survives
+// horizontal panning.
+func (v *Viewport) SetCursorStyle(s lipgloss.Style) {
+	v.cursorStyle = s
+	v.hasCursorStyle = true
+}
 
 func (v *Viewport) SetWrap(on bool) {
 	if v.wrap == on {
@@ -155,6 +172,23 @@ func (v *Viewport) ScrollToBottom() {
 	v.scrollTop = len(v.lines) - v.height
 }
 
+// ScrollTo positions the visible window so the given visual line falls
+// inside it. The line is clamped to the buffer. Used by cursorless
+// viewers (less-style) that want to scroll to a specific position —
+// e.g. the next search match — without introducing a persistent cursor.
+func (v *Viewport) ScrollTo(line int) {
+	if v.height <= 0 || len(v.lines) == 0 {
+		return
+	}
+	line = max(0, min(len(v.lines)-1, line))
+	if line < v.scrollTop {
+		v.scrollTop = line
+	} else if line >= v.scrollTop+v.height {
+		v.scrollTop = line - v.height + 1
+	}
+	v.clamp()
+}
+
 // EnsureCursorVisible nudges scrollTop so cursorLine falls inside the
 // visible window. No-op when the cursor is unset or geometry is unknown.
 func (v *Viewport) EnsureCursorVisible() {
@@ -177,50 +211,15 @@ func (v *Viewport) Reset() {
 	v.hScroll = 0
 }
 
-// HandleKey processes the shared viewport keymap and returns true when a
-// key was consumed: j/k vertical, ctrl+b/f and pgup/pgdn for pages,
-// home/end for jumps, h/l for hScroll (when wrap off), w toggles wrap.
-func (v *Viewport) HandleKey(key tea.KeyPressMsg) bool {
-	s := key.String()
-	switch s {
-	case "j", "down":
-		v.ScrollBy(+1)
-		return true
-	case "k", "up":
-		v.ScrollBy(-1)
-		return true
-	case "ctrl+f", "pgdown":
-		v.PageDown()
-		return true
-	case "ctrl+b", "pgup":
-		v.PageUp()
-		return true
-	case "end":
-		v.ScrollToBottom()
-		return true
-	case "home":
-		v.ScrollToTop()
-		return true
-	case "h", "left":
-		if !v.wrap {
-			v.HScrollBy(-v.HStep())
-			return true
-		}
-	case "l", "right":
-		if !v.wrap {
-			v.HScrollBy(+v.HStep())
-			return true
-		}
-	case "w":
-		v.SetWrap(!v.wrap)
-		return true
-	}
-	return false
-}
-
 // View renders the visible window. With wrap on, returns the slice as-is —
 // content is assumed already wrapped to width. With wrap off, each visible
-// line is truncated to width after applying hScroll.
+// line is truncated to width after applying hScroll. When a cursor style
+// is configured (via SetCursorStyle), the cursor line is painted after
+// the truncate pass so the bg SGR survives both [ansi.TruncateLeft] —
+// which would otherwise strip an opening SGR placed before the panned
+// window — and [ansi.Truncate] dropping the trailing reset. Caveat: the
+// cursor index is the visual line, so when wrap=on a logical row wrapped
+// across multiple visual lines only paints the line marked as cursor.
 func (v *Viewport) View() string {
 	if v.height <= 0 || len(v.lines) == 0 {
 		return ""
@@ -231,16 +230,18 @@ func (v *Viewport) View() string {
 		return ""
 	}
 	visible := v.lines[start:end]
-	if v.wrap || v.width <= 0 {
-		return strings.Join(visible, "\n")
-	}
 	out := make([]string, len(visible))
 	for i, line := range visible {
 		s := line
-		if v.hScroll > 0 {
-			s = ansi.TruncateLeft(s, v.hScroll, "")
+		if !v.wrap && v.width > 0 {
+			if v.hScroll > 0 {
+				s = ansi.TruncateLeft(s, v.hScroll, "")
+			}
+			s = ansi.Truncate(s, v.width, "")
 		}
-		s = ansi.Truncate(s, v.width, "")
+		if v.hasCursorStyle && v.cursorLine >= 0 && start+i == v.cursorLine {
+			s = HighlightRow(v.cursorStyle, v.width, s)
+		}
 		out[i] = s
 	}
 	return strings.Join(out, "\n")
@@ -249,7 +250,7 @@ func (v *Viewport) View() string {
 // PageStep is the vertical jump used by PageDown / PageUp — one screenful
 // minus one line so the user keeps a row of context across the boundary.
 // Exposed for screens that build their own scroll commands instead of using
-// HandleKey.
+// the shared [ScrollBindings] helper.
 func (v *Viewport) PageStep() int {
 	if v.height <= 1 {
 		return 1

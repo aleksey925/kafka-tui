@@ -302,7 +302,7 @@ func (m *Model) HelpSections() []help.Section {
 
 func (m *Model) activeBindings() []keymap.Binding {
 	if m.refreshPicker != nil {
-		return m.refreshPicker.Bindings("Refresh interval")
+		return m.refreshPicker.Bindings()
 	}
 	switch m.mode {
 	case ModeList:
@@ -421,11 +421,6 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 	}
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
-	}
-	if m.table.SearchActive() {
-		tbl, _ := m.table.Update(key)
-		m.table = tbl
-		return nil
 	}
 	return m.handleListKey(key)
 }

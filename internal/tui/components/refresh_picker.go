@@ -47,6 +47,11 @@ const (
 	refreshFocusInput
 )
 
+// refreshPickerCategory is the help-overlay section / picker-title label.
+// The picker is a single-purpose component (refresh interval), so the label
+// is fixed rather than parameterized — see [RefreshPicker.Bindings].
+const refreshPickerCategory = "Refresh interval"
+
 // RefreshPicker is a popup combining a preset list and a free-text custom
 // interval input. Tab toggles focus between the two zones; the list takes
 // digit shortcuts 1..7 (jump+confirm in one keystroke); the input takes
@@ -55,7 +60,6 @@ const (
 // picker does not close itself — the host inspects [Selected] / [Canceled]
 // after each Update and renders [View] until one returns true.
 type RefreshPicker struct {
-	title   string
 	current time.Duration
 
 	cursor int
@@ -79,11 +83,6 @@ func WithRefreshPickerStyles(s theme.Styles) RefreshPickerOption {
 	return func(p *RefreshPicker) { p.styles = s }
 }
 
-// WithRefreshPickerTitle overrides the default "Refresh interval" header.
-func WithRefreshPickerTitle(title string) RefreshPickerOption {
-	return func(p *RefreshPicker) { p.title = title }
-}
-
 // NewRefreshPicker constructs a picker initialized with the currently
 // applied interval. When current matches a preset, the cursor lands on it;
 // otherwise the input field is prefilled with the current value so the
@@ -93,7 +92,6 @@ func NewRefreshPicker(current time.Duration, opts ...RefreshPickerOption) *Refre
 		current = 0
 	}
 	p := &RefreshPicker{
-		title:   "Refresh interval",
 		current: current,
 		styles:  theme.DefaultStyles(),
 	}
@@ -307,18 +305,18 @@ func formatPickerDuration(d time.Duration) string {
 // Bindings returns the advertise-only help entries for the picker. Tab and
 // Enter / Esc surface in the hint bar; navigation and digits are listed in
 // the help overlay only.
-func (p *RefreshPicker) Bindings(category string) []keymap.Binding {
+func (p *RefreshPicker) Bindings() []keymap.Binding {
 	bs := []keymap.Binding{
-		{Keys: []string{"tab", "shift+tab"}, Label: "switch focus (list ↔ input)", Category: category, Hint: true},
-		{Keys: []string{"enter"}, Label: "apply", Category: category, Hint: true},
-		{Keys: []string{"esc"}, Label: "cancel", Category: category, Hint: true},
+		{Keys: []string{"tab", "shift+tab"}, Label: "switch focus (list ↔ input)", Category: refreshPickerCategory, Hint: true},
+		{Keys: []string{"enter"}, Label: "apply", Category: refreshPickerCategory, Hint: true},
+		{Keys: []string{"esc"}, Label: "cancel", Category: refreshPickerCategory, Hint: true},
 	}
 	if p.focus == refreshFocusList {
 		bs = append(bs,
-			keymap.Binding{Keys: []string{"j", keyDown}, Label: "next preset", Category: category},
-			keymap.Binding{Keys: []string{"k", keyUp}, Label: "previous preset", Category: category},
-			keymap.Binding{Keys: []string{"home"}, Label: "first preset", Category: category},
-			keymap.Binding{Keys: []string{"end"}, Label: "last preset", Category: category},
+			keymap.Binding{Keys: []string{"j", keyDown}, Label: "next preset", Category: refreshPickerCategory},
+			keymap.Binding{Keys: []string{"k", keyUp}, Label: "previous preset", Category: refreshPickerCategory},
+			keymap.Binding{Keys: []string{"home"}, Label: "first preset", Category: refreshPickerCategory},
+			keymap.Binding{Keys: []string{"end"}, Label: "last preset", Category: refreshPickerCategory},
 		)
 		n := min(len(refreshPresets), 9)
 		if n > 0 {
@@ -329,7 +327,7 @@ func (p *RefreshPicker) Bindings(category string) []keymap.Binding {
 			bs = append(bs, keymap.Binding{
 				Keys:     digits,
 				Label:    "jump to preset by index",
-				Category: category,
+				Category: refreshPickerCategory,
 			})
 		}
 	}
@@ -340,9 +338,7 @@ func (p *RefreshPicker) Bindings(category string) []keymap.Binding {
 // box is horizontally centered in width.
 func (p *RefreshPicker) View(width int) string {
 	parts := make([]string, 0, len(refreshPresets)+8)
-	if p.title != "" {
-		parts = append(parts, p.styles.HelpTitle.Render(p.title), "")
-	}
+	parts = append(parts, p.styles.HelpTitle.Render(refreshPickerCategory), "")
 
 	listLabel := "  presets"
 	if p.focus == refreshFocusList {

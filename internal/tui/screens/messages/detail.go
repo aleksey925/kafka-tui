@@ -215,19 +215,11 @@ func (d *DetailModel) bindings() []keymap.Binding {
 		{Keys: []string{"3"}, Label: "hex view", Category: "View", Hint: true, Handler: d.actViewHex},
 		{Keys: []string{"w"}, Label: "toggle wrap", Category: "View", Hint: true, Handler: d.actToggleWrap},
 
-		{Keys: []string{"j", "down"}, Label: "scroll down", Category: "Movement", Handler: d.actScrollDown},
-		{Keys: []string{"k", "up"}, Label: "scroll up", Category: "Movement", Handler: d.actScrollUp},
-		{Keys: []string{"ctrl+f", "pgdown"}, Label: "page down", Category: "Movement", Handler: d.actPageDown},
-		{Keys: []string{"ctrl+b", "pgup"}, Label: "page up", Category: "Movement", Handler: d.actPageUp},
-		{Keys: []string{"end"}, Label: "scroll to bottom", Category: "Movement", Handler: d.actScrollBottom},
-		{Keys: []string{"home"}, Label: "scroll to top", Category: "Movement", Handler: d.actScrollTop},
-		{Keys: []string{"h", "left"}, Label: "scroll left (no-wrap)", Category: "Movement", Handler: d.actHScrollLeft},
-		{Keys: []string{"l", "right"}, Label: "scroll right (no-wrap)", Category: "Movement", Handler: d.actHScrollRight},
-
 		{Keys: []string{"c"}, Label: "copy record", Category: "Export", Hint: true, Handler: d.actCopy},
 		{Keys: []string{"s"}, Label: "save record to file", Category: "Export", Hint: true, Handler: d.actSaveRecord},
 		{Keys: []string{"e"}, Label: "open in $EDITOR", Category: "Export", Handler: d.actEditor},
 	}
+	bs = append(bs, components.ScrollBindings(d.viewport, nil)...)
 	// `R` stays bound in read-only mode so resend() can warn explicitly
 	// instead of being a silent no-op. Hint/Category cleared so it doesn't
 	// surface in help or the hints bar.
@@ -254,23 +246,6 @@ func (d *DetailModel) actCopy() tea.Cmd       { d.copyMenu.Open(); return nil }
 func (d *DetailModel) actSaveRecord() tea.Cmd { d.saveRecord(); return nil }
 func (d *DetailModel) actEditor() tea.Cmd     { return d.openEditor() }
 func (d *DetailModel) actResend() tea.Cmd     { d.resend(); return nil }
-
-func (d *DetailModel) actScrollDown() tea.Cmd   { d.viewport.ScrollBy(+1); return nil }
-func (d *DetailModel) actScrollUp() tea.Cmd     { d.viewport.ScrollBy(-1); return nil }
-func (d *DetailModel) actPageDown() tea.Cmd     { d.viewport.PageDown(); return nil }
-func (d *DetailModel) actPageUp() tea.Cmd       { d.viewport.PageUp(); return nil }
-func (d *DetailModel) actScrollBottom() tea.Cmd { d.viewport.ScrollToBottom(); return nil }
-func (d *DetailModel) actScrollTop() tea.Cmd    { d.viewport.ScrollToTop(); return nil }
-
-func (d *DetailModel) actHScrollLeft() tea.Cmd {
-	d.viewport.HScrollBy(-d.viewport.HStep())
-	return nil
-}
-
-func (d *DetailModel) actHScrollRight() tea.Cmd {
-	d.viewport.HScrollBy(+d.viewport.HStep())
-	return nil
-}
 
 func (d *DetailModel) Update(msg tea.Msg) (*DetailModel, tea.Cmd) {
 	switch msg := msg.(type) {

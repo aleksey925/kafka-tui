@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +22,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/messages"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/produce"
+	"github.com/aleksey925/kafka-tui/internal/vault"
 	"github.com/aleksey925/kafka-tui/internal/version"
 )
 
@@ -32,18 +35,17 @@ func main() {
 		return
 	}
 
-	// --version doesn't read config and shouldn't depend on placeholder
-	// resolution — handle it before ResolveAll so a stranded ${vault:...}
-	// on an unrelated flag doesn't block debugging the binary itself.
+	// short-circuit --version so a stranded ${vault:...} on an unrelated
+	// flag can't block debugging the binary itself.
 	if flags.ShowVersion {
 		_, _ = fmt.Fprintln(os.Stdout, version.NewBuildInfo(ver).Display())
 		return
 	}
 
-	// ResolveAll runs env+file then asserts no placeholders remain, so a
-	// stranded ${vault:...} on a CLI flag (e.g. --sasl-password) fails at
-	// startup instead of silently propagating the literal placeholder string.
-	if err := config.ResolveAll(flags, nil); err != nil {
+	// resolve env/file in flags here for the --logs / --logs-dir paths
+	// which exit before Load runs. Load re-runs this pass (idempotent) plus
+	// the vault phase via ResolveTargets — see CLAUDE.md § Placeholder pipeline.
+	if err := config.EnvFileResolvers().ResolveStruct(flags); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
@@ -81,6 +83,8 @@ func run(flags *cli.Flags) error {
 	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
 		CLIClusterName: flags.Inline.Name,
+		VaultBuilder:   vaultBuilderWithCLIOverride(flags),
+		ResolveTargets: []any{flags},
 	}
 	watcher, loaded, err := config.NewWatcher(loaderOpts, flags.Inline.Name, 0)
 	if err != nil {
@@ -270,6 +274,52 @@ func refreshIntervals(store *state.Store, log *slog.Logger) components.RefreshIn
 		return nil
 	}
 	return tui.NewStateRefreshIntervals(store, log)
+}
+
+// newVaultResolver is the bottom-most factory: given the final vault
+// settings it produces either a live client or (nil, nil) to signal "vault
+// is not configured for this session". The lazy resolver inside the loader
+// turns the latter into a clear "vault is not configured" error when (and
+// only when) a ${vault:...} placeholder is actually encountered.
+//
+//nolint:nilnil // (nil, nil) is the documented "vault not configured" signal.
+func newVaultResolver(vc config.VaultConfig) (config.VaultResolver, error) {
+	if strings.TrimSpace(vc.Address) == "" {
+		return nil, nil
+	}
+	// self-referential lookups are not allowed (CLAUDE.md § Placeholder pipeline).
+	if strings.Contains(vc.Address, "${vault:") {
+		return nil, errors.New("vault: vault.address cannot itself be a ${vault:...} placeholder")
+	}
+	if strings.Contains(vc.Token, "${vault:") {
+		return nil, errors.New("vault: vault.token cannot itself be a ${vault:...} placeholder")
+	}
+	//nolint:wrapcheck // vault.NewClient errors are already prefixed with "vault: ...".
+	return vault.NewClient(vault.Options{Address: vc.Address, Token: vc.Token})
+}
+
+// vaultBuilderWithCLIOverride returns a config.LoaderOptions.VaultBuilder
+// that layers --vault-addr / --vault-token over YAML-supplied vault
+// settings. The closure is invoked from the loader's lazy resolver after the
+// env+file phase — flags.VaultAddr / flags.VaultToken are already
+// materialized by then because *flags is in LoaderOptions.ResolveTargets.
+func vaultBuilderWithCLIOverride(flags *cli.Flags) func(config.VaultConfig) (config.VaultResolver, error) {
+	return func(vc config.VaultConfig) (config.VaultResolver, error) {
+		return newVaultResolver(mergeVaultConfig(vc, flags))
+	}
+}
+
+// mergeVaultConfig layers non-empty CLI override values on top of the
+// YAML-derived VaultConfig. Whitespace-only overrides are treated as empty
+// so a `--vault-addr=" "` invocation doesn't blank out a valid YAML value.
+func mergeVaultConfig(yaml config.VaultConfig, flags *cli.Flags) config.VaultConfig {
+	if v := strings.TrimSpace(flags.VaultAddr); v != "" {
+		yaml.Address = v
+	}
+	if v := strings.TrimSpace(flags.VaultToken); v != "" {
+		yaml.Token = v
+	}
+	return yaml
 }
 
 func resolveLogPath(flags *cli.Flags) (string, error) {

@@ -29,7 +29,7 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Handing the terminal off** (one handoff path for full-screen subprocesses),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
-toasts).
+toasts), **Tab navigation** (one paired contract for forward/backward).
 
 ## Text input
 
@@ -88,6 +88,19 @@ and go back" action and `ctrl+u` is the readline-style "wipe the buffer
 without navigating". Splitting `esc` into a two-press cascade would lose
 the muscle memory users bring from k9s, so the asymmetry between `esc`
 and `ctrl+u` here is deliberate, not a forgotten early return.
+
+## Tab navigation
+
+*Applies the single-source rule above: one paired contract for
+forward/backward selection navigation, never one half of it.*
+
+Screens with more than one selection target (panes, form fields, a
+popup's list-and-input split) advertise `tab` (forward) and `shift+tab`
+(backward) together — never one without the other.
+
+Why: users carry `tab` / `shift+tab` from forms and editors universally,
+so binding one without the other leaves the reverse silently
+unavailable.
 
 ## Handing the terminal off
 
@@ -242,6 +255,39 @@ will fail when a user pops the screen mid-fetch on a slow broker.
 How to apply: any goroutine or background command that calls the network
 or sleeps for a tick — stamp it or scope it. No exceptions for "this
 fetch is fast enough to not race".
+
+## Placeholder pipeline
+
+*Applies the single-source rule above: one pipeline resolves placeholders in
+every input, regardless of where the input came from.*
+
+Strings supplied through any source (YAML config, YAML clusters, CLI flags)
+support `${env:...}`, `${file:...}`, `${vault:...}` placeholders. Resolution
+is a single staged pipeline; phase order is load-bearing:
+
+1. **env+file** runs on every input, including CLI-supplied targets. This
+   is what materializes the vault client's own address and token before the
+   vault phase reads them.
+2. **vault** runs over every input using a lazy client so the client is
+   built only when an actual `${vault:...}` is encountered.
+3. **completeness check** scans every input for any remaining `${...}`. A
+   leftover placeholder is a hard startup error rather than a value
+   silently passed to runtime.
+
+Why: vault.address / vault.token themselves may be supplied as `${env:...}`
+or `${file:...}` placeholders, so the env+file phase must materialize them
+before the vault phase builds the client from cfg.Vault. Symmetrically,
+`${vault:...}` can legitimately appear in CLI flag values (e.g. a SASL
+password), so the vault phase must walk CLI targets, not only YAML.
+`${vault:...}` is NOT allowed in vault.address / vault.token themselves —
+that would be a self-referential lookup.
+
+Deviation: CLI-supplied values are resolved **once at process start and
+frozen**. YAML is re-read from disk on every watcher reload, so a rotated
+vault secret referenced from YAML picks up the new value on next reload;
+the same `${vault:...}` referenced from a CLI flag does not. This is by
+design — CLI flags model "process invocation context" and shouldn't drift
+mid-process.
 
 ## Optional subsystems and graceful degradation
 

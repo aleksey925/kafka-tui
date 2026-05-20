@@ -3,6 +3,7 @@ package topics_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -132,7 +133,7 @@ func TestConfigsScreen_HelpToggleShowsDocumentation(t *testing.T) {
 	driveConfigs(t, m, m.Init())
 
 	require.False(t, m.HelpOpen())
-	_ = m.Update(keyPressRune('h'))
+	_ = m.Update(keyPressRune('i'))
 	require.True(t, m.HelpOpen())
 
 	out := m.View()
@@ -207,13 +208,13 @@ func TestConfigsScreen_HelpRendersAsCenteredPopup(t *testing.T) {
 	m.SetSize(120, 30)
 	driveConfigs(t, m, m.Init())
 
-	_ = m.Update(keyPressRune('h'))
+	_ = m.Update(keyPressRune('i'))
 	require.True(t, m.HelpOpen())
 
 	out := m.View()
-	// popup overlays the list area so the row body must NOT remain
-	// visible behind it.
-	assert.NotContains(t, out, "▸ ")
+	// popup replaces the body, so the key text must appear exactly once
+	// (inside the popup title) — twice would mean the row leaked through.
+	assert.Equal(t, 1, strings.Count(out, "compression.type"))
 	// popup contents include the documentation and source.
 	assert.Contains(t, out, "DEFAULT_CONFIG")
 	assert.Contains(t, out, "type: select")
