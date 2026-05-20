@@ -96,11 +96,11 @@ func TestKeyHints_IncludesExpectedLabels(t *testing.T) {
 	}
 }
 
-// TestSetSearch_AppliesToBothTables pins the screen-level filter
-// contract: the host-driven `/` prompt narrows both sub-tables (config
-// fields and per-cluster fields), so an esc-cascade can clear the
-// filter regardless of which sub-table currently has focus.
-func TestSetSearch_AppliesToBothTables(t *testing.T) {
+// TestSetSearch_ScopedToFocusedPane: each sub-table holds its own
+// filter buffer so a query that only matches one pane's columns doesn't
+// silently empty the other. ActiveFilter reports the focused pane's
+// filter so the host's esc / ctrl+u clear what the user sees.
+func TestSetSearch_ScopedToFocusedPane(t *testing.T) {
 	src := config.Sources{
 		Config: map[string]config.Source{
 			"logging.level":       {Path: "/g/c.yaml", Layer: config.LayerGlobal},
@@ -119,21 +119,27 @@ func TestSetSearch_AppliesToBothTables(t *testing.T) {
 	assert.Contains(t, out, "logging.level")
 	assert.NotContains(t, out, "refresh.topics_list")
 	assert.NotContains(t, out, "produce.history")
-	// per-cluster table holds rows keyed by cluster name; "logging" is
-	// not a substring of any of them, so the second table must collapse
-	// too — proving the filter applies to both.
-	assert.NotContains(t, out, "alpha")
-	assert.NotContains(t, out, "beta")
+	// clusters table holds rows keyed by cluster name; "logging" is not a
+	// substring of either, but the filter only routes to the focused
+	// (config) pane, so the cluster pane stays populated.
+	assert.Contains(t, out, "alpha")
+	assert.Contains(t, out, "beta")
 	assert.Equal(t, "logging", m.ActiveFilter())
 
-	// switching focus to the cluster table must keep the same filter
-	// reported by ActiveFilter so the host's esc-cascade can clear it.
+	// switching focus moves ActiveFilter onto the cluster pane's own
+	// (empty) buffer — esc on the cluster pane shouldn't try to clear a
+	// filter the user can't see.
 	_ = m.Update(keyPress("tab"))
 	require.True(t, m.FocusClusters())
-	assert.Equal(t, "logging", m.ActiveFilter())
-
-	m.SetSearch("")
 	assert.Empty(t, m.ActiveFilter())
+
+	m.SetSearch("alpha")
+	out = m.View()
+	assert.Contains(t, out, "alpha")
+	assert.NotContains(t, out, "beta")
+	// config pane retained its own "logging" filter independently.
+	assert.Contains(t, out, "logging.level")
+	assert.NotContains(t, out, "produce.history")
 }
 
 func keyPress(name string) tea.KeyPressMsg {

@@ -205,6 +205,81 @@ func TestValidate_DisplayKeysSubsetOfKeysIsHappy(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidate_TabWithoutShiftTabFails(t *testing.T) {
+	// arrange — half-bound tab convention: forward navigation works,
+	// reverse silently doesn't. Without this guard a new two-pane screen
+	// can ship with tab-only and the contract drifts.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "switch table"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shift+tab")
+}
+
+func TestValidate_ShiftTabWithoutTabFails(t *testing.T) {
+	// arrange — symmetric to the previous case.
+	bs := []keymap.Binding{
+		{Keys: []string{"shift+tab"}, Label: "prev field"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tab")
+}
+
+func TestValidate_TabAndShiftTabPaired(t *testing.T) {
+	// arrange — paired bindings (next/prev) are the form-style usage; the
+	// validator must accept them as a valid pairing.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab", "down"}, Label: "next field"},
+		{Keys: []string{"shift+tab", "up"}, Label: "prev field"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
+}
+
+func TestValidate_TabAndShiftTabOnSameBinding(t *testing.T) {
+	// arrange — two-pane toggle: a single binding covers both directions.
+	bs := []keymap.Binding{
+		{Keys: []string{"tab", "shift+tab"}, Label: "switch table"},
+	}
+
+	// act
+	err := keymap.Validate(bs)
+
+	// assert
+	assert.NoError(t, err)
+}
+
+func TestFocusToggle_BuildsPairedBinding(t *testing.T) {
+	// arrange
+	handler := func() tea.Cmd { return nil }
+
+	// act
+	b := keymap.FocusToggle("switch table", "Group", handler)
+
+	// assert — keys, label, category, hint, handler all set so the
+	// resulting binding passes Validate without needing extra fields.
+	assert.Equal(t, []string{"tab", "shift+tab"}, b.Keys)
+	assert.Equal(t, "switch table", b.Label)
+	assert.Equal(t, "Group", b.Category)
+	assert.True(t, b.Hint)
+	assert.NotNil(t, b.Handler)
+	require.NoError(t, keymap.Validate([]keymap.Binding{b}))
+}
+
 // key builds a tea.KeyPressMsg whose String() returns the given printable
 // token. Sufficient for Dispatch tests that only care about string match.
 func key(s string) tea.KeyPressMsg {

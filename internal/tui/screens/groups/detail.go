@@ -173,11 +173,10 @@ func (d *DetailModel) FocusedTopic() string {
 	return ""
 }
 
-// SetSearch forwards a host-driven filter query to both sub-tables —
-// `tab` switches focus, not the filter.
+// SetSearch narrows the topics table only — partition rows have no
+// topic-name column, so a shared query would empty the lower pane.
 func (d *DetailModel) SetSearch(query string) {
 	d.topicsTable.SetSearch(query)
-	d.partsTable.SetSearch(query)
 	d.syncPartitions()
 }
 
@@ -221,7 +220,7 @@ func (d *DetailModel) KeyHints() []layout.KeyHint {
 
 func (d *DetailModel) bindings() []keymap.Binding {
 	bs := []keymap.Binding{
-		{Keys: []string{"tab"}, Label: "switch table", Category: "Group", Hint: true, Handler: d.actToggleFocus},
+		keymap.FocusToggle("switch table", "Group", d.actToggleFocus),
 		{Keys: []string{"enter"}, Label: "open partitions", Category: "Group", Hint: true, Handler: d.actDrillIn},
 		{Keys: []string{"t"}, Label: "jump to topic messages", Category: "Group", Hint: true, Handler: d.actTopicJump},
 		{Keys: []string{"r"}, Label: "refresh now", Category: "Group", Hint: true, Handler: d.actRefresh},

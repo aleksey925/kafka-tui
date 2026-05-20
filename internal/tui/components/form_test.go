@@ -14,6 +14,22 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
+func TestForm_BindingsAdvertiseTabAndShiftTab(t *testing.T) {
+	f := components.NewForm([]components.Field{
+		{Key: "k", Label: "Key", Kind: components.FieldText},
+	})
+
+	keys := make(map[string]string)
+	for _, b := range f.Bindings("Form") {
+		require.Len(t, b.Keys, 1, "form nav bindings list one canonical key each")
+		keys[b.Keys[0]] = b.Label
+		assert.Equal(t, "Form", b.Category)
+		assert.Nil(t, b.Handler, "advertise-only — Update handles dispatch")
+	}
+	assert.Contains(t, keys, "tab")
+	assert.Contains(t, keys, "shift+tab")
+}
+
 func TestForm_TabFocusCyclesForwardAndBackward(t *testing.T) {
 	f := components.NewForm([]components.Field{
 		{Key: "key", Label: "Key", Kind: components.FieldText},

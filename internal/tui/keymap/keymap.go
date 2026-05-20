@@ -45,6 +45,19 @@ type Binding struct {
 	HandlerMsg func(tea.KeyPressMsg) tea.Cmd
 }
 
+// FocusToggle is the canonical binding for two-pane focus switching:
+// tab and shift+tab share one handler. Multi-field cycles use paired
+// next/prev bindings instead.
+func FocusToggle(label, category string, handler func() tea.Cmd) Binding {
+	return Binding{
+		Keys:     []string{"tab", "shift+tab"},
+		Label:    label,
+		Category: category,
+		Hint:     true,
+		Handler:  handler,
+	}
+}
+
 func (b Binding) Display() string {
 	keys := b.Keys
 	if len(b.DisplayKeys) > 0 {
@@ -88,10 +101,13 @@ func Dispatch(bindings []Binding, msg tea.KeyPressMsg) (tea.Cmd, bool) {
 }
 
 // Validate enforces invariants: no empty key list, no empty label, no
-// duplicate key. Called from per-screen unit tests to fail CI on a
-// malformed table.
+// duplicate key, and that tab is always bound together with shift+tab
+// (either as a single toggle or as paired next/prev bindings) so
+// selection navigation works both ways on every screen. Called from
+// per-screen unit tests to fail CI on a malformed table.
 func Validate(bindings []Binding) error {
 	seen := make(map[string]string, len(bindings)*2)
+	var hasTab, hasShiftTab bool
 	var errs []string
 	for i, b := range bindings {
 		if len(b.Keys) == 0 {
@@ -107,12 +123,24 @@ func Validate(bindings []Binding) error {
 				continue
 			}
 			seen[k] = b.Display() + " (" + b.Label + ")"
+			switch k {
+			case "tab":
+				hasTab = true
+			case "shift+tab":
+				hasShiftTab = true
+			}
 		}
 		for _, dk := range b.DisplayKeys {
 			if !slices.Contains(b.Keys, dk) {
 				errs = append(errs, fmtIdx(i)+" ("+b.Display()+"): DisplayKeys "+dk+" not in Keys")
 			}
 		}
+	}
+	if hasTab && !hasShiftTab {
+		errs = append(errs, "tab is bound without shift+tab — selection navigation must work in both directions")
+	}
+	if hasShiftTab && !hasTab {
+		errs = append(errs, "shift+tab is bound without tab — selection navigation must work in both directions")
 	}
 	if len(errs) == 0 {
 		return nil

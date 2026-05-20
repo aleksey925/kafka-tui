@@ -90,16 +90,15 @@ func (m *Model) Breadcrumb() string {
 	return "config"
 }
 
-// SetSearch forwards a single screen-level query to both sub-tables;
-// Tab only switches focus, so an esc cascade can clear the filter
-// regardless of which table is currently focused.
+// SetSearch routes the query to the focused table only — the two panes
+// have disjoint columns, so a shared query would empty whichever pane
+// doesn't contain the typed term.
 func (m *Model) SetSearch(query string) {
-	m.cfgTable.SetSearch(query)
-	m.clusterTable.SetSearch(query)
+	m.activeTable().SetSearch(query)
 }
 
 func (m *Model) ActiveFilter() string {
-	return m.cfgTable.Search()
+	return m.activeTable().Search()
 }
 
 // SetSize splits the body area between the two tables. Three rows of
@@ -125,7 +124,7 @@ func (m *Model) HelpSections() []help.Section {
 
 func (m *Model) bindings() []keymap.Binding {
 	return []keymap.Binding{
-		{Keys: []string{"tab"}, Label: "switch table", Category: "Config sources", Hint: true, Handler: m.actSwitchTable},
+		keymap.FocusToggle("switch table", "Config sources", m.actSwitchTable),
 		{Keys: []string{"esc", "q"}, Label: "back", Category: "Config sources", Handler: m.actBack},
 		{Keys: []string{"/"}, Label: "filter rows", Category: "Config sources", Hint: true},
 		{Keys: []string{"s", "S"}, Label: "cycle sort", Category: "Config sources", Hint: true},

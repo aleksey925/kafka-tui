@@ -29,7 +29,7 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Handing the terminal off** (one handoff path for full-screen subprocesses),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
-toasts).
+toasts), **Tab navigation** (one paired contract for forward/backward).
 
 ## Text input
 
@@ -88,6 +88,19 @@ and go back" action and `ctrl+u` is the readline-style "wipe the buffer
 without navigating". Splitting `esc` into a two-press cascade would lose
 the muscle memory users bring from k9s, so the asymmetry between `esc`
 and `ctrl+u` here is deliberate, not a forgotten early return.
+
+## Tab navigation
+
+*Applies the single-source rule above: one paired contract for
+forward/backward selection navigation, never one half of it.*
+
+Screens with more than one selection target (panes, form fields, a
+popup's list-and-input split) advertise `tab` (forward) and `shift+tab`
+(backward) together — never one without the other.
+
+Why: users carry `tab` / `shift+tab` from forms and editors universally,
+so binding one without the other leaves the reverse silently
+unavailable.
 
 ## Handing the terminal off
 

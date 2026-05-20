@@ -281,6 +281,17 @@ func (f *Form) FocusKey(key string) {
 	}
 }
 
+// Bindings returns the navigation keystrokes Update() recognizes, as
+// advertise-only entries (no Handler) so screens embedding the form
+// merge them into their own help/hints from one place. Mirrors
+// [Menu.Bindings]. Passing category="" hides every entry from help.
+func (f *Form) Bindings(category string) []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{"tab"}, Label: "next field", Category: category},
+		{Keys: []string{"shift+tab"}, Label: "previous field", Category: category},
+	}
+}
+
 func (f *Form) FocusNext() {
 	if len(f.fields) == 0 {
 		return
