@@ -119,10 +119,6 @@ func TestFindProjectDir_NotFoundReturnsFalse(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestProduceHistory_NilStoreReturnsNil(t *testing.T) {
-	assert.Nil(t, produceHistory(nil, 0, nil))
-}
-
 func TestMergeVaultConfig(t *testing.T) {
 	tests := []struct {
 		name  string

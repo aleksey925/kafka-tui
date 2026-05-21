@@ -21,7 +21,7 @@ import (
 
 // refreshIntervalScreenID is the persistence key for this screen's chosen
 // refresh cadence. Stable across releases — changing it would orphan
-// previously-saved values in the user's SQLite store.
+// previously-saved values in the user's state file.
 const refreshIntervalScreenID = "topics"
 
 // defaultRefreshInterval seeds the refresher when the user hasn't picked a

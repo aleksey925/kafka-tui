@@ -139,7 +139,6 @@ func run(flags *cli.Flags) error {
 		Dialer:            dialer,
 		Pinger:            tui.NewClusterPinger(dialer, 5*time.Second),
 		Editor:            clusters.DefaultEditor(),
-		History:           produceHistory(store, loaded.Config.Produce.HistorySize, logger.Logger),
 		MessagesViewState: messagesViewState(store, logger.Logger),
 		RefreshIntervals:  refreshIntervals(store, logger.Logger),
 		Clipboard:         clip,
@@ -250,16 +249,6 @@ func findProjectDir(startDir string) (string, bool) {
 		}
 		dir = parent
 	}
-}
-
-func produceHistory(store *state.Store, histSize int, log *slog.Logger) produce.History {
-	if store == nil {
-		return nil
-	}
-	if histSize <= 0 {
-		histSize = produce.DefaultHistorySize
-	}
-	return tui.NewStateHistory(store, histSize, log)
 }
 
 func messagesViewState(store *state.Store, log *slog.Logger) messages.ViewStateRepository {

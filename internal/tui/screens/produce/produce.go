@@ -29,24 +29,6 @@ type Service interface {
 	TopicPartitions(ctx context.Context, topic string) ([]kafka.PartitionDetail, error)
 }
 
-// History persists past produces for prefill / p / n.
-type History interface {
-	LastForTopic(topic string) (Entry, bool)
-	Recent(n int) []Entry
-	Add(entry Entry)
-}
-
-type Entry struct {
-	Cluster     string
-	Topic       string
-	Key         []byte
-	Value       []byte
-	Headers     []kafka.Header
-	Partition   int32
-	Compression kafka.Compression
-	Timestamp   time.Time
-}
-
 // PagerOpener launches an external editor on the record (Key + Headers +
 // Value, serialized via [encodeEditorBuffer]). Edit returns a [tea.Cmd]
 // (not the edited bytes directly) so the real implementation can route
@@ -80,13 +62,10 @@ type Action struct {
 }
 
 type Options struct {
-	Service     Service
-	Cluster     string
-	Topic       string
-	ReadOnly    bool
-	HistorySize int
-	History     History
-	Pager       PagerOpener
+	Service  Service
+	Topic    string
+	ReadOnly bool
+	Pager    PagerOpener
 	// PrefillFromMessage activates resend mode (partition is reset to auto).
 	PrefillFromMessage *kafka.Message
 	Now                func() time.Time
@@ -94,17 +73,11 @@ type Options struct {
 }
 
 type Model struct {
-	svc     Service
-	cluster string
-	topic   string
+	svc   Service
+	topic string
 
 	readOnly bool
-	hist     History
 	pager    PagerOpener
-
-	histSize int
-	histPos  int // -1 = no history slot active
-	histBuf  []Entry
 
 	form       *components.Form
 	toasts     *components.Toasts
@@ -112,11 +85,6 @@ type Model struct {
 	sending    bool
 	fullscreen bool
 	mode       Mode
-
-	// partitionsTopic is the topic the picker options were loaded for;
-	// when `topic` diverges (resend / history) the options reset to {auto}
-	// until a fresh fetch lands.
-	partitionsTopic string
 
 	// partition type-to-jump: digits accumulate in partitionTypeBuf to
 	// select the matching option live; partitionTypeGen invalidates
@@ -132,7 +100,6 @@ type Model struct {
 
 	action Action
 
-	now    func() time.Time
 	styles theme.Styles
 }
 
@@ -158,9 +125,6 @@ const (
 	ModeInsert
 )
 
-// DefaultHistorySize matches the produce.history_size config default.
-const DefaultHistorySize = 10
-
 func New(opts Options) *Model {
 	now := opts.Now
 	if now == nil {
@@ -170,33 +134,20 @@ func New(opts Options) *Model {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	histSize := opts.HistorySize
-	if histSize <= 0 {
-		histSize = DefaultHistorySize
-	}
 
 	m := &Model{
 		svc:      opts.Service,
-		cluster:  opts.Cluster,
 		topic:    opts.Topic,
 		readOnly: opts.ReadOnly,
-		hist:     opts.History,
 		pager:    opts.Pager,
-		histSize: histSize,
-		histPos:  -1,
 		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:      now,
 		styles:   styles,
 	}
 	m.form = m.buildForm()
 	m.form.SetEditing(false)
 
 	if opts.PrefillFromMessage != nil {
-		m.applyMessage(*opts.PrefillFromMessage, true)
-	} else if m.hist != nil {
-		if last, ok := m.hist.LastForTopic(m.topic); ok {
-			m.applyEntry(last, false)
-		}
+		m.applyMessage(*opts.PrefillFromMessage)
 	}
 	return m
 }
@@ -233,7 +184,10 @@ func compressionOptions() []string {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return m.reloadPartitionsIfTopicChanged()
+	if m.topic == "" {
+		return nil
+	}
+	return loadPartitionsCmd(m.svc, m.topic)
 }
 
 type partitionsLoadedMsg struct {
@@ -267,34 +221,6 @@ func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
 		return
 	}
 	m.form.SetOptions(fieldPartition, partitionOptions(msg.partitions))
-	m.partitionsTopic = msg.topic
-}
-
-// reloadPartitionsIfTopicChanged: when the previous load was for a
-// different (non-empty) topic, options reset to {auto} so the user
-// doesn't pick from stale partitions. The currently selected value (e.g. a
-// partition prefilled from history or a re-send) is preserved as a
-// placeholder option until the fresh fetch resolves, so [components.Form.SetOptions]
-// doesn't snap a valid prefill back to "auto" the moment the topic changes.
-func (m *Model) reloadPartitionsIfTopicChanged() tea.Cmd {
-	if m.topic == m.partitionsTopic {
-		return nil
-	}
-	if m.partitionsTopic != "" {
-		opts := []string{partitionAuto}
-		if fld, ok := m.form.Field(fieldPartition); ok && fld.Value != "" && fld.Value != partitionAuto {
-			opts = append(opts, fld.Value)
-		}
-		m.form.SetOptions(fieldPartition, opts)
-	}
-	m.resetPartitionTypeBuf()
-	// clear so switching back to a previously loaded topic still
-	// re-triggers a fetch (the options were just wiped above).
-	m.partitionsTopic = ""
-	if m.topic == "" {
-		return nil
-	}
-	return loadPartitionsCmd(m.svc, m.topic)
 }
 
 func partitionOptions(ids []int32) []string {
@@ -377,7 +303,7 @@ func (m *Model) globalBindings() []keymap.Binding {
 }
 
 // normalBindings are NOT consulted in INSERT so tab/enter/esc retain
-// their text-editing meaning. Letter shortcuts (e/p/n) live here because in
+// their text-editing meaning. Letter shortcuts (e) live here because in
 // INSERT they are literal text; ctrl+u lives here too because in INSERT it
 // is the readline kill-to-line-start handled by the lineedit-backed form.
 func (m *Model) normalBindings() []keymap.Binding {
@@ -387,8 +313,6 @@ func (m *Model) normalBindings() []keymap.Binding {
 		{Keys: []string{"shift+tab", "up", "k"}, Label: "previous field", Category: "Form", Hint: true, Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
 		{Keys: []string{"e"}, Label: "open record in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
-		{Keys: []string{"p"}, Label: "history older", Category: "Produce", Hint: true, Handler: m.actHistoryOlder},
-		{Keys: []string{"n"}, Label: "history newer", Category: "Produce", Hint: true, Handler: m.actHistoryNewer},
 		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
 		{Keys: []string{"esc"}, Label: "cancel edit / close form", Category: "Form", Hint: true, HandlerMsg: m.handleEscNormal},
 	}
@@ -422,16 +346,6 @@ func (m *Model) actClear() tea.Cmd {
 	}
 	m.clear()
 	return nil
-}
-
-func (m *Model) actHistoryOlder() tea.Cmd {
-	m.historyStep(+1)
-	return m.reloadPartitionsIfTopicChanged()
-}
-
-func (m *Model) actHistoryNewer() tea.Cmd {
-	m.historyStep(-1)
-	return m.reloadPartitionsIfTopicChanged()
 }
 
 func (m *Model) Fullscreen() bool { return m.fullscreen }
@@ -784,7 +698,6 @@ func (m *Model) handleResult(msg ProduceResultMsg) {
 		"Sent to %s P%d:%d (%dms)",
 		r.Topic, r.Partition, r.Offset, r.Duration.Milliseconds(),
 	))
-	m.recordHistory(msg.Spec)
 	m.action.Sent = &r
 	if msg.Close {
 		m.action.Back = true
@@ -847,95 +760,22 @@ func parsePartition(raw string) (int32, error) {
 	return int32(n), nil //nolint:gosec // bounded above
 }
 
-func (m *Model) recordHistory(spec kafka.ProduceSpec) {
-	entry := Entry{
-		Cluster:     m.cluster,
-		Topic:       spec.Topic,
-		Key:         append([]byte(nil), spec.Key...),
-		Value:       append([]byte(nil), spec.Value...),
-		Headers:     append([]kafka.Header(nil), spec.Headers...),
-		Partition:   spec.Partition,
-		Compression: spec.Compression,
-		Timestamp:   m.now(),
-	}
-	if m.hist != nil {
-		m.hist.Add(entry)
-	}
-	// invalidate the in-memory cursor so the next `p` refetches.
-	m.histBuf = nil
-	m.histPos = -1
-}
-
 func (m *Model) clear() {
 	m.form.Reset()
 	m.setMode(m.mode)
 	m.resetPartitionTypeBuf()
 	m.err = ""
-	m.histPos = -1
-	m.histBuf = nil
 }
 
-// historyStep: +1 = older (p), -1 = newer (n). Lazy-loads.
-func (m *Model) historyStep(delta int) {
-	if m.hist == nil {
-		m.toasts.Push(components.ToastInfo, "history disabled")
-		return
-	}
-	if m.histBuf == nil {
-		m.histBuf = m.hist.Recent(m.histSize)
-	}
-	if len(m.histBuf) == 0 {
-		m.toasts.Push(components.ToastInfo, "no history yet")
-		return
-	}
-	pos := max(m.histPos+delta, -1)
-	if pos >= len(m.histBuf) {
-		pos = len(m.histBuf) - 1
-	}
-	m.histPos = pos
-	if pos < 0 {
-		// stepped past the newest — reset to a clean form. Reset keeps
-		// dynamically-loaded partition options so the picker doesn't
-		// collapse to {auto} every time the user walks off the end.
-		m.form.Reset()
-		m.setMode(m.mode)
-		return
-	}
-	m.applyEntry(m.histBuf[pos], false)
-}
-
-// applyEntry overwrites form fields. resetPartitionToAuto enforces the
-// resend rule "partition resets to auto" so the user picks a destination.
-func (m *Model) applyEntry(entry Entry, resetPartitionToAuto bool) {
-	m.topic = entry.Topic
-	if resetPartitionToAuto {
-		m.form.SetValue(fieldPartition, "auto")
-	} else {
-		m.form.SetValue(fieldPartition, formatPartition(entry.Partition))
-	}
-	m.form.SetValue(fieldCompression, string(entry.Compression))
-	m.form.SetValue(fieldKey, string(entry.Key))
-	m.form.SetList(fieldHeaders, formatHeaderList(entry.Headers))
-	m.form.SetValue(fieldValue, string(entry.Value))
-}
-
-func (m *Model) applyMessage(msg kafka.Message, resetPartitionToAuto bool) {
+// applyMessage seeds the form from a resent record. Partition resets to
+// "auto" rather than copying msg.Partition — the source partition is rarely
+// the right destination, so we force an explicit pick.
+func (m *Model) applyMessage(msg kafka.Message) {
 	m.topic = msg.Topic
-	if resetPartitionToAuto {
-		m.form.SetValue(fieldPartition, "auto")
-	} else {
-		m.form.SetValue(fieldPartition, strconv.FormatInt(int64(msg.Partition), 10))
-	}
+	m.form.SetValue(fieldPartition, "auto")
 	m.form.SetValue(fieldKey, string(msg.Key))
 	m.form.SetList(fieldHeaders, formatHeaderList(msg.Headers))
 	m.form.SetValue(fieldValue, string(msg.Value))
-}
-
-func formatPartition(p int32) string {
-	if p < 0 {
-		return "auto"
-	}
-	return strconv.FormatInt(int64(p), 10)
 }
 
 func formatHeaderList(headers []kafka.Header) []string {
@@ -989,9 +829,9 @@ func (m *Model) View() string {
 	case m.mode == ModeInsert:
 		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  readline: ctrl+a/e ctrl+u/k ctrl+w  on headers: ctrl+n add row  ctrl+x remove row"
 	case m.fullscreen:
-		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+u clear  e $EDITOR  p/n history  esc back to split"
+		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+shift+s send & keep  ctrl+u clear  e $EDITOR  esc back to split"
 	default:
-		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+u clear form  e $EDITOR  p/n history  esc cancel"
+		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+shift+s send & keep  ctrl+u clear form  e $EDITOR  esc cancel"
 	}
 	hint := m.styles.HintLabel.Render(hintText)
 

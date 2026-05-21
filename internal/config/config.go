@@ -34,7 +34,6 @@ type MessagesConfig struct {
 }
 
 type ProduceConfig struct {
-	HistorySize        int    `yaml:"history_size"`
 	DefaultCompression string `yaml:"default_compression"`
 }
 
@@ -56,7 +55,6 @@ func Defaults() Config {
 			MaxFiles:  5,
 		},
 		Produce: ProduceConfig{
-			HistorySize:        10,
 			DefaultCompression: "none",
 		},
 		Clipboard: ClipboardConfig{

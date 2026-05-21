@@ -1,6 +1,12 @@
-# Design decisions
+## What this is
 
-## Reference UX: k9s
+kafka-tui is a terminal client for Apache Kafka in the spirit of k9s. It lets
+developers browse topics, produce messages, and inspect consumer groups
+without leaving the shell.
+
+## Design decisions
+
+### Reference UX: k9s
 
 The app's UX is largely modeled on k9s — navigation flow, modal browsing, and
 shortcut conventions. Where a k9s shortcut maps cleanly to a Kafka concept, we
@@ -9,7 +15,7 @@ reuse it; where there is no direct analogue, we follow the same shape
 `ctrl+` only when a modifier is genuinely needed) rather than invent a new
 style.
 
-## Single source of behavior
+### Single source of behavior
 
 When a behavior must be uniform across the app (edit semantics, paste
 sanitization, global key handling, etc.), it lives in one shared place that
@@ -31,7 +37,7 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
 toasts), **Tab navigation** (one paired contract for forward/backward).
 
-## Text input
+### Text input
 
 *Applies the single-source rule above: one shared edit contract for every
 text input in the app.*
@@ -42,7 +48,7 @@ boundaries and line-bounded kills (`ctrl+u` / `ctrl+k` stop at `\n`, not at
 the buffer edge). Anything outside readline emacs mode is not part of the
 contract.
 
-## Forms: NORMAL / INSERT modes
+### Forms: NORMAL / INSERT modes
 
 Modal forms are modal in the vim sense:
 
@@ -55,7 +61,7 @@ without collision (e.g. `ctrl+u` clears the form in NORMAL and kills to
 line-start in INSERT). Transitions between modes are explicit — the user
 presses a key to enter or leave INSERT.
 
-## Reserved global shortcuts
+### Reserved global shortcuts
 
 *Applies the single-source rule above: one dispatcher owns these keys; no
 screen rebinds them locally.*
@@ -77,7 +83,7 @@ context. The key falls through to the overlay instead of firing a no-op
 global — that's how the picker's own `esc` closes it without the dispatcher
 trying to remount one on top.
 
-## Filter clear
+### Filter clear
 
 When a screen has an applied filter (the `/` prompt is closed and rows are
 filtered), `esc` both clears the filter and pops the screen in the same
@@ -89,7 +95,7 @@ without navigating". Splitting `esc` into a two-press cascade would lose
 the muscle memory users bring from k9s, so the asymmetry between `esc`
 and `ctrl+u` here is deliberate, not a forgotten early return.
 
-## Tab navigation
+### Tab navigation
 
 *Applies the single-source rule above: one paired contract for
 forward/backward selection navigation, never one half of it.*
@@ -102,7 +108,7 @@ Why: users carry `tab` / `shift+tab` from forms and editors universally,
 so binding one without the other leaves the reverse silently
 unavailable.
 
-## Handing the terminal off
+### Handing the terminal off
 
 *Applies the single-source rule above: one shared handoff path for any
 full-screen subprocess.*
@@ -115,7 +121,7 @@ child end up fighting over the same tty.
 Convention for editor-style handoffs: `e` (open). `ctrl+e` must never be used
 — it is reserved for "move to end of line" in text input.
 
-## Paste
+### Paste
 
 We rely on the terminal's bracketed-paste. `ctrl+v` is never bound by us —
 that would either duplicate or break the terminal's native paste shortcut.
@@ -135,7 +141,7 @@ Deviation: in modal forms, paste auto-transitions NORMAL → INSERT when the
 focused field is text-like — the only implicit mode crossing. Without it the
 user would paste into a field they haven't entered.
 
-## Bounded display
+### Bounded display
 
 *Applies the single-source rule above: content that can exceed its allotted
 space is handled in one of two canonical ways — neither is reinvented per
@@ -163,7 +169,7 @@ scroll math isn't the shared viewport. Its **cell content** still routes
 through the shared truncate helper, so visually the table participates in
 the rule even though its scroll path is separate.
 
-## Compound shortcuts via popup menus
+### Compound shortcuts via popup menus
 
 *Applies the single-source rule above: every popup menu in the app
 shares one implementation (navigation, digit selection, cancel
@@ -190,7 +196,7 @@ open it owns the input stream — the screen's own bindings (including
 digits used elsewhere as view-mode toggles) are suspended until the
 menu confirms or cancels.
 
-## Toast / flash routing
+### Toast / flash routing
 
 *Applies the single-source rule above: one flash bar above the body chrome
 displays every screen's toasts.*
@@ -213,7 +219,7 @@ How to apply: if the active screen has no toast queue, route the toast to
 the screen the user will land on next (the parent / listing screen). A
 toast with no surface to land on is a dropped error.
 
-## Auto-refresh: quiet by default
+### Auto-refresh: quiet by default
 
 Tick-driven refreshes are **silent** — no success toast on the auto cycle.
 Only user-initiated `r` surfaces a confirmation. Recurring or permanent
@@ -225,7 +231,7 @@ attention and trains them to ignore the flash bar. The asymmetry (`r` is
 loud, auto is quiet) keeps the bar useful for things that actually
 changed.
 
-## Async lifecycle and stale results
+### Async lifecycle and stale results
 
 A screen with background work (fetches, dials, RPCs, periodic ticks) must
 protect against results that arrive after the screen has moved on — a
@@ -256,7 +262,7 @@ How to apply: any goroutine or background command that calls the network
 or sleeps for a tick — stamp it or scope it. No exceptions for "this
 fetch is fast enough to not race".
 
-## Placeholder pipeline
+### Placeholder pipeline
 
 *Applies the single-source rule above: one pipeline resolves placeholders in
 every input, regardless of where the input came from.*
@@ -276,7 +282,7 @@ is a single staged pipeline; phase order is load-bearing:
 
 Why: vault.address / vault.token themselves may be supplied as `${env:...}`
 or `${file:...}` placeholders, so the env+file phase must materialize them
-before the vault phase builds the client from cfg.Vault. Symmetrically,
+before the vault phase builds the client from the resolved vault config. Symmetrically,
 `${vault:...}` can legitimately appear in CLI flag values (e.g. a SASL
 password), so the vault phase must walk CLI targets, not only YAML.
 `${vault:...}` is NOT allowed in vault.address / vault.token themselves —
@@ -289,7 +295,7 @@ the same `${vault:...}` referenced from a CLI flag does not. This is by
 design — CLI flags model "process invocation context" and shouldn't drift
 mid-process.
 
-## Optional subsystems and graceful degradation
+### Optional subsystems and graceful degradation
 
 Non-essential subsystems — persistence stores (history, view state,
 refresh intervals), clipboard, file watcher, broker metadata, ACL probes
@@ -311,3 +317,15 @@ How to apply: when adding a new dependency to a screen, the nil case is
 part of the design, not an afterthought. If the subsystem cannot be
 optional (brokers, auth), that's an explicit deviation worth flagging in
 review.
+
+## Project commands
+
+- `make build` — build the binary into `dist/`
+- `make install` — build and copy the binary to `~/.local/bin`
+- `make snapshot` — produce a multi-platform snapshot release via goreleaser
+- `make lint` — run formatters and linters via `prek`
+- `make test` — run the test suite
+- `make race` — run tests with the race detector
+- `make cover` — run tests with coverage and print a per-function summary
+- `make deps` — refresh `go.mod` and the vendored deps
+- `make clean` — remove `dist/` and the coverage profile

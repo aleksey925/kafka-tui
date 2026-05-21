@@ -7,7 +7,6 @@ topics:
   columns: [name, partitions, replicas]
 
 produce:
-  history_size: 5
   default_compression: gzip
 
 clipboard:

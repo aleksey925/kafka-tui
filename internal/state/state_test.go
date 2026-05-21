@@ -1,25 +1,26 @@
 package state_test
 
 import (
-	"context"
-	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/state"
 )
 
-func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
+func TestOpen_CreatesParentDirectoryAndStartsEmpty(t *testing.T) {
 	// arrange
 	root := t.TempDir()
-	path := filepath.Join(root, "nested", "kafka-tui", "state.db")
+	path := filepath.Join(root, "nested", "kafka-tui", "state.json")
 
 	// act
 	store, err := state.Open(t.Context(), path)
@@ -28,504 +29,201 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	assert.Equal(t, path, store.Path())
+	// nothing on disk yet — load was a no-op on a missing file.
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "fresh open must not create the state file pre-emptively")
 
-	// schema_version is populated when migrations apply.
-	db := openRaw(t, path)
-	t.Cleanup(func() { _ = db.Close() })
-
-	var version int
-	require.NoError(t, db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version))
-	assert.Equal(t, 3, version)
-
-	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+	// parent dir must exist with 0o700 perms.
+	dirInfo, err := os.Stat(filepath.Dir(path))
 	require.NoError(t, err)
-	defer func() { _ = rows.Close() }()
-
-	var tables []string
-	for rows.Next() {
-		var name string
-		require.NoError(t, rows.Scan(&name))
-		tables = append(tables, name)
-	}
-	require.NoError(t, rows.Err())
-	assert.Contains(t, tables, "produce_history")
-	assert.Contains(t, tables, "schema_version")
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm())
 }
 
-// Regression: the state DB stores produced payloads which may include
-// keys, tokens, or other sensitive content. On shared hosts a 0o644 DB
-// (sqlite's default + umask) lets other accounts read those payloads.
 func TestOpen_RestrictsFilePermissions(t *testing.T) {
 	// arrange
-	root := t.TempDir()
-	path := filepath.Join(root, "kafka-tui", "state.db")
-
-	// act
+	path := filepath.Join(t.TempDir(), "kafka-tui", "state.json")
 	store, err := state.Open(t.Context(), path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	// assert — parent dir 0o700, DB file 0o600.
+	// act — first save materializes the file.
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", time.Second))
+
+	// assert — parent dir 0o700, file 0o600.
 	dirInfo, err := os.Stat(filepath.Dir(path))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(),
-		"state directory must be user-private (0o700)")
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm())
 
 	fileInfo, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), fileInfo.Mode().Perm(),
-		"state DB must be user-private (0o600)")
+	assert.Equal(t, os.FileMode(0o600), fileInfo.Mode().Perm())
 }
 
-func TestOpen_InMemoryIsIsolated(t *testing.T) {
+func TestOpen_InMemoryStaysInMemory(t *testing.T) {
 	// arrange + act
 	store, err := state.Open(t.Context(), ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	// assert
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "topic-a", 0, time.Unix(1, 0)), 5))
-	got, err := store.RecentProduce(t.Context(), 5)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-}
-
-func TestApplyMigrations_Idempotent(t *testing.T) {
-	// arrange
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := state.Open(t.Context(), path)
-	require.NoError(t, err)
-	require.NoError(t, store.Close())
-
-	// act — reopening must not re-run migrations or fail.
-	store2, err := state.Open(t.Context(), path)
-
-	// assert
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store2.Close() })
-
-	db := openRaw(t, path)
-	t.Cleanup(func() { _ = db.Close() })
-	var rowCount int
-	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&rowCount))
-	assert.Equal(t, 3, rowCount)
-}
-
-func TestAddProduce_RoundTripsEveryField(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	added := state.ProduceEntry{
-		Cluster: "prod",
-		Topic:   "events",
-		Key:     []byte("user-42"),
-		Value:   []byte(`{"hello":"world"}`),
-		Headers: []kafka.Header{
-			{Key: "trace-id", Value: []byte("abc-123")},
-			{Key: "binary", Value: []byte{0x00, 0x01, 0xff}},
-		},
-		Partition:   2,
-		Compression: kafka.CompressionZstd,
-		Timestamp:   time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
-	}
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 10))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "events")
-
-	// assert
+	// assert — writes survive across calls but never touch disk.
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, added, got)
+	assert.Equal(t, 5*time.Second, got)
 }
 
-func TestAddProduce_EmptyKeyAndValueAreNullable(t *testing.T) {
+func TestOpen_ReloadsPersistedSnapshot(t *testing.T) {
 	// arrange
-	store := openMemory(t)
-	added := state.ProduceEntry{
-		Cluster:     "c",
-		Topic:       "t",
-		Partition:   kafka.PartitionAuto,
-		Compression: kafka.CompressionNone,
-		Timestamp:   time.Unix(1, 0).UTC(),
-	}
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 0))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "t")
-
-	// assert
+	path := filepath.Join(t.TempDir(), "state.json")
+	first, err := state.Open(t.Context(), path)
 	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Nil(t, got.Key)
-	assert.Nil(t, got.Value)
-	assert.Nil(t, got.Headers)
-	assert.Equal(t, kafka.CompressionNone, got.Compression)
-	assert.Equal(t, kafka.PartitionAuto, got.Partition)
-}
-
-func TestLastProduceForTopic_MissingTopicReturnsFalse(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "alpha", 0, time.Unix(1, 0)), 0))
-
-	// act
-	got, ok, err := store.LastProduceForTopic(t.Context(), "beta")
-
-	// assert
-	require.NoError(t, err)
-	assert.False(t, ok)
-	assert.Equal(t, state.ProduceEntry{}, got)
-}
-
-func TestLastProduceForTopic_PicksNewest(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	older := entry("c", "events", 0, time.Unix(100, 0))
-	older.Value = []byte("old")
-	newer := entry("c", "events", 1, time.Unix(200, 0))
-	newer.Value = []byte("new")
-	require.NoError(t, store.AddProduce(t.Context(), older, 0))
-	require.NoError(t, store.AddProduce(t.Context(), newer, 0))
-
-	// act
-	got, ok, err := store.LastProduceForTopic(t.Context(), "events")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, []byte("new"), got.Value)
-	assert.Equal(t, int32(1), got.Partition)
-}
-
-func TestRecentProduce_OrdersNewestFirst(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	entries := []state.ProduceEntry{
-		entry("alpha", "t1", 0, time.Unix(100, 0)),
-		entry("beta", "t2", 0, time.Unix(200, 0)),
-		entry("gamma", "t3", 0, time.Unix(300, 0)),
-	}
-	for _, e := range entries {
-		require.NoError(t, store.AddProduce(t.Context(), e, 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 5)
-
-	// assert
-	require.NoError(t, err)
-	gotTopics := topics(got)
-	assert.Equal(t, []string{"t3", "t2", "t1"}, gotTopics)
-}
-
-func TestRecentProduce_RespectsLimit(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3, 4} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "t", p, time.Unix(int64(p+1), 0)), 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 2)
-
-	// assert
-	require.NoError(t, err)
-	require.Len(t, got, 2)
-	assert.Equal(t, int32(4), got[0].Partition)
-	assert.Equal(t, int32(3), got[1].Partition)
-}
-
-func TestRecentProduce_ZeroOrNegativeLimit(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "t", 0, time.Unix(1, 0)), 0))
-
-	// act
-	gotZero, errZero := store.RecentProduce(t.Context(), 0)
-	gotNeg, errNeg := store.RecentProduce(t.Context(), -3)
-
-	// assert
-	require.NoError(t, errZero)
-	require.NoError(t, errNeg)
-	assert.Empty(t, gotZero)
-	assert.Empty(t, gotNeg)
-}
-
-func TestAddProduce_TrimsToHistorySize(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3, 4, 5} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "events", p, time.Unix(int64(p+1), 0)), 3))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 100)
-
-	// assert
-	require.NoError(t, err)
-	require.Len(t, got, 3)
-	gotPartitions := []int32{got[0].Partition, got[1].Partition, got[2].Partition}
-	assert.Equal(t, []int32{5, 4, 3}, gotPartitions)
-}
-
-func TestAddProduce_ZeroHistorySizeKeepsEverything(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "events", p, time.Unix(int64(p+1), 0)), 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 100)
-
-	// assert
-	require.NoError(t, err)
-	assert.Len(t, got, 4)
-}
-
-func TestAddProduce_DefaultsTimestampWhenZero(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	before := time.Now().Add(-time.Second)
-	added := entry("c", "t", 0, time.Time{})
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 0))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "t")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, got.Timestamp.After(before),
-		"persisted ts %s should be after %s", got.Timestamp, before)
-}
-
-func TestClose_IsSafeToCallTwice(t *testing.T) {
-	// arrange
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-
-	// act
-	require.NoError(t, store.Close())
-	err2 := store.Close()
-
-	// assert — modernc returns sql.ErrConnDone or nil; both are acceptable.
-	if err2 != nil {
-		assert.ErrorIs(t, err2, sql.ErrConnDone)
-	}
-}
-
-func TestDefaultPath_ReturnsExpectedSuffix(t *testing.T) {
-	// act
-	got, err := state.DefaultPath()
-
-	// assert
-	require.NoError(t, err)
-	assert.True(t, filepath.IsAbs(got))
-	assert.Equal(t, filepath.Join(".local", "share", "kafka-tui", "state.db"),
-		filepath.Join(filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(got)))),
-			filepath.Base(filepath.Dir(filepath.Dir(got))),
-			filepath.Base(filepath.Dir(got)),
-			filepath.Base(got)))
-}
-
-func TestAddProduce_AfterClose_ReturnsError(t *testing.T) {
-	// arrange
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-	require.NoError(t, store.Close())
-
-	// act
-	err = store.AddProduce(t.Context(), entry("c", "t", 0, time.Unix(1, 0)), 0)
-
-	// assert
-	require.Error(t, err)
-}
-
-func TestAddProduce_ContextCancellationStopsInsert(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	// act
-	err := store.AddProduce(ctx, entry("c", "t", 0, time.Unix(1, 0)), 0)
-
-	// assert
-	require.Error(t, err)
-	got, listErr := store.RecentProduce(t.Context(), 10)
-	require.NoError(t, listErr)
-	assert.Empty(t, got)
-}
-
-func TestDefaultPath_HomeUnsetReturnsError(t *testing.T) {
-	// arrange — os.UserHomeDir consults different env vars per platform.
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("USERPROFILE", "")
-		t.Setenv("HOMEDRIVE", "")
-		t.Setenv("HOMEPATH", "")
-	case "plan9":
-		t.Setenv("home", "")
-	default:
-		t.Setenv("HOME", "")
-	}
-
-	// act
-	_, err := state.DefaultPath()
-
-	// assert
-	require.Error(t, err)
-}
-
-func TestOpen_EmptyPathResolvesViaDefaultPath(t *testing.T) {
-	// arrange
-	tmp := t.TempDir()
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("USERPROFILE", tmp)
-	default:
-		t.Setenv("HOME", tmp)
-	}
-
-	// act
-	store, err := state.Open(t.Context(), "")
-
-	// assert
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-
-	expected := filepath.Join(tmp, ".local", "share", "kafka-tui", "state.db")
-	assert.Equal(t, expected, store.Path())
-
-	info, statErr := os.Stat(expected)
-	require.NoError(t, statErr)
-	assert.False(t, info.IsDir())
-}
-
-func TestOpen_CannotCreateParentDirectoryReturnsError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: MkdirAll succeeds against a regular file")
-	}
-	// arrange — make the parent path a file, so MkdirAll fails.
-	tmp := t.TempDir()
-	blocker := filepath.Join(tmp, "blocker")
-	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
-	dbPath := filepath.Join(blocker, "nested", "state.db")
-
-	// act
-	_, err := state.Open(t.Context(), dbPath)
-
-	// assert
-	require.Error(t, err)
-}
-
-func TestClose_NilReceiverIsSafe(t *testing.T) {
-	// arrange
-	var s *state.Store
-
-	// act + assert
-	require.NoError(t, s.Close())
-}
-
-func TestOpen_ContextCancelledBeforePingReturnsError(t *testing.T) {
-	// arrange
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "state.db")
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	// act
-	store, err := state.Open(ctx, dbPath)
-
-	// assert
-	require.Error(t, err)
-	if store != nil {
-		_ = store.Close()
-	}
-}
-
-// helpers
-
-func openMemory(t *testing.T) *state.Store {
-	t.Helper()
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	return store
-}
-
-func openRaw(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+path)
-	require.NoError(t, err)
-	return db
-}
-
-func TestMessagesView_RoundTrip(t *testing.T) {
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-
-	ts := time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC)
 	view := state.MessagesView{
 		SeekMode:   3,
-		Partition:  2,
-		Offset:     500,
-		Timestamp:  ts,
+		Partition:  7,
+		Offset:     1042,
+		Timestamp:  time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC),
 		HasPart:    true,
 		Partitions: "0-2,5",
 	}
-	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", view))
+	require.NoError(t, first.SaveMessagesView(t.Context(), "stage", "orders", view))
+	require.NoError(t, first.SaveRefreshInterval(t.Context(), "topics", 30*time.Second))
+	require.NoError(t, first.Close())
 
-	got, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+	// act — reopen against the same path.
+	second, err := state.Open(t.Context(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+
+	gotView, ok, err := second.LoadMessagesView(t.Context(), "stage", "orders")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, view.SeekMode, got.SeekMode)
-	assert.Equal(t, view.Partition, got.Partition)
-	assert.Equal(t, view.Offset, got.Offset)
-	assert.True(t, ts.Equal(got.Timestamp))
-	assert.Equal(t, view.HasPart, got.HasPart)
-	assert.Equal(t, view.Partitions, got.Partitions)
+	assert.Equal(t, view, gotView)
+
+	gotInt, ok, err := second.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 30*time.Second, gotInt)
 }
 
-func TestMessagesView_AbsentReturnsFalse(t *testing.T) {
-	store, err := state.Open(t.Context(), ":memory:")
+func TestOpen_MalformedFileIsQuarantined(t *testing.T) {
+	// arrange — pre-seed a non-JSON file at the expected path.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	require.NoError(t, os.WriteFile(path, []byte("this is not json"), 0o600))
+
+	// act
+	store, err := state.Open(t.Context(), path)
+	require.NoError(t, err, "broken file must not prevent the store from opening")
+	t.Cleanup(func() { _ = store.Close() })
+
+	// assert — original file moved aside, no usable state on the new one.
+	_, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	assert.False(t, ok, "quarantined snapshot must not leak rows into the fresh store")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var foundBroken bool
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "state.json.broken-") {
+			foundBroken = true
+		}
+	}
+	assert.True(t, foundBroken, "malformed file must be renamed to state.json.broken-<unixts>")
+}
+
+func TestOpen_UnknownVersionIsQuarantined(t *testing.T) {
+	// arrange — valid JSON, but a version number this binary doesn't recognize.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	bogus := map[string]any{
+		"version":           999,
+		"refresh_intervals": map[string]int64{"topics": int64(time.Hour)},
+	}
+	buf, err := json.Marshal(bogus)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, buf, 0o600))
+
+	// act
+	store, err := state.Open(t.Context(), path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	_, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+	// assert — payload was NOT loaded; the file was moved aside.
+	_, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	assert.False(t, ok, "out-of-band version must not be silently honored")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var foundBroken bool
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "state.json.broken-") {
+			foundBroken = true
+		}
+	}
+	assert.True(t, foundBroken, "unknown version must be quarantined")
+}
+
+func TestSaveMessagesView_RoundTripsEveryField(t *testing.T) {
+	store := openMemory(t)
+	view := state.MessagesView{
+		SeekMode:   4,
+		Partition:  2,
+		Offset:     500,
+		Timestamp:  time.Date(2026, 4, 27, 10, 0, 0, 0, time.UTC),
+		HasPart:    true,
+		Partitions: "0-3",
+	}
+
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", view))
+	got, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, view, got)
+}
+
+func TestLoadMessagesView_MissingReturnsFalse(t *testing.T) {
+	store := openMemory(t)
+
+	_, ok, err := store.LoadMessagesView(t.Context(), "c1", "nope")
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
 
-func TestMessagesView_PerClusterIsolation(t *testing.T) {
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+func TestSaveMessagesView_PerClusterAndTopicIsolation(t *testing.T) {
+	store := openMemory(t)
 
 	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 1}))
 	require.NoError(t, store.SaveMessagesView(t.Context(), "c2", "orders", state.MessagesView{SeekMode: 2}))
+	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "events", state.MessagesView{SeekMode: 3}))
 
-	v1, _, _ := store.LoadMessagesView(t.Context(), "c1", "orders")
-	v2, _, _ := store.LoadMessagesView(t.Context(), "c2", "orders")
-	assert.Equal(t, 1, v1.SeekMode)
-	assert.Equal(t, 2, v2.SeekMode)
+	for _, tc := range []struct {
+		cluster, topic string
+		wantMode       int
+	}{
+		{"c1", "orders", 1},
+		{"c2", "orders", 2},
+		{"c1", "events", 3},
+	} {
+		got, ok, err := store.LoadMessagesView(t.Context(), tc.cluster, tc.topic)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, tc.wantMode, got.SeekMode, "(%s, %s)", tc.cluster, tc.topic)
+	}
 }
 
-func TestMessagesView_UpsertOverwrites(t *testing.T) {
-	store, err := state.Open(t.Context(), ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+func TestSaveMessagesView_UpsertOverwrites(t *testing.T) {
+	store := openMemory(t)
 
 	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 1, Partitions: "0"}))
 	require.NoError(t, store.SaveMessagesView(t.Context(), "c1", "orders", state.MessagesView{SeekMode: 5, Partitions: "0-4"}))
 
-	got, _, _ := store.LoadMessagesView(t.Context(), "c1", "orders")
+	got, ok, err := store.LoadMessagesView(t.Context(), "c1", "orders")
+	require.NoError(t, err)
+	require.True(t, ok)
 	assert.Equal(t, 5, got.SeekMode)
 	assert.Equal(t, "0-4", got.Partitions)
 }
@@ -574,16 +272,6 @@ func TestRefreshInterval_PerScreenIsolation(t *testing.T) {
 	assert.Equal(t, time.Minute, groupsVal)
 }
 
-func TestRefreshInterval_UpsertOverwrites(t *testing.T) {
-	store := openMemory(t)
-
-	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
-	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", time.Minute))
-
-	got, _, _ := store.LoadRefreshInterval(t.Context(), "topics")
-	assert.Equal(t, time.Minute, got)
-}
-
 func TestRefreshInterval_NegativeClampedOnSave(t *testing.T) {
 	store := openMemory(t)
 
@@ -592,24 +280,168 @@ func TestRefreshInterval_NegativeClampedOnSave(t *testing.T) {
 	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, time.Duration(0), got,
-		"negative durations are not meaningful — clamp to 0 (Manual) on the way in")
+	assert.Equal(t, time.Duration(0), got)
 }
 
-func entry(cluster, topic string, partition int32, ts time.Time) state.ProduceEntry {
-	return state.ProduceEntry{
-		Cluster:     cluster,
-		Topic:       topic,
-		Partition:   partition,
-		Compression: kafka.CompressionNone,
-		Timestamp:   ts,
+// Regression: a manually-edited file with a negative duration must clamp
+// on load, not propagate the bogus value through the Refresher contract.
+func TestRefreshInterval_NegativeClampedOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"version": 1,
+		"refresh_intervals": {"topics": -5000000000}
+	}`), 0o600))
+
+	store, err := state.Open(t.Context(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, time.Duration(0), got)
+}
+
+func TestConcurrentSavesDoNotCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := state.Open(t.Context(), path)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	const writers = 8
+	const ops = 25
+	wg.Add(writers)
+	for w := range writers {
+		go func() {
+			defer wg.Done()
+			for i := range ops {
+				_ = store.SaveRefreshInterval(t.Context(),
+					fmt.Sprintf("screen-%d", w),
+					time.Duration(i+1)*time.Second)
+			}
+		}()
+	}
+	wg.Wait()
+	require.NoError(t, store.Close())
+
+	// reopen against the same path so the assertion exercises the on-disk
+	// file's integrity, not the original in-memory snapshot.
+	reopened, err := state.Open(t.Context(), path)
+	require.NoError(t, err, "file must still be parseable after the save storm")
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	// last-writer-wins per key — every screen gets the final value (ops*1s).
+	for w := range writers {
+		got, ok, err := reopened.LoadRefreshInterval(t.Context(), fmt.Sprintf("screen-%d", w))
+		require.NoError(t, err)
+		require.True(t, ok, "screen-%d must be present on disk", w)
+		assert.Equal(t, time.Duration(ops)*time.Second, got)
 	}
 }
 
-func topics(entries []state.ProduceEntry) []string {
-	out := make([]string, len(entries))
-	for i, e := range entries {
-		out[i] = e.Topic
+func TestSave_AtomicReplaceLeavesNoTmpFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	store, err := state.Open(t.Context(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	for i := range 5 {
+		require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics",
+			time.Duration(i+1)*time.Second))
 	}
-	return out
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".tmp",
+			"save must temp+rename atomically — leftover %q means a path leaked", e.Name())
+	}
+}
+
+func TestClose_IsSafeToCallTwice(t *testing.T) {
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+
+	require.NoError(t, store.Close())
+	require.NoError(t, store.Close())
+}
+
+func TestClose_NilReceiverIsSafe(t *testing.T) {
+	var s *state.Store
+	require.NoError(t, s.Close())
+}
+
+func TestDefaultPath_ReturnsExpectedSuffix(t *testing.T) {
+	got, err := state.DefaultPath()
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(got))
+	assert.Equal(t,
+		filepath.Join(".local", "share", "kafka-tui", "state.json"),
+		filepath.Join(filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(got)))),
+			filepath.Base(filepath.Dir(filepath.Dir(got))),
+			filepath.Base(filepath.Dir(got)),
+			filepath.Base(got)))
+}
+
+func TestDefaultPath_HomeUnsetReturnsError(t *testing.T) {
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+	case "plan9":
+		t.Setenv("home", "")
+	default:
+		t.Setenv("HOME", "")
+	}
+
+	_, err := state.DefaultPath()
+	require.Error(t, err)
+}
+
+func TestOpen_EmptyPathResolvesViaDefaultPath(t *testing.T) {
+	tmp := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", tmp)
+	default:
+		t.Setenv("HOME", tmp)
+	}
+
+	store, err := state.Open(t.Context(), "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	// the resolved path is materialized on first save.
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", time.Second))
+	expected := filepath.Join(tmp, ".local", "share", "kafka-tui", "state.json")
+	info, statErr := os.Stat(expected)
+	require.NoError(t, statErr)
+	assert.False(t, info.IsDir())
+}
+
+func TestOpen_CannotCreateParentDirectoryReturnsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: MkdirAll succeeds against a regular file")
+	}
+	// arrange — make the parent path a file, so MkdirAll fails.
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
+	path := filepath.Join(blocker, "nested", "state.json")
+
+	_, err := state.Open(t.Context(), path)
+	require.Error(t, err)
+}
+
+// helpers
+
+func openMemory(t *testing.T) *state.Store {
+	t.Helper()
+	store, err := state.Open(t.Context(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }

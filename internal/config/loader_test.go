@@ -95,7 +95,6 @@ func TestLoad_ProjectOverridesGlobal(t *testing.T) {
 	// nested map merge: clipboard fully replaced, default_compression untouched
 	assert.Equal(t, "osc52", loaded.Config.Clipboard.Method)
 	assert.Equal(t, "gzip", loaded.Config.Produce.DefaultCompression)
-	assert.Equal(t, 5, loaded.Config.Produce.HistorySize)
 
 	// clusters merged by name: prod kept brokers from global, color from project
 	prod := findCluster(t, loaded.Clusters, "prod")

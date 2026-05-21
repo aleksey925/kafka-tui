@@ -59,8 +59,6 @@ type Bootstrap struct {
 	Pinger                  clusters.Pinger
 	// Editor defaults to [clusters.DefaultEditor] when nil.
 	Editor clusters.Editor
-	// History persists produce form entries. nil disables history.
-	History produce.History
 	// Clipboard. nil disables copy.
 	Clipboard messages.Clipboard
 	// MessagesViewState persists per-(cluster, topic) seek state. nil

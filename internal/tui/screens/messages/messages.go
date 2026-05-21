@@ -1729,8 +1729,8 @@ func (m *Model) renderSmartFilter() string {
 // ----- persistence -----
 
 // persistView returns a tea.Cmd that asynchronously saves the current view
-// state. Save runs off the event loop so a slow repo (network FS, locked
-// SQLite file) can't stall keyboard / refresh handling for seconds at a time.
+// state. Save runs off the event loop so slow disk I/O (network FS, rename
+// latency) can't block keyboard / refresh handling for seconds at a time.
 // Failures surface back via [viewPersistedMsg] as a warning toast.
 func (m *Model) persistView() tea.Cmd {
 	if m.repo == nil || m.cluster == "" || m.topic == "" {

@@ -147,14 +147,10 @@ func (m *Model) newMessages() *messages.Model {
 }
 
 func (m *Model) newProduce() *produce.Model {
-	cfg := m.boot.Loaded.Config
 	return produce.New(produce.Options{
 		Service:            m.client,
-		Cluster:            m.activeClu,
 		Topic:              m.navTopic,
 		ReadOnly:           m.clusterRO,
-		HistorySize:        cfg.Produce.HistorySize,
-		History:            m.boot.History,
 		Pager:              m.boot.Pager,
 		PrefillFromMessage: m.navPrefill,
 		Now:                m.now,
