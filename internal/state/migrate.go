@@ -62,6 +62,14 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		version: 4,
+		stmts: []string{
+			`DROP INDEX IF EXISTS produce_history_cluster_topic_ts_idx`,
+			`DROP INDEX IF EXISTS produce_history_ts_idx`,
+			`DROP TABLE IF EXISTS produce_history`,
+		},
+	},
 }
 
 // applyMigrations runs every migration newer than the recorded version. The

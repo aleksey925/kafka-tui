@@ -58,7 +58,7 @@ like any other editor window.
 - Topic list with configurable columns, fuzzy search, sorting, and create / clone / delete flows
 - Message browser with follow-mode, partition filters, jump-by-offset / timestamp / partition,
   JSON / raw / hex value views, and copy / save / open-in-`$EDITOR`
-- Producer form with compression, dynamic headers, history, prefill-from-last, and resend-from-message
+- Producer form with compression, dynamic headers, and resend-from-message
 - Consumer groups list with lazy lag aggregation, detail view, and 4-step (or express) reset offsets flow
 - Hierarchical YAML config: global (`~/.kafka-tui/`) and project (`<repo>/.kafka-tui/`) layers
 - Placeholders in any string field: `${env:...}`, `${file:...}`, `${vault:...}`
@@ -169,8 +169,7 @@ samples covering all fields below live in [`examples/`](examples/).
 | `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`.             |
 | `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                                          |
 | `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                                           |
-| `produce`   | `history_size`             | How many recent produce events to keep for `Ctrl+P` / `Ctrl+N` recall.                                                            |
-|             | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
+| `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
 | `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                                      |
 | `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                 |
 |             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)). |

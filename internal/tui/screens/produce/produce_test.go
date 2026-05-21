@@ -201,42 +201,6 @@ func TestPartition_CycleSelectsManualNumber(t *testing.T) {
 	assert.Equal(t, int32(3), svc.Sent()[0].Partition)
 }
 
-// Regression: when the user toggles between two topics via history faster
-// than the metadata fetch can complete, the picker must not get stuck on
-// `[auto]` for the original topic just because its prior load result is
-// still tracked as the "current" topic on the model.
-func TestPartition_RapidTopicTogglePreservesOptionsAfterReturn(t *testing.T) {
-	svc := newFakeService()
-	svc.setPartitions(0, 1, 2)
-	hist := newFakeHistory()
-	// histBuf[0] is newest; `p` walks toward older entries.
-	hist.entries = []produce.Entry{
-		{Topic: "topic-a", Partition: 0, Compression: kafka.CompressionNone},
-		{Topic: "topic-b", Partition: 0, Compression: kafka.CompressionNone},
-	}
-	m := produce.New(produce.Options{Service: svc, Topic: "topic-a", History: hist})
-	drive(t, m, m.Init())
-
-	// `p` onto the topic-a entry — same topic, no reload expected.
-	_ = m.Update(keyPress("p"))
-
-	// `p` onto the topic-b entry — options are wiped and a load for
-	// topic-b is emitted. Intentionally do NOT drive that cmd: we want to
-	// model the case where the user moves away before topic-b's metadata
-	// arrives.
-	_ = m.Update(keyPress("p"))
-
-	// `n` back to the topic-a entry. The picker must re-issue a fetch
-	// for topic-a (the prior wipe to [auto] cleared its options).
-	cmd := m.Update(keyPress("n"))
-	require.NotNil(t, cmd, "n back to topic-a must re-fetch its partitions")
-	drive(t, m, cmd)
-
-	got, ok := m.Form().Field("partition")
-	require.True(t, ok)
-	assert.Equal(t, []string{"auto", "0", "1", "2"}, got.Options)
-}
-
 func TestPartition_TypeToJumpSelectsExactMatch(t *testing.T) {
 	svc := newFakeService()
 	svc.setPartitions(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
@@ -493,29 +457,6 @@ func TestTextarea_NormalModeScrollKeysPanViewport(t *testing.T) {
 		"end in NORMAL on a textarea must scroll the viewport to the bottom")
 }
 
-// Regression: stepping past the newest history entry resets the form the
-// same way ctrl+u does. The partition options must be preserved too —
-// before the fix, this path also rebuilt the form and dropped the picker
-// to {auto}.
-func TestHistoryStep_PastNewestPreservesLoadedPartitionOptions(t *testing.T) {
-	svc := newFakeService()
-	svc.setPartitions(0, 1, 2)
-	hist := newFakeHistory()
-	hist.entries = []produce.Entry{
-		{Topic: "orders", Partition: 1, Compression: kafka.CompressionNone, Key: []byte("k"), Value: []byte("v")},
-	}
-	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
-	drive(t, m, m.Init())
-
-	// `p` lands on the newest entry; `n` then walks off the end and
-	// triggers the past-newest "reset to clean form" branch.
-	_ = m.Update(keyPress("p"))
-	_ = m.Update(keyPress("n"))
-
-	got, _ := m.Form().Field("partition")
-	assert.Equal(t, []string{"auto", "0", "1", "2"}, got.Options)
-}
-
 func TestPaste_InNormalAutoEntersInsertAndInsertsValue(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
@@ -631,106 +572,6 @@ func TestPrefillFromMessage_PopulatesFieldsAndResetsPartition(t *testing.T) {
 	assert.Equal(t, `{"id":1}`, get("value"))
 	headers, _ := m.Form().Field("headers")
 	assert.Equal(t, []string{"h1=v1"}, headers.List)
-}
-
-// Regression: stepping into a history entry for a different topic must not
-// wipe the entry's prefilled partition. Before the fix, the topic-change
-// branch in reloadPartitionsIfTopicChanged() reset partition options to
-// {auto}, which forced [components.Form.SetOptions] to drop the freshly
-// applied "0" back to "auto".
-func TestHistoryStep_DifferentTopicKeepsPrefilledPartition(t *testing.T) {
-	svc := newFakeService()
-	svc.setPartitions(0, 1)
-	hist := newFakeHistory()
-	// older entry on a different topic with a non-default partition.
-	hist.entries = []produce.Entry{
-		{Topic: "other", Partition: 0, Compression: kafka.CompressionNone, Value: []byte("v")},
-	}
-	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
-	drive(t, m, m.Init())
-
-	_ = m.Update(keyPress("p")) // jump to the entry for topic "other"
-
-	got, _ := m.Form().Field("partition")
-	assert.Equal(t, "0", got.Value, "prefilled partition must survive the topic-change reset")
-}
-
-func TestHistoryPrefill_TopOpensWithLastEntry(t *testing.T) {
-	svc := newFakeService()
-	hist := newFakeHistory()
-	hist.Add(produce.Entry{
-		Topic: "orders", Key: []byte("k-old"), Value: []byte("v-old"),
-		Compression: kafka.CompressionGzip, Partition: kafka.PartitionAuto,
-	})
-	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
-
-	val, _ := m.Form().Field("value")
-	assert.Equal(t, "v-old", val.Value)
-	cmp, _ := m.Form().Field("compression")
-	assert.Equal(t, "gzip", cmp.Value)
-}
-
-func TestP_StepsThroughHistory(t *testing.T) {
-	svc := newFakeService()
-	hist := newFakeHistory()
-	hist.Add(produce.Entry{Topic: "orders", Value: []byte("oldest"), Partition: kafka.PartitionAuto})
-	hist.Add(produce.Entry{Topic: "orders", Value: []byte("middle"), Partition: kafka.PartitionAuto})
-	hist.Add(produce.Entry{Topic: "orders", Value: []byte("newest"), Partition: kafka.PartitionAuto})
-
-	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist, HistorySize: 5})
-
-	val, _ := m.Form().Field("value")
-	assert.Equal(t, "newest", val.Value, "fresh open prefills with newest entry for topic")
-
-	// `p` walks back into older entries.
-	_ = m.Update(keyPress("p"))
-	val, _ = m.Form().Field("value")
-	assert.Equal(t, "newest", val.Value, "first p selects pos 0 (newest)")
-
-	_ = m.Update(keyPress("p"))
-	val, _ = m.Form().Field("value")
-	assert.Equal(t, "middle", val.Value)
-
-	_ = m.Update(keyPress("p"))
-	val, _ = m.Form().Field("value")
-	assert.Equal(t, "oldest", val.Value)
-
-	// `n` steps forward.
-	_ = m.Update(keyPress("n"))
-	val, _ = m.Form().Field("value")
-	assert.Equal(t, "middle", val.Value)
-}
-
-func TestN_PastNewestResetsForm(t *testing.T) {
-	svc := newFakeService()
-	hist := newFakeHistory()
-	hist.Add(produce.Entry{Topic: "orders", Value: []byte("only"), Partition: kafka.PartitionAuto})
-	m := produce.New(produce.Options{Service: svc, Topic: "orders", History: hist})
-
-	_ = m.Update(keyPress("p")) // pos 0 (newest)
-	_ = m.Update(keyPress("n")) // pos -1: empty form
-
-	val, _ := m.Form().Field("value")
-	assert.Empty(t, val.Value)
-}
-
-func TestHistory_AddedAfterSuccessfulSend(t *testing.T) {
-	svc := newFakeService()
-	svc.result = kafka.ProduceResult{Topic: "orders", Partition: 0, Offset: 1}
-	hist := newFakeHistory()
-	m := produce.New(produce.Options{
-		Service: svc, Topic: "orders", History: hist, Cluster: "stage",
-	})
-	typeText(m, "value", "data")
-
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
-
-	added := hist.All()
-	require.Len(t, added, 1)
-	assert.Equal(t, "stage", added[0].Cluster)
-	assert.Equal(t, "orders", added[0].Topic)
-	assert.Equal(t, []byte("data"), added[0].Value)
 }
 
 func TestE_OpensEditorAndAppliesEditedValue(t *testing.T) {
@@ -860,7 +701,7 @@ func TestKeyHints_IncludeExpectedShortcuts(t *testing.T) {
 		labels = append(labels, h.Label)
 	}
 	got := strings.Join(labels, ",")
-	for _, want := range []string{"send", "send & keep", "$EDITOR", "history", "clear", "cancel"} {
+	for _, want := range []string{"send", "send & keep", "$EDITOR", "clear", "cancel"} {
 		assert.Contains(t, got, want)
 	}
 }
@@ -1384,46 +1225,6 @@ func (f *fakeService) Sent() []kafka.ProduceSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]kafka.ProduceSpec(nil), f.sent...)
-}
-
-type fakeHistory struct {
-	mu      sync.Mutex
-	entries []produce.Entry
-}
-
-func newFakeHistory() *fakeHistory { return &fakeHistory{} }
-
-func (h *fakeHistory) Add(e produce.Entry) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.entries = append(h.entries, e)
-}
-
-func (h *fakeHistory) All() []produce.Entry {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]produce.Entry(nil), h.entries...)
-}
-
-func (h *fakeHistory) LastForTopic(topic string) (produce.Entry, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i := len(h.entries) - 1; i >= 0; i-- {
-		if h.entries[i].Topic == topic {
-			return h.entries[i], true
-		}
-	}
-	return produce.Entry{}, false
-}
-
-func (h *fakeHistory) Recent(n int) []produce.Entry {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]produce.Entry, 0, n)
-	for i := len(h.entries) - 1; i >= 0 && len(out) < n; i-- {
-		out = append(out, h.entries[i])
-	}
-	return out
 }
 
 var keyPressTable = map[string]tea.KeyPressMsg{

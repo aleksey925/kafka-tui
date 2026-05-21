@@ -53,3 +53,11 @@ func TestNewStateRefreshIntervals_NilLoggerFallsBackToDefault(t *testing.T) {
 	// any call exercises the wrapped logger; no panic = pass.
 	_, _, _ = repo.LoadRefreshInterval(t.Context(), "x")
 }
+
+func openStore(t *testing.T) *state.Store {
+	t.Helper()
+	store, err := state.Open(context.Background(), ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}

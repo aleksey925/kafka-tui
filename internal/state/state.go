@@ -12,12 +12,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
-
-	"github.com/aleksey925/kafka-tui/internal/kafka"
 )
 
 const driverName = "sqlite"
@@ -32,20 +29,6 @@ func DefaultPath() (string, error) {
 		return "", fmt.Errorf("state: resolve home dir: %w", err)
 	}
 	return "", errors.New("state: $HOME is empty")
-}
-
-// ProduceEntry is the row payload for `produce_history`. It mirrors the
-// produce screen's Entry, decoupled from the TUI package to avoid an import
-// cycle.
-type ProduceEntry struct {
-	Cluster     string
-	Topic       string
-	Key         []byte
-	Value       []byte
-	Headers     []kafka.Header
-	Partition   int32
-	Compression kafka.Compression
-	Timestamp   time.Time
 }
 
 // Store is the SQLite-backed persistent state. Methods are safe to call from
@@ -67,9 +50,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		path = p
 	}
 	if path != ":memory:" {
-		// keep the state directory user-private — the DB stores produced
-		// payloads which may include keys, tokens, or other sensitive
-		// content the user pushed through the produce form.
+		// keep the state directory user-private.
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("state: create dir: %w", err)
 		}
@@ -91,8 +72,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	if path != ":memory:" {
 		// sqlite creates the file with the process umask; force 0o600 so
-		// a permissive umask can't widen access on shared hosts (the DB
-		// holds produced payloads which may include sensitive content).
+		// a permissive umask can't widen access on shared hosts.
 		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
 			_ = db.Close()
 			return nil, fmt.Errorf("state: chmod sqlite: %w", err)
@@ -125,149 +105,6 @@ func (s *Store) Close() error {
 		return fmt.Errorf("state: close sqlite: %w", err)
 	}
 	return nil
-}
-
-// AddProduce inserts a produce-history row and trims the table back down to
-// historySize entries (newest kept). historySize <= 0 skips the trim.
-func (s *Store) AddProduce(ctx context.Context, entry ProduceEntry, historySize int) error {
-	headersJSON, err := encodeHeaders(entry.Headers)
-	if err != nil {
-		return err
-	}
-	ts := entry.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("state: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO produce_history
-			(cluster, topic, key, value, headers, partition, compression, ts)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.Cluster,
-		entry.Topic,
-		nullableBlob(entry.Key),
-		nullableBlob(entry.Value),
-		headersJSON,
-		entry.Partition,
-		string(entry.Compression),
-		ts.UnixNano(),
-	); err != nil {
-		return fmt.Errorf("state: insert produce_history: %w", err)
-	}
-
-	if historySize > 0 {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM produce_history
-				WHERE id NOT IN (
-					SELECT id FROM produce_history
-					ORDER BY ts DESC, id DESC
-					LIMIT ?
-				)`,
-			historySize,
-		); err != nil {
-			return fmt.Errorf("state: trim produce_history: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("state: commit produce_history: %w", err)
-	}
-	return nil
-}
-
-// LastProduceForTopic returns the newest entry for the given topic; the bool
-// is false when no row exists.
-func (s *Store) LastProduceForTopic(ctx context.Context, topic string) (ProduceEntry, bool, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT cluster, topic, key, value, headers, partition, compression, ts
-			FROM produce_history
-			WHERE topic = ?
-			ORDER BY ts DESC, id DESC
-			LIMIT 1`,
-		topic,
-	)
-	entry, err := scanEntry(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ProduceEntry{}, false, nil
-	}
-	if err != nil {
-		return ProduceEntry{}, false, err
-	}
-	return entry, true, nil
-}
-
-// RecentProduce returns up to n entries, newest-first.
-func (s *Store) RecentProduce(ctx context.Context, n int) ([]ProduceEntry, error) {
-	if n <= 0 {
-		return nil, nil
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT cluster, topic, key, value, headers, partition, compression, ts
-			FROM produce_history
-			ORDER BY ts DESC, id DESC
-			LIMIT ?`,
-		n,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("state: query produce_history: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := make([]ProduceEntry, 0, n)
-	for rows.Next() {
-		entry, err := scanEntry(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("state: iterate produce_history: %w", err)
-	}
-	return out, nil
-}
-
-// scanner is implemented by both *sql.Row and *sql.Rows.
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanEntry(s scanner) (ProduceEntry, error) {
-	var (
-		entry       ProduceEntry
-		key, value  []byte
-		headers     string
-		compression string
-		tsNanos     int64
-	)
-	if err := s.Scan(
-		&entry.Cluster,
-		&entry.Topic,
-		&key,
-		&value,
-		&headers,
-		&entry.Partition,
-		&compression,
-		&tsNanos,
-	); err != nil {
-		return ProduceEntry{}, fmt.Errorf("state: scan produce_history row: %w", err)
-	}
-	entry.Key = key
-	entry.Value = value
-	entry.Compression = kafka.Compression(compression)
-	entry.Timestamp = time.Unix(0, tsNanos).UTC()
-
-	hdrs, err := decodeHeaders(headers)
-	if err != nil {
-		return ProduceEntry{}, err
-	}
-	entry.Headers = hdrs
-	return entry, nil
 }
 
 // MessagesView is the persisted seek + partition configuration per
@@ -403,56 +240,4 @@ func (s *Store) SaveRefreshInterval(ctx context.Context, screenID string, d time
 		return fmt.Errorf("state: upsert refresh_intervals: %w", err)
 	}
 	return nil
-}
-
-// nullableBlob returns nil for empty payloads so SQLite stores SQL NULL
-// rather than an empty BLOB — keeps reads symmetrical with how the produce
-// form treats absent keys/values.
-func nullableBlob(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-	return b
-}
-
-// encodedHeader is the on-disk shape of the `headers` JSON column. The
-// []byte field marshals to base64 by default in encoding/json, so binary
-// header values survive the round-trip.
-type encodedHeader struct {
-	Key   string `json:"key"`
-	Value []byte `json:"value"`
-}
-
-func encodeHeaders(headers []kafka.Header) (string, error) {
-	if len(headers) == 0 {
-		return "[]", nil
-	}
-	out := make([]encodedHeader, len(headers))
-	for i, h := range headers {
-		out[i] = encodedHeader{Key: h.Key, Value: h.Value}
-	}
-	buf, err := json.Marshal(out)
-	if err != nil {
-		return "", fmt.Errorf("state: encode headers: %w", err)
-	}
-	return string(buf), nil
-}
-
-func decodeHeaders(raw string) ([]kafka.Header, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "[]" || raw == "null" {
-		return nil, nil
-	}
-	var rows []encodedHeader
-	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
-		return nil, fmt.Errorf("state: decode headers: %w", err)
-	}
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	out := make([]kafka.Header, len(rows))
-	for i, r := range rows {
-		out[i] = kafka.Header{Key: r.Key, Value: r.Value}
-	}
-	return out, nil
 }

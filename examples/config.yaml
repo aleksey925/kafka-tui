@@ -29,8 +29,6 @@ messages:
   columns: [timestamp, partition, offset, key, value_preview]
 
 produce:
-  # how many recent produce events to keep (Ctrl+P / Ctrl+N in the form)
-  history_size: 10
   # default compression for the dropdown: none | gzip | snappy | lz4 | zstd
   default_compression: none
 

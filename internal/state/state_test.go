@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/state"
 )
 
@@ -36,7 +35,7 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version))
-	assert.Equal(t, 3, version)
+	assert.Equal(t, 4, version)
 
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
 	require.NoError(t, err)
@@ -49,13 +48,15 @@ func TestOpen_CreatesParentDirectoryAndAppliesSchema(t *testing.T) {
 		tables = append(tables, name)
 	}
 	require.NoError(t, rows.Err())
-	assert.Contains(t, tables, "produce_history")
 	assert.Contains(t, tables, "schema_version")
+	assert.Contains(t, tables, "messages_view_state")
+	assert.Contains(t, tables, "refresh_intervals")
+	assert.NotContains(t, tables, "produce_history",
+		"migration v4 must drop the legacy produce_history table")
 }
 
-// Regression: the state DB stores produced payloads which may include
-// keys, tokens, or other sensitive content. On shared hosts a 0o644 DB
-// (sqlite's default + umask) lets other accounts read those payloads.
+// Regression: on shared hosts a 0o644 DB (sqlite's default + umask) lets
+// other accounts read persisted view state.
 func TestOpen_RestrictsFilePermissions(t *testing.T) {
 	// arrange
 	root := t.TempDir()
@@ -78,17 +79,21 @@ func TestOpen_RestrictsFilePermissions(t *testing.T) {
 		"state DB must be user-private (0o600)")
 }
 
-func TestOpen_InMemoryIsIsolated(t *testing.T) {
+// Regression: ":memory:" databases are per-connection in SQLite, so without
+// SetMaxOpenConns(1) a follow-up Load could hit a different connection that
+// never saw the Save and return ok=false.
+func TestOpen_InMemoryConnectionIsPinned(t *testing.T) {
 	// arrange + act
 	store, err := state.Open(t.Context(), ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
 	// assert
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "topic-a", 0, time.Unix(1, 0)), 5))
-	got, err := store.RecentProduce(t.Context(), 5)
+	require.NoError(t, store.SaveRefreshInterval(t.Context(), "topics", 5*time.Second))
+	got, ok, err := store.LoadRefreshInterval(t.Context(), "topics")
 	require.NoError(t, err)
-	require.Len(t, got, 1)
+	require.True(t, ok)
+	assert.Equal(t, 5*time.Second, got)
 }
 
 func TestApplyMigrations_Idempotent(t *testing.T) {
@@ -109,199 +114,7 @@ func TestApplyMigrations_Idempotent(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	var rowCount int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&rowCount))
-	assert.Equal(t, 3, rowCount)
-}
-
-func TestAddProduce_RoundTripsEveryField(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	added := state.ProduceEntry{
-		Cluster: "prod",
-		Topic:   "events",
-		Key:     []byte("user-42"),
-		Value:   []byte(`{"hello":"world"}`),
-		Headers: []kafka.Header{
-			{Key: "trace-id", Value: []byte("abc-123")},
-			{Key: "binary", Value: []byte{0x00, 0x01, 0xff}},
-		},
-		Partition:   2,
-		Compression: kafka.CompressionZstd,
-		Timestamp:   time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
-	}
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 10))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "events")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, added, got)
-}
-
-func TestAddProduce_EmptyKeyAndValueAreNullable(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	added := state.ProduceEntry{
-		Cluster:     "c",
-		Topic:       "t",
-		Partition:   kafka.PartitionAuto,
-		Compression: kafka.CompressionNone,
-		Timestamp:   time.Unix(1, 0).UTC(),
-	}
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 0))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "t")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Nil(t, got.Key)
-	assert.Nil(t, got.Value)
-	assert.Nil(t, got.Headers)
-	assert.Equal(t, kafka.CompressionNone, got.Compression)
-	assert.Equal(t, kafka.PartitionAuto, got.Partition)
-}
-
-func TestLastProduceForTopic_MissingTopicReturnsFalse(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "alpha", 0, time.Unix(1, 0)), 0))
-
-	// act
-	got, ok, err := store.LastProduceForTopic(t.Context(), "beta")
-
-	// assert
-	require.NoError(t, err)
-	assert.False(t, ok)
-	assert.Equal(t, state.ProduceEntry{}, got)
-}
-
-func TestLastProduceForTopic_PicksNewest(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	older := entry("c", "events", 0, time.Unix(100, 0))
-	older.Value = []byte("old")
-	newer := entry("c", "events", 1, time.Unix(200, 0))
-	newer.Value = []byte("new")
-	require.NoError(t, store.AddProduce(t.Context(), older, 0))
-	require.NoError(t, store.AddProduce(t.Context(), newer, 0))
-
-	// act
-	got, ok, err := store.LastProduceForTopic(t.Context(), "events")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, []byte("new"), got.Value)
-	assert.Equal(t, int32(1), got.Partition)
-}
-
-func TestRecentProduce_OrdersNewestFirst(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	entries := []state.ProduceEntry{
-		entry("alpha", "t1", 0, time.Unix(100, 0)),
-		entry("beta", "t2", 0, time.Unix(200, 0)),
-		entry("gamma", "t3", 0, time.Unix(300, 0)),
-	}
-	for _, e := range entries {
-		require.NoError(t, store.AddProduce(t.Context(), e, 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 5)
-
-	// assert
-	require.NoError(t, err)
-	gotTopics := topics(got)
-	assert.Equal(t, []string{"t3", "t2", "t1"}, gotTopics)
-}
-
-func TestRecentProduce_RespectsLimit(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3, 4} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "t", p, time.Unix(int64(p+1), 0)), 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 2)
-
-	// assert
-	require.NoError(t, err)
-	require.Len(t, got, 2)
-	assert.Equal(t, int32(4), got[0].Partition)
-	assert.Equal(t, int32(3), got[1].Partition)
-}
-
-func TestRecentProduce_ZeroOrNegativeLimit(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	require.NoError(t, store.AddProduce(t.Context(), entry("c", "t", 0, time.Unix(1, 0)), 0))
-
-	// act
-	gotZero, errZero := store.RecentProduce(t.Context(), 0)
-	gotNeg, errNeg := store.RecentProduce(t.Context(), -3)
-
-	// assert
-	require.NoError(t, errZero)
-	require.NoError(t, errNeg)
-	assert.Empty(t, gotZero)
-	assert.Empty(t, gotNeg)
-}
-
-func TestAddProduce_TrimsToHistorySize(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3, 4, 5} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "events", p, time.Unix(int64(p+1), 0)), 3))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 100)
-
-	// assert
-	require.NoError(t, err)
-	require.Len(t, got, 3)
-	gotPartitions := []int32{got[0].Partition, got[1].Partition, got[2].Partition}
-	assert.Equal(t, []int32{5, 4, 3}, gotPartitions)
-}
-
-func TestAddProduce_ZeroHistorySizeKeepsEverything(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	for _, p := range []int32{0, 1, 2, 3} {
-		require.NoError(t, store.AddProduce(t.Context(),
-			entry("c", "events", p, time.Unix(int64(p+1), 0)), 0))
-	}
-
-	// act
-	got, err := store.RecentProduce(t.Context(), 100)
-
-	// assert
-	require.NoError(t, err)
-	assert.Len(t, got, 4)
-}
-
-func TestAddProduce_DefaultsTimestampWhenZero(t *testing.T) {
-	// arrange
-	store := openMemory(t)
-	before := time.Now().Add(-time.Second)
-	added := entry("c", "t", 0, time.Time{})
-
-	// act
-	require.NoError(t, store.AddProduce(t.Context(), added, 0))
-	got, ok, err := store.LastProduceForTopic(t.Context(), "t")
-
-	// assert
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.True(t, got.Timestamp.After(before),
-		"persisted ts %s should be after %s", got.Timestamp, before)
+	assert.Equal(t, 4, rowCount)
 }
 
 func TestClose_IsSafeToCallTwice(t *testing.T) {
@@ -333,33 +146,33 @@ func TestDefaultPath_ReturnsExpectedSuffix(t *testing.T) {
 			filepath.Base(got)))
 }
 
-func TestAddProduce_AfterClose_ReturnsError(t *testing.T) {
+func TestSaveRefreshInterval_AfterClose_ReturnsError(t *testing.T) {
 	// arrange
 	store, err := state.Open(t.Context(), ":memory:")
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 
 	// act
-	err = store.AddProduce(t.Context(), entry("c", "t", 0, time.Unix(1, 0)), 0)
+	err = store.SaveRefreshInterval(t.Context(), "topics", time.Second)
 
 	// assert
 	require.Error(t, err)
 }
 
-func TestAddProduce_ContextCancellationStopsInsert(t *testing.T) {
+func TestSaveRefreshInterval_ContextCancellationStopsWrite(t *testing.T) {
 	// arrange
 	store := openMemory(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	// act
-	err := store.AddProduce(ctx, entry("c", "t", 0, time.Unix(1, 0)), 0)
+	err := store.SaveRefreshInterval(ctx, "topics", time.Second)
 
 	// assert
 	require.Error(t, err)
-	got, listErr := store.RecentProduce(t.Context(), 10)
-	require.NoError(t, listErr)
-	assert.Empty(t, got)
+	_, ok, loadErr := store.LoadRefreshInterval(t.Context(), "topics")
+	require.NoError(t, loadErr)
+	assert.False(t, ok, "canceled write must not leave a row behind")
 }
 
 func TestDefaultPath_HomeUnsetReturnsError(t *testing.T) {
@@ -594,22 +407,4 @@ func TestRefreshInterval_NegativeClampedOnSave(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, time.Duration(0), got,
 		"negative durations are not meaningful — clamp to 0 (Manual) on the way in")
-}
-
-func entry(cluster, topic string, partition int32, ts time.Time) state.ProduceEntry {
-	return state.ProduceEntry{
-		Cluster:     cluster,
-		Topic:       topic,
-		Partition:   partition,
-		Compression: kafka.CompressionNone,
-		Timestamp:   ts,
-	}
-}
-
-func topics(entries []state.ProduceEntry) []string {
-	out := make([]string, len(entries))
-	for i, e := range entries {
-		out[i] = e.Topic
-	}
-	return out
 }
