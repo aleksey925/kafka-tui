@@ -455,7 +455,13 @@ func (m *ConfigsModel) View() string {
 	if m.helpOpen {
 		// help popup is anchored over the list area so it doesn't
 		// disappear off-screen when the cursor is far down the list.
-		body = m.placePopupOver(body, m.renderHelp())
+		if popup := m.renderHelp(); popup != "" && m.width > 0 {
+			avail := m.listHeight()
+			if avail <= 0 {
+				avail = lipgloss.Height(body)
+			}
+			body = layout.PlaceCenteredTop(m.width, avail, popup)
+		}
 	}
 	parts = append(parts, body)
 
@@ -556,26 +562,6 @@ func (m *ConfigsModel) syncToViewport() {
 	} else {
 		m.viewport.ClearCursor()
 	}
-}
-
-// placePopupOver anchors popup at the top of body's area, centered
-// horizontally, so the help box always sits in a predictable spot
-// regardless of how much was scrolled. The body string is replaced —
-// classic single-buffer terminals can't paint a real overlay and the
-// list isn't useful while the popup is open.
-func (m *ConfigsModel) placePopupOver(body, popup string) string {
-	if popup == "" || m.width <= 0 {
-		return body
-	}
-	avail := m.listHeight()
-	if avail <= 0 {
-		avail = lipgloss.Height(body)
-	}
-	centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, popup)
-	if avail <= 0 {
-		return centered
-	}
-	return lipgloss.PlaceVertical(avail, lipgloss.Top, centered)
 }
 
 func (m *ConfigsModel) renderHelp() string {
