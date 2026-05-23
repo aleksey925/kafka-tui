@@ -174,8 +174,7 @@ type Model struct {
 	pingTimeout time.Duration
 
 	editChoices []editTarget
-	editing     bool
-	editIdx     int
+	editMenu    *components.Menu
 
 	action     Action
 	stagedInit bool
@@ -478,7 +477,7 @@ func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 
 func (m *Model) ActiveFilter() string { return m.table.Search() }
 
-func (m *Model) HasOverlay() bool { return m.editing }
+func (m *Model) HasOverlay() bool { return m.editMenu != nil }
 
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
@@ -499,7 +498,7 @@ func (m *Model) HelpSections() []help.Section {
 }
 
 func (m *Model) activeBindings() []keymap.Binding {
-	if m.editing {
+	if m.editMenu != nil {
 		return m.editChooserBindings()
 	}
 	return m.listBindings()
@@ -542,7 +541,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
-	if m.editing {
+	if m.editMenu != nil {
 		return m.handleEditChooserKey(key)
 	}
 	if m.toasts != nil {
@@ -562,40 +561,25 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleEditChooserKey(key tea.KeyPressMsg) tea.Cmd {
-	cmd, _ := keymap.Dispatch(m.editChooserBindings(), key)
-	return cmd
+	menu, _ := m.editMenu.Update(key)
+	m.editMenu = menu
+	if menu.Canceled() {
+		m.editMenu = nil
+		return nil
+	}
+	idx, _, ok := menu.Selected()
+	if !ok {
+		return nil
+	}
+	m.editMenu = nil
+	return m.runEditor(m.editChoices[idx].Path)
 }
 
 func (m *Model) editChooserBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"esc", "q"}, Label: "back", Category: "Edit chooser", Hint: true, Handler: m.actChooserCancel},
-		{Keys: []string{"j", "down"}, Label: "next target", Category: "Edit chooser", Handler: m.actChooserMove(+1)},
-		{Keys: []string{"k", "up"}, Label: "previous target", Category: "Edit chooser", Handler: m.actChooserMove(-1)},
-		{Keys: []string{"enter"}, Label: "open in $EDITOR", Category: "Edit chooser", Hint: true, Handler: m.actChooserPick},
-	}
-}
-
-func (m *Model) actChooserCancel() tea.Cmd { m.editing = false; return nil }
-
-func (m *Model) actChooserMove(delta int) func() tea.Cmd {
-	return func() tea.Cmd {
-		if len(m.editChoices) == 0 {
-			return nil
-		}
-		n := len(m.editChoices)
-		m.editIdx = (m.editIdx + delta + n) % n
+	if m.editMenu == nil {
 		return nil
 	}
-}
-
-func (m *Model) actChooserPick() tea.Cmd {
-	if len(m.editChoices) == 0 {
-		m.editing = false
-		return nil
-	}
-	path := m.editChoices[m.editIdx].Path
-	m.editing = false
-	return m.runEditor(path)
+	return m.editMenu.Bindings("Edit chooser")
 }
 
 func (m *Model) openEditChooser() tea.Cmd {
@@ -606,8 +590,14 @@ func (m *Model) openEditChooser() tea.Cmd {
 	if len(m.editChoices) == 1 {
 		return m.runEditor(m.editChoices[0].Path)
 	}
-	m.editing = true
-	m.editIdx = 0
+	items := make([]components.MenuItem, 0, len(m.editChoices))
+	for _, c := range m.editChoices {
+		items = append(items, components.MenuItem{Label: c.Label, Hint: c.Path})
+	}
+	m.editMenu = components.NewMenu(items,
+		components.WithMenuTitle("Edit clusters.yaml"),
+		components.WithMenuStyles(m.styles),
+	)
 	return nil
 }
 
@@ -762,14 +752,15 @@ func (m *Model) rowValues(c config.Cluster) []string {
 }
 
 func (m *Model) View() string {
-	parts := []string{m.table.View()}
-	if m.editing {
-		parts = append(parts, m.renderEditChooser())
+	if m.editMenu != nil {
+		body := m.table.View()
+		popup := lipgloss.Place(m.width, lipgloss.Height(body), lipgloss.Center, lipgloss.Center, m.editMenu.View(0))
+		return popup
 	}
-	return strings.Join(parts, "\n")
+	return m.table.View()
 }
 
-func (m *Model) EditingChooser() bool { return m.editing }
+func (m *Model) EditingChooser() bool { return m.editMenu != nil }
 
 func (m *Model) EditChoices() []string {
 	out := make([]string, 0, len(m.editChoices))
@@ -779,25 +770,11 @@ func (m *Model) EditChoices() []string {
 	return out
 }
 
-func (m *Model) EditCursor() int { return m.editIdx }
-
-func (m *Model) renderEditChooser() string {
-	lines := []string{m.styles.HelpTitle.Render("Edit clusters.yaml")}
-	for i, c := range m.editChoices {
-		marker := "( ) "
-		style := m.styles.Command
-		if i == m.editIdx {
-			marker = "(•) "
-			style = m.styles.CommandHL
-		}
-		lines = append(lines, "  "+style.Render(marker+c.Label+"  "+c.Path))
+func (m *Model) EditCursor() int {
+	if m.editMenu == nil {
+		return 0
 	}
-	lines = append(lines, "", m.styles.HintLabel.Render("enter select  esc cancel"))
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(strings.Join(lines, "\n"))
-	return box
+	return m.editMenu.Cursor()
 }
 
 // ----- Messages -----

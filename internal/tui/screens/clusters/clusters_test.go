@@ -466,7 +466,17 @@ func TestView_EditChooserModalRendered(t *testing.T) {
 	assert.Contains(t, out, "global")
 	assert.Contains(t, out, "project")
 	assert.Contains(t, out, "/g/clusters.yaml")
-	assert.Contains(t, out, "esc cancel")
+
+	// hints for the open chooser live in the screen's KeyHints (which the
+	// host renders into the global hint bar), not inside the popup itself —
+	// same as the copy/seek menus.
+	labels := []string{}
+	for _, h := range m.KeyHints() {
+		labels = append(labels, h.Label)
+	}
+	joined := strings.Join(labels, ",")
+	assert.Contains(t, joined, "select")
+	assert.Contains(t, joined, "cancel")
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {

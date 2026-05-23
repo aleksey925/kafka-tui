@@ -96,10 +96,11 @@ type Model struct {
 
 	shownWarnings map[string]struct{}
 
-	table   *components.Table
-	toasts  *components.Toasts
-	confirm *components.Confirm
-	pending pendingOp
+	table        *components.Table
+	toasts       *components.Toasts
+	confirm      *components.Confirm
+	cloneConfirm *components.Confirm
+	pending      pendingOp
 
 	mode     Mode
 	create   *CreateForm
@@ -259,6 +260,7 @@ func (m *Model) ActiveFilter() string { return m.table.Search() }
 // form's NORMAL/INSERT dispatcher instead of popping the screen.
 func (m *Model) HasOverlay() bool {
 	return m.confirm != nil ||
+		m.cloneConfirm != nil ||
 		m.refreshPicker != nil ||
 		m.mode == ModeCloning ||
 		m.mode == ModeCreate ||
@@ -545,8 +547,14 @@ func (m *Model) openCloneForm() {
 }
 
 func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
-	if cmd, ok := keymap.Dispatch(m.createBindings(), key); ok {
-		return cmd
+	// `s` is the submit shortcut in NORMAL but a literal letter in
+	// INSERT or with a segmented popup open — only fire the screen
+	// bindings when the user isn't typing.
+	inEdit := m.create.Mode() == FormInsert || m.create.Form().PopupActive()
+	if !inEdit || key.String() == "esc" {
+		if cmd, ok := keymap.Dispatch(m.createBindings(), key); ok {
+			return cmd
+		}
 	}
 	c, _ := m.create.Update(key)
 	m.create = c
@@ -554,11 +562,32 @@ func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
-	if cmd, ok := keymap.Dispatch(m.cloneBindings(), key); ok {
-		return cmd
+	if m.cloneConfirm != nil {
+		return m.handleCloneConfirmKey(key)
+	}
+	inEdit := m.clone.Mode() == FormInsert || m.clone.Form().PopupActive()
+	if !inEdit || key.String() == "esc" {
+		if cmd, ok := keymap.Dispatch(m.cloneBindings(), key); ok {
+			return cmd
+		}
 	}
 	c, _ := m.clone.Update(key)
 	m.clone = c
+	return nil
+}
+
+func (m *Model) handleCloneConfirmKey(key tea.KeyPressMsg) tea.Cmd {
+	c, _ := m.cloneConfirm.Update(key)
+	m.cloneConfirm = c
+	switch c.Result() {
+	case components.ConfirmPending:
+		return nil
+	case components.ConfirmYes:
+		m.cloneConfirm = nil
+		return m.actCloneSubmit()
+	case components.ConfirmNo:
+		m.cloneConfirm = nil
+	}
 	return nil
 }
 
@@ -572,14 +601,17 @@ func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
 // popup); in plain NORMAL it closes the overlay.
 func (m *Model) createBindings() []keymap.Binding {
 	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
+		{Keys: []string{"s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
 		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Create topic", Hint: true, HandlerMsg: m.actCreateEsc},
 	}
 }
 
 func (m *Model) cloneBindings() []keymap.Binding {
+	if m.cloneConfirm != nil {
+		return m.cloneConfirm.Bindings("Clone topic", "clone")
+	}
 	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "submit (clone topic)", Category: "Clone topic", Hint: true, Handler: m.actCloneSubmit},
+		{Keys: []string{"s"}, Label: "submit (clone topic)", Category: "Clone topic", Hint: true, Handler: m.actOpenCloneConfirm},
 		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Clone topic", Hint: true, HandlerMsg: m.actCloneEsc},
 	}
 }
@@ -610,6 +642,25 @@ func (m *Model) actCreateEsc(key tea.KeyPressMsg) tea.Cmd {
 	}
 	m.create = nil
 	m.mode = ModeList
+	return nil
+}
+
+// actOpenCloneConfirm validates the form and mounts the confirm modal so
+// the user sees `src → dst` before committing — clone is reversible but
+// can be expensive (it copies data), so we gate it the same way as a
+// destructive action.
+func (m *Model) actOpenCloneConfirm() tea.Cmd {
+	src, dst, err := m.clone.Submit()
+	if err != nil {
+		m.clone.SetError(err.Error())
+		return nil
+	}
+	m.clone.SetError("")
+	m.cloneConfirm = components.NewConfirm(
+		"Clone topic",
+		fmt.Sprintf("Clone %s → %s?", src, dst),
+		components.WithConfirmStyles(m.styles),
+	)
 	return nil
 }
 
@@ -837,6 +888,9 @@ func (m *Model) View() string {
 	case ModeCreate:
 		return m.create.View(m.width)
 	case ModeClone:
+		if m.cloneConfirm != nil {
+			return m.cloneConfirm.View(m.width, m.height)
+		}
 		return m.clone.View(m.width)
 	case ModeCloning:
 		return m.renderCloningOverlay()

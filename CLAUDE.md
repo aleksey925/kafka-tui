@@ -196,6 +196,54 @@ open it owns the input stream — the screen's own bindings (including
 digits used elsewhere as view-mode toggles) are suspended until the
 menu confirms or cancels.
 
+### Confirm for destructive actions
+
+*Applies the single-source rule above: every "are you sure" modal in
+the app shares one key contract (no default cursor, no enter binding,
+explicit letter keys).*
+
+A mutation that is **irreversible or causes data loss** is gated
+through a confirm modal that shows the minimum context needed to
+identify what is about to happen (cluster, topic, group, src→dst,
+etc.). A mutation that is reversible (create topic, …) fires
+directly from its NORMAL-mode shortcut without a modal — popping a
+confirm for trivially-undoable work just trains users to mash `y`.
+
+The confirm contract:
+
+- `y` is the only commit key; cancel is `n` or `esc`.
+- No default cursor, no enter binding — a reflexive enter must not
+  fire the action.
+- Multi-variant confirms (e.g. send & close vs send & keep open) add
+  another explicit letter (`k` for keep). Never digits — digit
+  popups are the *picker* contract for speed, not the *confirm*
+  contract for deliberation.
+- The modal owns input while open; the screen's own bindings are
+  suspended until it confirms or cancels.
+- Validation runs **before** the modal opens: an invalid form
+  surfaces an inline error and the modal never mounts, so the user
+  isn't asked to confirm a request the broker would have rejected.
+- Read-only clusters short-circuit the entry shortcut with a toast,
+  also before the modal opens.
+
+Why: the same y/n muscle memory carries across every destructive
+action (delete topic, delete group, save config, produce, clone).
+The "no default + different finger" geometry (entry key is `s` /
+`ctrl+d`, commit key is `y`) is what breaks the muscle-memory class
+of accidents — a popup with default-confirm collapses back into
+"one keystroke away" and adds chrome without adding safety.
+
+Deviation: the reset-offsets flow has its own multi-step preview →
+`y/Y` commit because the preview *is* the context — reusing the
+generic confirm would lose the per-partition diff that's the whole
+point of previewing.
+
+How to apply: when adding a new mutation, classify it: irreversible
+or data-loss → confirm modal with minimum identifying context;
+reversible → direct NORMAL shortcut. The confirm primitive is
+existing; multi-variant cases extend it by adding a letter, not by
+swapping in the picker menu.
+
 ### Toast / flash routing
 
 *Applies the single-source rule above: one flash bar above the body chrome

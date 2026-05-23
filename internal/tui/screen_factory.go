@@ -157,6 +157,7 @@ func (m *Model) newProduce() *produce.Model {
 	return produce.New(produce.Options{
 		Service:            m.client,
 		Topic:              m.navTopic,
+		Cluster:            m.activeClu,
 		ReadOnly:           m.clusterRO,
 		Pager:              m.boot.Pager,
 		PrefillFromMessage: m.navPrefill,

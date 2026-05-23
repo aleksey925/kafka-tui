@@ -84,7 +84,7 @@ func TestEsc_RaisesBackAction(t *testing.T) {
 	assert.True(t, m.ConsumeAction().Back)
 }
 
-func TestCtrlS_SendsAndClosesOnSuccess(t *testing.T) {
+func TestSendConfirm_YesSendsAndClosesOnSuccess(t *testing.T) {
 	// arrange
 	svc := newFakeService()
 	svc.result = kafka.ProduceResult{Topic: "orders", Partition: 2, Offset: 99, Duration: 12 * time.Millisecond}
@@ -92,8 +92,7 @@ func TestCtrlS_SendsAndClosesOnSuccess(t *testing.T) {
 	typeText(m, "value", "hello")
 
 	// act
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	// assert
 	require.Len(t, svc.Sent(), 1)
@@ -101,24 +100,96 @@ func TestCtrlS_SendsAndClosesOnSuccess(t *testing.T) {
 	assert.Equal(t, []byte("hello"), svc.Sent()[0].Value)
 
 	a := m.ConsumeAction()
-	assert.True(t, a.Back, "ctrl+s must close after a successful send")
+	assert.True(t, a.Back, "y must close after a successful send")
 	require.NotNil(t, a.Sent)
 	assert.Equal(t, int64(99), a.Sent.Offset)
 }
 
-func TestCtrlShiftS_SendsButKeepsForm(t *testing.T) {
+func TestSendConfirm_KeepKeepsFormOpen(t *testing.T) {
 	svc := newFakeService()
 	svc.result = kafka.ProduceResult{Topic: "orders", Partition: 0, Offset: 1, Duration: time.Millisecond}
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 	typeText(m, "value", "x")
 
-	cmd := m.Update(keyPress("ctrl+shift+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndKeep(m))
 
 	require.Len(t, svc.Sent(), 1)
 	a := m.ConsumeAction()
-	assert.False(t, a.Back, "ctrl+shift+s must NOT close")
+	assert.False(t, a.Back, "k must NOT close the form")
 	require.NotNil(t, a.Sent)
+}
+
+func TestSendConfirm_EscDismissesWithoutSending(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	typeText(m, "value", "hello")
+	_ = m.Update(keyPress("esc"))
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.SendConfirmOpen())
+
+	_ = m.Update(keyPress("esc"))
+	assert.False(t, m.SendConfirmOpen(), "esc must close the confirm modal")
+	assert.Empty(t, svc.Sent(), "dismissing the modal must not send anything")
+}
+
+func TestSendConfirm_EnterIsNoOp(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	typeText(m, "value", "hello")
+	_ = m.Update(keyPress("esc"))
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.SendConfirmOpen())
+
+	_ = m.Update(keyPress("enter"))
+	assert.True(t, m.SendConfirmOpen(), "enter must NOT confirm — anti-accident contract")
+	assert.Empty(t, svc.Sent())
+}
+
+func TestSendConfirm_ViewShowsClusterAndTopic(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders", Cluster: "staging"})
+	m.SetSize(80, 20)
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.SendConfirmOpen())
+
+	out := m.View()
+	assert.Contains(t, out, "staging", "modal must surface the cluster name")
+	assert.Contains(t, out, "orders", "modal must surface the topic name")
+}
+
+func TestSendConfirm_PasteIsDroppedWhileOpen(t *testing.T) {
+	svc := newFakeService()
+	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
+	typeText(m, "value", "hello")
+	_ = m.Update(keyPress("esc"))
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.SendConfirmOpen())
+
+	// paste-while-modal-open used to leak the buffer into the focused
+	// field and silently flip the form back into INSERT — the record
+	// the user was being asked to confirm would then carry the pasted
+	// chunk. The modal must drop the event entirely.
+	_ = m.Update(tea.PasteMsg{Content: "leak"})
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "hello", got.Value, "paste must not mutate the form while the modal owns input")
+	assert.Equal(t, produce.ModeNormal, m.Mode(), "paste must not flip the form to INSERT under the modal")
+	assert.True(t, m.SendConfirmOpen())
+}
+
+func TestS_FromInsertIsLiteral(t *testing.T) {
+	m := produce.New(produce.Options{Service: newFakeService(), Topic: "orders"})
+	m.Form().FocusKey("value")
+	_ = m.Update(keyPress("enter")) // INSERT
+
+	_ = m.Update(keyPressRune('s'))
+
+	got, _ := m.Form().Field("value")
+	assert.Equal(t, "s", got.Value, "s in INSERT must be typed, not open the send confirm")
+	assert.False(t, m.SendConfirmOpen())
 }
 
 func TestSend_ToastIncludesPartitionOffsetAndLatency(t *testing.T) {
@@ -127,8 +198,7 @@ func TestSend_ToastIncludesPartitionOffsetAndLatency(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 	typeText(m, "value", "x")
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "Sent to orders P4:7 (42ms)")
@@ -140,8 +210,7 @@ func TestSend_FailureSurfacesErrorToast(t *testing.T) {
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 	typeText(m, "value", "x")
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	a := m.ConsumeAction()
 	assert.False(t, a.Back, "failed send must not close the form")
@@ -153,9 +222,9 @@ func TestSend_ValidationErrorOnEmptyTopic(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: ""})
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	_ = m.Update(keyPress("s"))
 
+	assert.False(t, m.SendConfirmOpen(), "validation error must abort before opening the modal")
 	assert.Empty(t, svc.Sent(), "validation error must abort before calling Service")
 	assert.Contains(t, m.View(), "topic is required")
 }
@@ -164,8 +233,7 @@ func TestPartition_AutoEqualsKafkaAuto(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	require.Len(t, svc.Sent(), 1)
 	assert.Equal(t, kafka.PartitionAuto, svc.Sent()[0].Partition)
@@ -194,8 +262,7 @@ func TestPartition_CycleSelectsManualNumber(t *testing.T) {
 		_ = m.Update(keyPress("right"))
 	}
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	require.Len(t, svc.Sent(), 1)
 	assert.Equal(t, int32(3), svc.Sent()[0].Partition)
@@ -282,8 +349,7 @@ func TestHeaders_ParsedAsKeyEquals(t *testing.T) {
 		_ = m.Update(keyPressRune(r))
 	}
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	require.Len(t, svc.Sent(), 1)
 	got := svc.Sent()[0].Headers
@@ -302,10 +368,11 @@ func TestHeaders_InvalidEntryRejected(t *testing.T) {
 	for _, r := range "no-equals-sign" {
 		_ = m.Update(keyPressRune(r))
 	}
+	_ = m.Update(keyPress("esc")) // back to NORMAL so `s` is a binding
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	_ = m.Update(keyPress("s"))
 
+	assert.False(t, m.SendConfirmOpen(), "invalid headers must abort before the confirm modal opens")
 	assert.Empty(t, svc.Sent())
 	assert.Contains(t, m.View(), "no-equals-sign")
 }
@@ -685,9 +752,9 @@ func TestReadOnly_BlocksSend(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders", ReadOnly: true})
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	_ = m.Update(keyPress("s"))
 
+	assert.False(t, m.SendConfirmOpen(), "read-only must short-circuit before the confirm modal opens")
 	assert.Empty(t, svc.Sent())
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "read-only")
@@ -701,7 +768,7 @@ func TestKeyHints_IncludeExpectedShortcuts(t *testing.T) {
 		labels = append(labels, h.Label)
 	}
 	got := strings.Join(labels, ",")
-	for _, want := range []string{"send", "send & keep", "$EDITOR", "clear", "cancel"} {
+	for _, want := range []string{"send", "$EDITOR", "clear", "cancel"} {
 		assert.Contains(t, got, want)
 	}
 }
@@ -721,8 +788,7 @@ func TestSend_PropagatesCompressionAndKey(t *testing.T) {
 	typeText(m, "key", "k1")
 	typeText(m, "value", "v1")
 
-	cmd := m.Update(keyPress("ctrl+s"))
-	drive(t, m, cmd)
+	drive(t, m, sendAndConfirm(m))
 
 	require.Len(t, svc.Sent(), 1)
 	assert.Equal(t, kafka.CompressionGzip, svc.Sent()[0].Compression)
@@ -1170,6 +1236,35 @@ func typeText(m *produce.Model, field, text string) {
 	}
 }
 
+// sendAndConfirm drives a "send & close" through the confirm modal:
+// drops to NORMAL if needed, opens the modal with `s`, and answers
+// `y`. The Cmd from the confirm answer is returned so callers can
+// drive() it. Returns nil if the modal failed to open (validation
+// rejected the spec, read-only, etc).
+func sendAndConfirm(m *produce.Model) tea.Cmd {
+	if m.Mode() == produce.ModeInsert {
+		_ = m.Update(keyPress("esc"))
+	}
+	_ = m.Update(keyPress("s"))
+	if !m.SendConfirmOpen() {
+		return nil
+	}
+	return m.Update(keyPress("y"))
+}
+
+// sendAndKeep mirrors [sendAndConfirm] for the "send & keep open"
+// variant — answers `k` instead of `y`.
+func sendAndKeep(m *produce.Model) tea.Cmd {
+	if m.Mode() == produce.ModeInsert {
+		_ = m.Update(keyPress("esc"))
+	}
+	_ = m.Update(keyPress("s"))
+	if !m.SendConfirmOpen() {
+		return nil
+	}
+	return m.Update(keyPress("k"))
+}
+
 type fakeService struct {
 	mu         sync.Mutex
 	sent       []kafka.ProduceSpec
@@ -1228,28 +1323,26 @@ func (f *fakeService) Sent() []kafka.ProduceSpec {
 }
 
 var keyPressTable = map[string]tea.KeyPressMsg{
-	"enter":        {Code: tea.KeyEnter},
-	"esc":          {Code: tea.KeyEscape},
-	"backspace":    {Code: tea.KeyBackspace},
-	"tab":          {Code: tea.KeyTab},
-	"shift+tab":    {Code: tea.KeyTab, Mod: tea.ModShift},
-	"down":         {Code: tea.KeyDown},
-	"up":           {Code: tea.KeyUp},
-	"left":         {Code: tea.KeyLeft},
-	"right":        {Code: tea.KeyRight},
-	"home":         {Code: tea.KeyHome},
-	"end":          {Code: tea.KeyEnd},
-	"ctrl+a":       {Code: 'a', Mod: tea.ModCtrl},
-	"ctrl+e":       {Code: 'e', Mod: tea.ModCtrl},
-	"ctrl+k":       {Code: 'k', Mod: tea.ModCtrl},
-	"ctrl+n":       {Code: 'n', Mod: tea.ModCtrl},
-	"ctrl+s":       {Code: 's', Mod: tea.ModCtrl},
-	"ctrl+shift+s": {Code: 's', Mod: tea.ModCtrl | tea.ModShift},
-	"ctrl+u":       {Code: 'u', Mod: tea.ModCtrl},
-	"ctrl+w":       {Code: 'w', Mod: tea.ModCtrl},
-	"ctrl+x":       {Code: 'x', Mod: tea.ModCtrl},
-	"shift++":      {Code: '+', Mod: tea.ModShift},
-	"shift+-":      {Code: '-', Mod: tea.ModShift},
+	"enter":     {Code: tea.KeyEnter},
+	"esc":       {Code: tea.KeyEscape},
+	"backspace": {Code: tea.KeyBackspace},
+	"tab":       {Code: tea.KeyTab},
+	"shift+tab": {Code: tea.KeyTab, Mod: tea.ModShift},
+	"down":      {Code: tea.KeyDown},
+	"up":        {Code: tea.KeyUp},
+	"left":      {Code: tea.KeyLeft},
+	"right":     {Code: tea.KeyRight},
+	"home":      {Code: tea.KeyHome},
+	"end":       {Code: tea.KeyEnd},
+	"ctrl+a":    {Code: 'a', Mod: tea.ModCtrl},
+	"ctrl+e":    {Code: 'e', Mod: tea.ModCtrl},
+	"ctrl+k":    {Code: 'k', Mod: tea.ModCtrl},
+	"ctrl+n":    {Code: 'n', Mod: tea.ModCtrl},
+	"ctrl+u":    {Code: 'u', Mod: tea.ModCtrl},
+	"ctrl+w":    {Code: 'w', Mod: tea.ModCtrl},
+	"ctrl+x":    {Code: 'x', Mod: tea.ModCtrl},
+	"shift++":   {Code: '+', Mod: tea.ModShift},
+	"shift+-":   {Code: '-', Mod: tea.ModShift},
 }
 
 func keyPress(name string) tea.KeyPressMsg {

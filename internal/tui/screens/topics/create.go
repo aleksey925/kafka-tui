@@ -145,7 +145,7 @@ func formHintLine(mode FormMode, verb string) string {
 	if mode == FormInsert {
 		return "type to edit  tab/enter commit & next  shift+tab back  esc to NORMAL"
 	}
-	return "tab/↓ next  shift+tab/↑ prev  enter edit  ctrl+s " + verb + "  esc cancel"
+	return "tab/↓ next  shift+tab/↑ prev  enter edit  s " + verb + "  esc cancel"
 }
 
 // updateFormModal is the shared NORMAL/INSERT state machine for the

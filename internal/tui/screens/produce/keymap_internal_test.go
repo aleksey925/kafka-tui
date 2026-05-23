@@ -11,6 +11,5 @@ import (
 func TestBindings_WellFormed(t *testing.T) {
 	m := New(Options{Topic: "t"})
 	assert.NoError(t, keymap.Validate(m.bindings()))
-	assert.NoError(t, keymap.Validate(m.globalBindings()))
 	assert.NoError(t, keymap.Validate(m.normalBindings()))
 }

@@ -232,7 +232,7 @@ func TestN_OpensCreateForm(t *testing.T) {
 	assert.Equal(t, topics.ModeCreate, m.CurrentMode())
 	out := m.View()
 	assert.Contains(t, out, "New topic")
-	assert.Contains(t, out, "ctrl+s create")
+	assert.Contains(t, out, "s create")
 }
 
 func TestCreateForm_EscReturnsToList(t *testing.T) {
@@ -327,7 +327,7 @@ func TestCreateForm_CtrlUNoopWhilePopupOpen(t *testing.T) {
 	assert.True(t, m.CreateForm().Form().PopupActive(), "popup must stay open")
 }
 
-func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
+func TestCreateForm_SValidatesAndDispatches(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
@@ -340,7 +340,8 @@ func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 	for _, r := range "orders" {
 		_ = m.Update(keyPressRune(r))
 	}
-	cmd := m.Update(keyPress("ctrl+s"))
+	_ = m.Update(keyPress("esc")) // back to NORMAL so `s` is a binding
+	cmd := m.Update(keyPress("s"))
 	drive(t, m, cmd)
 
 	created := svc.Created()
@@ -350,18 +351,33 @@ func TestCreateForm_CtrlSValidatesAndDispatches(t *testing.T) {
 	assert.Equal(t, int16(1), created[0].ReplicationFactor)
 }
 
-func TestCreateForm_CtrlSWithEmptyNameShowsInlineError(t *testing.T) {
+func TestCreateForm_SWithEmptyNameShowsInlineError(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
 
 	_ = m.Update(keyPress("n"))
 	// no name typed
-	cmd := m.Update(keyPress("ctrl+s"))
+	cmd := m.Update(keyPress("s"))
 	drive(t, m, cmd)
 
 	require.Equal(t, topics.ModeCreate, m.CurrentMode(), "stay on form when invalid")
 	assert.Contains(t, m.CreateForm().Err(), "name")
+	assert.Empty(t, svc.Created())
+}
+
+func TestCreateForm_SInInsertIsLiteral(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("n"))
+	_ = m.Update(keyPress("enter")) // INSERT on `name`
+
+	_ = m.Update(keyPressRune('s'))
+
+	got, _ := m.CreateForm().Form().Field("name")
+	assert.Equal(t, "s", got.Value, "s in INSERT must be typed, not submit the form")
 	assert.Empty(t, svc.Created())
 }
 
@@ -377,7 +393,7 @@ func TestY_OpensCloneForm(t *testing.T) {
 	assert.Contains(t, out, "alpha")
 }
 
-func TestCloneForm_CtrlSStartsCloneAndShowsProgress(t *testing.T) {
+func TestCloneForm_SAndYStartsCloneAndShowsProgress(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}, {Name: "beta"}}, nil)
 	m := topics.New(topics.Options{Service: svc})
 	drive(t, m, m.Init())
@@ -385,7 +401,8 @@ func TestCloneForm_CtrlSStartsCloneAndShowsProgress(t *testing.T) {
 	_ = m.Update(keyPress("y"))
 	require.Equal(t, topics.ModeClone, m.CurrentMode())
 
-	cmd := m.Update(keyPress("ctrl+s"))
+	_ = m.Update(keyPress("s"))
+	cmd := m.Update(keyPress("y")) // confirm the clone
 	drive(t, m, cmd)
 
 	cloned := svc.Cloned()
@@ -394,6 +411,19 @@ func TestCloneForm_CtrlSStartsCloneAndShowsProgress(t *testing.T) {
 	assert.Equal(t, "alpha-clone", cloned[0].dst)
 	// after the clone progress channel closes, mode returns to list
 	assert.Equal(t, topics.ModeList, m.CurrentMode())
+}
+
+func TestCloneForm_ConfirmNoDismissesWithoutCloning(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("y"))
+	_ = m.Update(keyPress("s"))
+	_ = m.Update(keyPress("n"))
+
+	assert.Equal(t, topics.ModeClone, m.CurrentMode(), "dismissing the confirm keeps the user on the clone form")
+	assert.Empty(t, svc.Cloned(), "dismissing must not start the clone")
 }
 
 func TestCloneForm_PartialProgressRendersOverlayAndEscReturns(t *testing.T) {
@@ -410,7 +440,8 @@ func TestCloneForm_PartialProgressRendersOverlayAndEscReturns(t *testing.T) {
 	drive(t, m, m.Init())
 
 	_ = m.Update(keyPress("y"))
-	cmd := m.Update(keyPress("ctrl+s"))
+	_ = m.Update(keyPress("s"))
+	cmd := m.Update(keyPress("y")) // confirm the clone — returns the start cmd
 	// pump the cloneStartedMsg so we land on the first clonePollCmd.
 	step1 := cmd()
 	require.NotNil(t, step1)

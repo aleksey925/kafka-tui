@@ -1177,10 +1177,12 @@ func TestRoute_ProduceSuccessForwardsToastToTopics(t *testing.T) {
 	drainCmd(t, m, cmd)
 	require.Contains(t, strings.ToLower(m.Render()), "produce")
 
-	// ctrl+s in NORMAL mode sends and closes — async produce result drains
-	// through the host, the screen pops, and the success toast must land on
-	// the topics screen's queue.
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	// `s` opens the send confirm; `y` commits and closes — async produce
+	// result drains through the host, the screen pops, and the success
+	// toast must land on the topics screen's queue.
+	_, cmd = m.Update(keyPressRune('s'))
+	drainCmd(t, m, cmd)
+	_, cmd = m.Update(keyPressRune('y'))
 	drainCmd(t, m, cmd)
 
 	out := m.Render()

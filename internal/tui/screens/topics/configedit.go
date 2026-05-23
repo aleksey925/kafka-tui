@@ -49,8 +49,9 @@ type ConfigEditModel struct {
 	knownDoc      bool
 	originalValue string
 
-	form *components.Form
-	mode FormMode
+	form    *components.Form
+	mode    FormMode
+	confirm *components.Confirm
 
 	saving bool
 	err    string
@@ -167,7 +168,7 @@ func (m *ConfigEditModel) Saving() bool { return m.saving }
 // HasOverlay also covers the saving state so the host's q/esc fallback
 // doesn't pop the screen out from under an in-flight AlterTopicConfig RPC.
 func (m *ConfigEditModel) HasOverlay() bool {
-	return m.mode == FormInsert || m.form.PopupActive() || m.saving
+	return m.mode == FormInsert || m.form.PopupActive() || m.saving || m.confirm != nil
 }
 
 // WantsRawInput is true while the user is typing into a text field or a
@@ -176,6 +177,10 @@ func (m *ConfigEditModel) HasOverlay() bool {
 func (m *ConfigEditModel) WantsRawInput() bool {
 	return m.mode == FormInsert || m.form.PopupActive()
 }
+
+// ConfirmOpen reports whether the save confirm modal is currently
+// mounted. Exposed for tests.
+func (m *ConfigEditModel) ConfirmOpen() bool { return m.confirm != nil }
 
 func (m *ConfigEditModel) SetSize(w, h int) {
 	m.width, m.height = w, h
@@ -189,11 +194,36 @@ func (m *ConfigEditModel) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.bindings())
 }
 
+// bindings reflects the live keymap. While the save confirm modal is
+// open only its keys are advertised, so the hint bar matches what fires.
 func (m *ConfigEditModel) bindings() []keymap.Binding {
+	if m.confirm != nil {
+		return m.confirm.Bindings("Save config", "save")
+	}
 	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "save", Category: "Edit", Hint: true, Handler: m.actSave},
+		{Keys: []string{"s"}, Label: "save", Category: "Edit", Hint: true, Handler: m.actOpenSaveConfirm},
 		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Edit", Hint: true, HandlerMsg: m.actEsc},
 	}
+}
+
+// actOpenSaveConfirm gates the save: an already-in-flight RPC blocks
+// re-entry, an invalid value surfaces inline so the user fixes it before
+// being asked to confirm, and only then do we mount the modal.
+func (m *ConfigEditModel) actOpenSaveConfirm() tea.Cmd {
+	if m.saving {
+		return nil
+	}
+	if _, err := m.validatedValue(); err != nil {
+		m.err = err.Error()
+		return nil
+	}
+	m.err = ""
+	m.confirm = components.NewConfirm(
+		"Save config",
+		fmt.Sprintf("Save changes to %q?", m.topic),
+		components.WithConfirmStyles(m.styles),
+	)
+	return nil
 }
 
 func (m *ConfigEditModel) actSave() tea.Cmd {
@@ -208,6 +238,21 @@ func (m *ConfigEditModel) actSave() tea.Cmd {
 	m.err = ""
 	m.saving = true
 	return alterConfigCmd(m.svc, m.topic, m.key, value)
+}
+
+func (m *ConfigEditModel) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
+	c, _ := m.confirm.Update(key)
+	m.confirm = c
+	switch c.Result() {
+	case components.ConfirmPending:
+		return nil
+	case components.ConfirmYes:
+		m.confirm = nil
+		return m.actSave()
+	case components.ConfirmNo:
+		m.confirm = nil
+	}
+	return nil
 }
 
 func (m *ConfigEditModel) actEsc(key tea.KeyPressMsg) tea.Cmd {
@@ -240,6 +285,11 @@ func (m *ConfigEditModel) Update(msg tea.Msg) tea.Cmd {
 			// dropping paste matches the keystroke freeze in handleKey.
 			return nil
 		}
+		if m.confirm != nil {
+			// the save confirm owns input; a paste leaking through would
+			// mutate the value the user is being asked to confirm.
+			return nil
+		}
 		m.form, m.mode = applyPasteToForm(m.form, m.mode, msg)
 		return nil
 	case tea.KeyPressMsg:
@@ -249,11 +299,20 @@ func (m *ConfigEditModel) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *ConfigEditModel) handleKey(key tea.KeyPressMsg) tea.Cmd {
+	if m.confirm != nil {
+		return m.handleConfirmKey(key)
+	}
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
-	if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
-		return cmd
+	// `s` is the save shortcut in NORMAL, but a literal letter in INSERT
+	// or while a segmented popup is open — only dispatch the screen
+	// bindings when the user isn't typing.
+	inEdit := m.mode == FormInsert || m.form.PopupActive()
+	if !inEdit || key.String() == "esc" {
+		if cmd, ok := keymap.Dispatch(m.bindings(), key); ok {
+			return cmd
+		}
 	}
 	if m.saving {
 		// the value is captured at actSave time and the RPC is in
@@ -318,6 +377,9 @@ func (m *ConfigEditModel) validatedValue() (string, error) {
 }
 
 func (m *ConfigEditModel) View() string {
+	if m.confirm != nil {
+		return m.confirm.View(m.width, m.height)
+	}
 	header := m.styles.HelpTitle.Render(m.Title())
 	parts := []string{header}
 
@@ -357,12 +419,12 @@ func (m *ConfigEditModel) docWidth() int {
 // no-ops here. We pick keys based on the field kind instead.
 func (m *ConfigEditModel) hintLine() string {
 	if m.mode == FormInsert {
-		return "type to edit  enter/esc — confirm  ctrl+s — save"
+		return "type to edit  enter/esc — confirm  esc to NORMAL then s — save"
 	}
 	if isPicker(m.form.FocusedField().Kind) {
-		return "←/→ — change  enter — pick from list  ctrl+s — save  esc — cancel"
+		return "←/→ — change  enter — pick from list  s — save  esc — cancel"
 	}
-	return "enter — edit  ctrl+s — save  esc — cancel"
+	return "enter — edit  s — save  esc — cancel"
 }
 
 // ConfigAlteredMsg reports the result of an AlterTopicConfig RPC.
