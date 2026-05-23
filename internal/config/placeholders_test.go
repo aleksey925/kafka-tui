@@ -410,16 +410,20 @@ func TestLoad_PlaceholderResolution_VaultErrorsWhenNoResolver(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "clusters.yaml"), clustersYAML, 0o644))
 
-	// act — without a vault resolver, leftover ${vault:...} must fail loud
-	// so unresolved secrets cannot leak into runtime fields like SASL passwords.
-	_, err := config.Load(config.LoaderOptions{
+	// act — without a vault resolver, the leftover ${vault:...} must
+	// quarantine that cluster (not the whole app) so unresolved secrets
+	// cannot reach runtime fields like SASL passwords.
+	loaded, err := config.Load(config.LoaderOptions{
 		HomeDir:  homeDir,
 		StartDir: t.TempDir(),
 	})
 
 	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "${vault:kv/db#pw}")
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Clusters)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "prod", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "${vault:kv/db#pw}")
 }
 
 func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {

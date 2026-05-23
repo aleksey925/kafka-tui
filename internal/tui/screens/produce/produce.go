@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
@@ -717,7 +718,16 @@ func (m *Model) spec() (kafka.ProduceSpec, error) {
 	if err != nil {
 		return kafka.ProduceSpec{}, err
 	}
-	codec, err := kafka.ParseCompression(get(fieldCompression))
+	rawCompression := get(fieldCompression)
+	normCompression := rawCompression
+	if rawCompression != "" {
+		norm, ok := config.NormalizeEnum(rawCompression, config.AllowedCompressions)
+		if !ok {
+			return kafka.ProduceSpec{}, fmt.Errorf("compression: unknown value %q", rawCompression)
+		}
+		normCompression = norm
+	}
+	codec, err := kafka.ParseCompression(normCompression)
 	if err != nil {
 		return kafka.ProduceSpec{}, fmt.Errorf("compression: %w", err)
 	}

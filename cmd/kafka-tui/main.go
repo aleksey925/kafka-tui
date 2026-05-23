@@ -82,7 +82,6 @@ func main() {
 func run(flags *cli.Flags) error {
 	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
-		CLIClusterName: flags.Inline.Name,
 		VaultBuilder:   vaultBuilderWithCLIOverride(flags),
 		ResolveTargets: []any{flags},
 	}
@@ -91,8 +90,12 @@ func run(flags *cli.Flags) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	logLevel := loaded.Config.Logging.Level
+	if flags.LogLevel != "" {
+		logLevel = flags.LogLevel
+	}
 	logger, err := logging.Init(logging.Options{
-		Level:     loaded.Config.Logging.Level,
+		Level:     logLevel,
 		File:      loaded.Config.Logging.File,
 		MaxSizeMB: loaded.Config.Logging.MaxSizeMB,
 		MaxFiles:  loaded.Config.Logging.MaxFiles,
@@ -129,10 +132,15 @@ func run(flags *cli.Flags) error {
 	}
 	clip := clipboard.New(clipboard.Options{Method: method})
 
+	autoSelect := flags.ClusterName
+	if autoSelect == "" {
+		autoSelect = cliClu
+	}
 	boot := &tui.Bootstrap{
 		Loaded:            loaded,
 		Clusters:          clusterList,
 		CLIName:           cliClu,
+		AutoSelectCluster: autoSelect,
 		GlobalPath:        globalPath,
 		ProjectPath:       projectPath,
 		LogPath:           logger.ResolvedAt,
@@ -178,9 +186,9 @@ func run(flags *cli.Flags) error {
 	return nil
 }
 
-// buildClusterList prepends the CLI inline cluster onto the loaded list. The
-// loader has already removed any same-named entry from clusters.yaml before
-// we get here, so a simple append is safe.
+// buildClusterList prepends the CLI inline cluster onto the loaded list.
+// The inline name is auto-generated with a "-cli" suffix (cli.Parse), so
+// it cannot collide with any YAML cluster name — append is safe.
 func buildClusterList(loaded []config.Cluster, inline cli.CLICluster) ([]config.Cluster, string) {
 	if !inline.HasInlineCluster() {
 		return loaded, ""

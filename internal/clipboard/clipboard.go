@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 )
 
@@ -21,17 +20,19 @@ const (
 	MethodOff    Method = "off"
 )
 
-// ParseMethod normalises a user-facing string into a [Method]. Empty input
-// returns [MethodAuto].
+// ParseMethod maps a canonical string into a [Method]. Empty input returns
+// [MethodAuto]. Input is expected to be pre-normalized by
+// config.PostProcessConfig (lowercase, trimmed, validated) — this parser
+// is strict and only matches the canonical set.
 func ParseMethod(s string) (Method, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	switch s {
 	case "", "auto":
 		return MethodAuto, nil
 	case "native":
 		return MethodNative, nil
 	case "osc52":
 		return MethodOSC52, nil
-	case "off", "none", "disabled":
+	case "off":
 		return MethodOff, nil
 	default:
 		return "", fmt.Errorf("clipboard: unknown method %q (allowed: auto, native, osc52, off)", s)

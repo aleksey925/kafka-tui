@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // deepMergeMap overlays src on top of dst. Maps recurse, scalars and lists
 // replace. For each leaf path, sources is updated with the layer/file that
@@ -67,18 +70,21 @@ func mergeClustersList(
 	return dst, nil
 }
 
+// validateClusterTLS reports TLS conflicts on a single cluster. Caller
+// (loadCluster) routes failures into InvalidClusters; the cluster name
+// is added by the consumer surface (UI / slog), not inside the error.
 func validateClusterTLS(c Cluster) error {
 	if c.TLS == nil {
 		return nil
 	}
 	if c.TLS.CA != "" && c.TLS.CAFile != "" {
-		return fmt.Errorf("config: cluster %q: tls.ca and tls.ca_file cannot both be set", c.Name)
+		return errors.New("tls.ca and tls.ca_file cannot both be set")
 	}
 	if c.TLS.Cert != "" && c.TLS.CertFile != "" {
-		return fmt.Errorf("config: cluster %q: tls.cert and tls.cert_file cannot both be set", c.Name)
+		return errors.New("tls.cert and tls.cert_file cannot both be set")
 	}
 	if c.TLS.Key != "" && c.TLS.KeyFile != "" {
-		return fmt.Errorf("config: cluster %q: tls.key and tls.key_file cannot both be set", c.Name)
+		return errors.New("tls.key and tls.key_file cannot both be set")
 	}
 	// cert and key are always a pair — accepting one without the other
 	// passes load but fails later at connect time with a confusing tls
@@ -86,7 +92,7 @@ func validateClusterTLS(c Cluster) error {
 	hasCert := c.TLS.Cert != "" || c.TLS.CertFile != ""
 	hasKey := c.TLS.Key != "" || c.TLS.KeyFile != ""
 	if hasCert != hasKey {
-		return fmt.Errorf("config: cluster %q: tls cert and key must be set together", c.Name)
+		return errors.New("tls cert and key must be set together")
 	}
 	return nil
 }

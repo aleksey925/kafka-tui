@@ -12,6 +12,9 @@ import (
 func TestParseCompression(t *testing.T) {
 	t.Parallel()
 
+	// ParseCompression is strict — input is expected to be pre-normalized
+	// by config.PostProcessConfig or the produce-form caller. Anything
+	// outside the canonical set is rejected.
 	cases := []struct {
 		in      string
 		want    Compression
@@ -19,11 +22,13 @@ func TestParseCompression(t *testing.T) {
 	}{
 		{"", CompressionNone, false},
 		{"none", CompressionNone, false},
-		{"NONE", CompressionNone, false},
-		{" gzip ", CompressionGzip, false},
+		{"gzip", CompressionGzip, false},
 		{"snappy", CompressionSnappy, false},
 		{"lz4", CompressionLZ4, false},
 		{"zstd", CompressionZstd, false},
+		// non-canonical → rejected
+		{"NONE", "", true},
+		{" gzip ", "", true},
 		{"bz2", "", true},
 	}
 	for _, tc := range cases {

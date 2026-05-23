@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,11 @@ const (
 	StatusChecking
 	StatusOK
 	StatusFailed
+	// StatusInvalid marks a cluster whose YAML failed to load (unresolved
+	// placeholder, vault lookup error, TLS conflict, etc.). The row stays
+	// in the picker so the user sees what's missing, but no Ping/Connect
+	// is attempted — both surface the load reason instead.
+	StatusInvalid
 )
 
 func (s ConnectionStatus) Icon() string {
@@ -38,6 +44,8 @@ func (s ConnectionStatus) Icon() string {
 		return "✓"
 	case StatusFailed:
 		return "✗"
+	case StatusInvalid:
+		return "!"
 	default:
 		return "?"
 	}
@@ -51,6 +59,8 @@ func (s ConnectionStatus) Label() string {
 		return "✓ ok"
 	case StatusFailed:
 		return "✗ failed"
+	case StatusInvalid:
+		return "! invalid"
 	default:
 		return "? unknown"
 	}
@@ -112,8 +122,19 @@ type Action struct {
 
 // Options configure a [Model].
 type Options struct {
-	Clusters                []config.Cluster
-	CLIName                 string
+	Clusters []config.Cluster
+	// InvalidClusters are clusters whose YAML failed to load. They show up
+	// in the picker with StatusInvalid and a load-time error toast on
+	// select, but are never dialed.
+	InvalidClusters []config.InvalidCluster
+	// CLIName marks the inline cluster from --brokers (for the "(cli)"
+	// badge in the picker). Auto-select uses AutoSelectCluster, not this.
+	CLIName string
+	// AutoSelectCluster names the cluster to auto-connect to at startup.
+	// SkipTarget honors it when the name matches a valid cluster;
+	// otherwise it falls through to the single-cluster shortcut or shows
+	// the picker.
+	AutoSelectCluster       string
 	GlobalPath, ProjectPath string
 	Pinger                  Pinger
 	Editor                  Editor
@@ -130,7 +151,17 @@ type editTarget struct {
 
 type Model struct {
 	clusters []config.Cluster
-	cliName  string
+	// invalidNames tracks which rows in the table came from
+	// InvalidClusters, so connect/test can short-circuit without re-walking
+	// the original slice and the row renderer can pull the load reason
+	// from errors[name]. Set membership is the only thing that matters.
+	invalidNames map[string]struct{}
+	cliName      string
+	// autoSelect carries the --cluster / inline-fallback target. The
+	// host (app.Init) calls SkipTarget once at startup; on miss it
+	// writes pendingStartupToast and the screen's own Init drains it.
+	autoSelect          string
+	pendingStartupToast string
 
 	statuses map[string]ConnectionStatus
 	errors   map[string]string
@@ -157,8 +188,12 @@ type Model struct {
 	refresher components.Refresher
 
 	startupWarn []string
-	now         func() time.Time
-	styles      theme.Styles
+	// lastWarnings remembers the soft-fallback warnings already surfaced
+	// (initially the startupWarn batch). SetClusters diffs against it so
+	// the same persistent warning isn't re-toasted on every watcher tick.
+	lastWarnings []string
+	now          func() time.Time
+	styles       theme.Styles
 }
 
 // New builds a Model from Options.
@@ -180,10 +215,29 @@ func New(opts Options) *Model {
 		timeout = 5 * time.Second
 	}
 
-	clusters := append([]config.Cluster(nil), opts.Clusters...)
-	statuses := make(map[string]ConnectionStatus, len(clusters))
-	for _, c := range clusters {
-		statuses[c.Name] = StatusUnknown
+	// Merge valid + invalid into one ordered list; invalid keeps its
+	// position from clusters.yaml so the user sees rows in their file
+	// order, not segregated by status.
+	merged := make([]config.Cluster, 0, len(opts.Clusters)+len(opts.InvalidClusters))
+	merged = append(merged, opts.Clusters...)
+	for _, ic := range opts.InvalidClusters {
+		merged = append(merged, ic.Cluster)
+	}
+	invalidNames := make(map[string]struct{}, len(opts.InvalidClusters))
+	errors := make(map[string]string, len(opts.InvalidClusters))
+	for _, ic := range opts.InvalidClusters {
+		invalidNames[ic.Cluster.Name] = struct{}{}
+		if ic.Reason != nil {
+			errors[ic.Cluster.Name] = ic.Reason.Error()
+		}
+	}
+	statuses := make(map[string]ConnectionStatus, len(merged))
+	for _, c := range merged {
+		if _, bad := invalidNames[c.Name]; bad {
+			statuses[c.Name] = StatusInvalid
+		} else {
+			statuses[c.Name] = StatusUnknown
+		}
 	}
 
 	choices := make([]editTarget, 0, 2)
@@ -201,20 +255,23 @@ func New(opts Options) *Model {
 	// right after entry instead of waiting for the first watcher snapshot.
 	refresher.MarkSuccess()
 	m := &Model{
-		clusters:    clusters,
-		cliName:     opts.CLIName,
-		statuses:    statuses,
-		errors:      map[string]string{},
-		table:       tbl,
-		toasts:      components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		pinger:      opts.Pinger,
-		editor:      editor,
-		pingTimeout: timeout,
-		editChoices: choices,
-		refresher:   refresher,
-		startupWarn: append([]string(nil), opts.StartupWarnings...),
-		now:         now,
-		styles:      styles,
+		clusters:     merged,
+		invalidNames: invalidNames,
+		cliName:      opts.CLIName,
+		autoSelect:   opts.AutoSelectCluster,
+		statuses:     statuses,
+		errors:       errors,
+		table:        tbl,
+		toasts:       components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		pinger:       opts.Pinger,
+		editor:       editor,
+		pingTimeout:  timeout,
+		editChoices:  choices,
+		refresher:    refresher,
+		startupWarn:  append([]string(nil), opts.StartupWarnings...),
+		lastWarnings: append([]string(nil), opts.StartupWarnings...),
+		now:          now,
+		styles:       styles,
 	}
 	m.refreshTable()
 	return m
@@ -231,14 +288,33 @@ func columnDefs() []components.Column {
 	}
 }
 
-// SkipTarget reports the cluster name to bypass the screen for: a CLI inline
-// cluster (priority) or the only configured cluster.
+// SkipTarget reports the cluster the host should auto-connect to,
+// bypassing the picker. Priority: explicit autoSelect (from --cluster,
+// or from --brokers inline as a fallback) → the only cluster in the
+// list. Invalid or unknown autoSelect targets do NOT auto-skip; the
+// user lands on the picker.
+//
+// Side effect: on an autoSelect miss the reason is stashed in
+// pendingStartupToast for the screen's Init to surface as a toast —
+// callers don't need to handle the miss explicitly.
 func (m *Model) SkipTarget() (string, bool) {
-	if m.cliName != "" {
-		return m.cliName, true
+	if m.autoSelect != "" {
+		if _, bad := m.invalidNames[m.autoSelect]; bad {
+			m.pendingStartupToast = "cluster " + m.autoSelect + " is invalid; see picker"
+			return "", false
+		}
+		if _, exists := m.statuses[m.autoSelect]; !exists {
+			m.pendingStartupToast = "cluster " + m.autoSelect + " not found"
+			return "", false
+		}
+		return m.autoSelect, true
 	}
 	if len(m.clusters) == 1 {
-		return m.clusters[0].Name, true
+		only := m.clusters[0].Name
+		if _, bad := m.invalidNames[only]; bad {
+			return "", false
+		}
+		return only, true
 	}
 	return "", false
 }
@@ -248,6 +324,17 @@ func (m *Model) Init() tea.Cmd {
 		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
 	}
 	m.startupWarn = nil
+	if m.pendingStartupToast != "" {
+		m.toasts.PushWithLifetime(components.ToastWarning, m.pendingStartupToast, 5*time.Second)
+		m.pendingStartupToast = ""
+	}
+	if n := len(m.invalidNames); n > 0 {
+		m.toasts.PushWithLifetime(
+			components.ToastWarning,
+			fmt.Sprintf("%d cluster(s) failed to load — see status column for reason", n),
+			5*time.Second,
+		)
+	}
 	return nil
 }
 
@@ -264,26 +351,53 @@ func (m *Model) ConsumeAction() Action {
 func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 
 // SetClusters replaces the cluster list (host calls this after a reload).
-// Statuses are preserved by name; missing clusters drop out; new ones get
-// StatusUnknown. The cursor stays on the same cluster name when possible.
-func (m *Model) SetClusters(list []config.Cluster, cliName string) {
-	m.clusters = append([]config.Cluster(nil), list...)
-	m.cliName = cliName
-	m.refresher.MarkSuccess()
-	keep := make(map[string]ConnectionStatus, len(list))
-	keepErr := make(map[string]string, len(list))
-	for _, c := range list {
-		if s, ok := m.statuses[c.Name]; ok {
-			keep[c.Name] = s
-		} else {
-			keep[c.Name] = StatusUnknown
+// Valid statuses (ok / failed / unknown) are preserved by name; clusters
+// that became invalid in this reload move to StatusInvalid with the new
+// reason; missing clusters drop out; the cursor stays on the same name
+// when possible. Soft-fallback warnings new to this reload are toasted;
+// persistent ones from prior reloads are not re-toasted.
+func (m *Model) SetClusters(list []config.Cluster, invalid []config.InvalidCluster, warnings []string, cliName string) {
+	merged := make([]config.Cluster, 0, len(list)+len(invalid))
+	merged = append(merged, list...)
+	for _, ic := range invalid {
+		merged = append(merged, ic.Cluster)
+	}
+	invalidNames := make(map[string]struct{}, len(invalid))
+	keepErr := make(map[string]string, len(merged))
+	for _, ic := range invalid {
+		invalidNames[ic.Cluster.Name] = struct{}{}
+		if ic.Reason != nil {
+			keepErr[ic.Cluster.Name] = ic.Reason.Error()
 		}
+	}
+	keep := make(map[string]ConnectionStatus, len(merged))
+	for _, c := range merged {
+		if _, bad := invalidNames[c.Name]; bad {
+			keep[c.Name] = StatusInvalid
+			continue
+		}
+		prev, seen := m.statuses[c.Name]
+		if !seen || prev == StatusInvalid {
+			// freshly valid (or never seen) — start at unknown so the
+			// stale load reason from a prior reload doesn't linger
+			// after the user fixed the YAML.
+			keep[c.Name] = StatusUnknown
+			continue
+		}
+		keep[c.Name] = prev
 		if e, ok := m.errors[c.Name]; ok {
 			keepErr[c.Name] = e
 		}
 	}
+	newlyInvalid := newlyInvalidNames(m.invalidNames, invalidNames)
+	newWarnings := newWarningsSince(m.lastWarnings, warnings)
+	m.clusters = merged
+	m.invalidNames = invalidNames
+	m.cliName = cliName
 	m.statuses = keep
 	m.errors = keepErr
+	m.lastWarnings = append([]string(nil), warnings...)
+	m.refresher.MarkSuccess()
 	prevID := ""
 	if row, ok := m.table.SelectedRow(); ok {
 		prevID = row.ID
@@ -292,6 +406,57 @@ func (m *Model) SetClusters(list []config.Cluster, cliName string) {
 	if prevID != "" {
 		m.table.GoToID(prevID)
 	}
+	for _, w := range newWarnings {
+		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
+	}
+	if len(newlyInvalid) > 0 {
+		m.toasts.PushWithLifetime(
+			components.ToastWarning,
+			fmt.Sprintf("%d cluster(s) now invalid: %s",
+				len(newlyInvalid), strings.Join(newlyInvalid, ", ")),
+			5*time.Second,
+		)
+	}
+}
+
+// newWarningsSince returns warnings present in next but not in prev. The
+// same persistent warning across reloads is filtered out — re-toasting
+// "clipboard.method: invalid value 'xclip'" every fsnotify tick would
+// just be noise.
+func newWarningsSince(prev, next []string) []string {
+	if len(next) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(prev))
+	for _, w := range prev {
+		seen[w] = struct{}{}
+	}
+	out := make([]string, 0, len(next))
+	for _, w := range next {
+		if _, was := seen[w]; was {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// newlyInvalidNames returns the sorted list of names that are invalid in
+// next but were not invalid in prev — i.e. clusters that broke since the
+// last load. Surfacing only the delta keeps re-toasting noiseless when an
+// already-broken cluster persists across reloads.
+func newlyInvalidNames(prev, next map[string]struct{}) []string {
+	if len(next) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(next))
+	for name := range next {
+		if _, was := prev[name]; !was {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
@@ -452,6 +617,9 @@ func (m *Model) connectCurrent() tea.Cmd {
 		return nil
 	}
 	name := row.ID
+	if m.flashInvalidReason(name) {
+		return nil
+	}
 	c := m.findCluster(name)
 	if c == nil {
 		return nil
@@ -473,6 +641,9 @@ func (m *Model) testCurrent() tea.Cmd {
 		return nil
 	}
 	name := row.ID
+	if m.flashInvalidReason(name) {
+		return nil
+	}
 	c := m.findCluster(name)
 	if c == nil || m.pinger == nil {
 		return nil
@@ -488,6 +659,12 @@ func (m *Model) testAll() tea.Cmd {
 	}
 	cmds := make([]tea.Cmd, 0, len(m.clusters))
 	for _, c := range m.clusters {
+		if _, bad := m.invalidNames[c.Name]; bad {
+			// skip silently — the invalid row already carries its reason
+			// and re-toasting one warning per invalid cluster on every
+			// "T" would just be noise.
+			continue
+		}
 		m.statuses[c.Name] = StatusChecking
 		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest))
 	}
@@ -496,6 +673,20 @@ func (m *Model) testAll() tea.Cmd {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+// flashInvalidReason returns true (and pushes a toast) when the named
+// cluster failed to load. Connect/test handlers short-circuit on it.
+func (m *Model) flashInvalidReason(name string) bool {
+	if _, bad := m.invalidNames[name]; !bad {
+		return false
+	}
+	msg := "cluster " + name + ": invalid configuration"
+	if reason, ok := m.errors[name]; ok && reason != "" {
+		msg = "cluster " + name + ": " + reason
+	}
+	m.toasts.Push(components.ToastError, msg)
+	return true
 }
 
 func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }

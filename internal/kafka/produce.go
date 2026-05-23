@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -109,13 +108,16 @@ func (c *Client) Produce(ctx context.Context, spec ProduceSpec) (ProduceResult, 
 	}, nil
 }
 
-// ParseCompression normalizes a user-provided compression name. Empty maps
-// to CompressionNone.
+// ParseCompression maps a canonical compression name into a [Compression].
+// Empty maps to CompressionNone. Input is expected to be pre-normalized
+// (lowercase, trimmed, validated) by config.PostProcessConfig or the
+// produce-form caller — this parser is strict and only matches the
+// canonical set.
 func ParseCompression(s string) (Compression, error) {
-	norm := Compression(strings.ToLower(strings.TrimSpace(s)))
-	if norm == "" {
+	if s == "" {
 		return CompressionNone, nil
 	}
+	norm := Compression(s)
 	if slices.Contains(AllCompressions, norm) {
 		return norm, nil
 	}

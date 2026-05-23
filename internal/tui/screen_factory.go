@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
@@ -83,16 +84,22 @@ func (m *Model) clearNavSeeds() {
 
 func (m *Model) newClusters() *clusters.Model {
 	b := m.boot
+	var invalid []config.InvalidCluster
+	if b.Loaded != nil {
+		invalid = b.Loaded.InvalidClusters
+	}
 	return clusters.New(clusters.Options{
-		Clusters:        b.Clusters,
-		CLIName:         b.CLIName,
-		GlobalPath:      b.GlobalPath,
-		ProjectPath:     b.ProjectPath,
-		Pinger:          b.Pinger,
-		Editor:          b.Editor,
-		StartupWarnings: b.StartupWarnings,
-		Now:             m.now,
-		Styles:          m.styles,
+		Clusters:          b.Clusters,
+		InvalidClusters:   invalid,
+		CLIName:           b.CLIName,
+		AutoSelectCluster: b.AutoSelectCluster,
+		GlobalPath:        b.GlobalPath,
+		ProjectPath:       b.ProjectPath,
+		Pinger:            b.Pinger,
+		Editor:            b.Editor,
+		StartupWarnings:   b.StartupWarnings,
+		Now:               m.now,
+		Styles:            m.styles,
 	})
 }
 

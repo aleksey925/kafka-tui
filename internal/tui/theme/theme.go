@@ -6,6 +6,8 @@ import (
 	"image/color"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/aleksey925/kafka-tui/internal/config"
 )
 
 // Cluster color identifiers accepted by clusters.yaml.
@@ -17,14 +19,11 @@ const (
 	ClusterWhite  = "white"
 )
 
-// AllowedClusterColors lists every cluster color the application accepts.
-var AllowedClusterColors = []string{
-	ClusterRed,
-	ClusterYellow,
-	ClusterGreen,
-	ClusterGray,
-	ClusterWhite,
-}
+// AllowedClusterColors re-exports the config-level allowlist. The
+// canonical source lives in the config package (which normalizes
+// incoming YAML against it); theme just renders whatever the schema
+// accepts.
+var AllowedClusterColors = config.AllowedClusterColors
 
 // Palette describes the colors used by the dark theme.
 type Palette struct {

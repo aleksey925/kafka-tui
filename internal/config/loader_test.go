@@ -239,14 +239,17 @@ func TestLoad_TLSValidation_RejectsCAandCAFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".kafka-tui", "clusters.yaml"), src, 0o644))
 
 	// act
-	_, err = config.Load(config.LoaderOptions{
+	loaded, err := config.Load(config.LoaderOptions{
 		HomeDir:  homeDir,
 		StartDir: t.TempDir(),
 	})
 
-	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "tls.ca and tls.ca_file")
+	// assert — TLS conflict for one cluster quarantines that cluster,
+	// the rest of the app still loads.
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Clusters)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "tls.ca and tls.ca_file")
 }
 
 func TestLoad_TLSValidation_EmptyTLSObjectAllowed(t *testing.T) {
@@ -269,44 +272,6 @@ func TestLoad_TLSValidation_EmptyTLSObjectAllowed(t *testing.T) {
 	assert.Empty(t, loaded.Clusters[0].TLS.CAFile)
 }
 
-func TestLoad_CLIClusterNameCollision(t *testing.T) {
-	// arrange
-	homeDir := setupGlobalLayer(t)
-
-	// act
-	loaded, err := config.Load(config.LoaderOptions{
-		HomeDir:        homeDir,
-		StartDir:       t.TempDir(),
-		CLIClusterName: "prod",
-	})
-
-	// assert
-	require.NoError(t, err)
-	require.Len(t, loaded.Clusters, 1)
-	assert.Equal(t, "stage", loaded.Clusters[0].Name)
-	require.Len(t, loaded.Warnings, 1)
-	assert.Contains(t, loaded.Warnings[0], "prod")
-	_, hasProd := loaded.Sources.Clusters["prod"]
-	assert.False(t, hasProd, "sources for excluded cluster must be removed")
-}
-
-func TestLoad_CLIClusterName_NoCollision(t *testing.T) {
-	// arrange
-	homeDir := setupGlobalLayer(t)
-
-	// act
-	loaded, err := config.Load(config.LoaderOptions{
-		HomeDir:        homeDir,
-		StartDir:       t.TempDir(),
-		CLIClusterName: "from-cli",
-	})
-
-	// assert
-	require.NoError(t, err)
-	assert.Len(t, loaded.Clusters, 2)
-	assert.Empty(t, loaded.Warnings)
-}
-
 func TestLoad_MissingClusterName_Errors(t *testing.T) {
 	// arrange
 	homeDir := t.TempDir()
@@ -323,6 +288,72 @@ func TestLoad_MissingClusterName_Errors(t *testing.T) {
 	// assert
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing 'name'")
+}
+
+func TestLoad_PartialFailure_OneClusterBroken_OthersLoad(t *testing.T) {
+	// arrange — mix a clean cluster with one that has a TLS conflict
+	// (ca and ca_file both set). The clean cluster must still load.
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".kafka-tui"), 0o755))
+	yaml := []byte(`clusters:
+  - name: clean
+    brokers: [b1:9092]
+  - name: broken
+    brokers: [b2:9092]
+    tls:
+      ca: "INLINE"
+      ca_file: /etc/ca.pem
+  - name: clean2
+    brokers: [b3:9092]
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".kafka-tui", "clusters.yaml"), yaml, 0o644))
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+	})
+
+	// assert
+	require.NoError(t, err)
+	require.Len(t, loaded.Clusters, 2)
+	assert.Equal(t, "clean", loaded.Clusters[0].Name)
+	assert.Equal(t, "clean2", loaded.Clusters[1].Name)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "broken", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "tls.ca and tls.ca_file")
+}
+
+func TestLoad_PartialFailure_OneClusterUnresolvedEnv_OthersLoad(t *testing.T) {
+	// arrange — env-placeholder failure for one cluster (env var not set,
+	// no default) must quarantine only that cluster.
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".kafka-tui"), 0o755))
+	yaml := []byte(`clusters:
+  - name: clean
+    brokers: [b1:9092]
+  - name: needs-env
+    brokers: [b2:9092]
+    sasl:
+      mechanism: PLAIN
+      username: u
+      password: "${env:KAFKA_TUI_TEST_NOT_SET_VAR}"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".kafka-tui", "clusters.yaml"), yaml, 0o644))
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+	})
+
+	// assert
+	require.NoError(t, err)
+	require.Len(t, loaded.Clusters, 1)
+	assert.Equal(t, "clean", loaded.Clusters[0].Name)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "needs-env", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "KAFKA_TUI_TEST_NOT_SET_VAR")
 }
 
 func TestClusterContext_UnknownCluster(t *testing.T) {

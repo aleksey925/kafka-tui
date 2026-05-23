@@ -15,6 +15,9 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/clipboard"
 )
 
+// ParseMethod is strict — it expects canonical values from
+// config.PostProcessConfig (lowercase, trimmed). Anything outside the
+// canonical set is rejected.
 func TestParseMethod(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -23,12 +26,13 @@ func TestParseMethod(t *testing.T) {
 	}{
 		{in: "", want: clipboard.MethodAuto},
 		{in: "auto", want: clipboard.MethodAuto},
-		{in: "AUTO", want: clipboard.MethodAuto},
-		{in: "  native ", want: clipboard.MethodNative},
+		{in: "native", want: clipboard.MethodNative},
 		{in: "osc52", want: clipboard.MethodOSC52},
 		{in: "off", want: clipboard.MethodOff},
-		{in: "none", want: clipboard.MethodOff},
-		{in: "disabled", want: clipboard.MethodOff},
+		// non-canonical → rejected
+		{in: "AUTO", wantErr: true},
+		{in: "  native ", wantErr: true},
+		{in: "none", wantErr: true},
 		{in: "bogus", wantErr: true},
 	}
 	for _, tc := range cases {

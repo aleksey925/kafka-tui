@@ -12,18 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseLevel__knownLevels(t *testing.T) {
+// ParseLevel is strict — it expects canonical values produced by
+// config.PostProcessConfig (lowercase, trimmed). Non-canonical input
+// is rejected, see TestParseLevel__nonCanonical_rejected.
+func TestParseLevel__canonicalLevels(t *testing.T) {
 	cases := []struct {
 		in   string
 		want slog.Level
 	}{
 		{"debug", slog.LevelDebug},
-		{"DEBUG", slog.LevelDebug},
 		{"info", slog.LevelInfo},
 		{"warn", slog.LevelWarn},
-		{"warning", slog.LevelWarn},
 		{"error", slog.LevelError},
-		{"  Error ", slog.LevelError},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -33,6 +33,19 @@ func TestParseLevel__knownLevels(t *testing.T) {
 			// assert
 			require.NoError(t, err)
 			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
+func TestParseLevel__nonCanonical_rejected(t *testing.T) {
+	for _, in := range []string{"DEBUG", "  Error ", "warning"} {
+		t.Run(in, func(t *testing.T) {
+			// act — these must come pre-normalized by the loader; the
+			// parser refuses anything outside the canonical set.
+			_, err := ParseLevel(in)
+
+			// assert
+			require.Error(t, err)
 		})
 	}
 }

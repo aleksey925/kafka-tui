@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -159,16 +158,19 @@ func readMaterial(label, inline, path string) ([]byte, error) {
 	return data, nil
 }
 
+// buildSASLMechanism builds a franz-go SASL mechanism from already-normalized
+// config. The mechanism string is upper-cased and validated at load
+// time inside the per-cluster pipeline, so a bogus value never reaches
+// this function — the cluster is quarantined in Loaded.InvalidClusters
+// first.
 func buildSASLMechanism(s *config.SASLConfig) (sasl.Mechanism, error) {
-	mech := strings.ToUpper(strings.TrimSpace(s.Mechanism))
-	if mech == "" {
+	if s.Mechanism == "" {
 		return nil, errors.New("mechanism is empty")
 	}
 	if s.Username == "" {
 		return nil, errors.New("username is empty")
 	}
-
-	switch mech {
+	switch s.Mechanism {
 	case saslMechanismPlain:
 		return plain.Auth{User: s.Username, Pass: s.Password}.AsMechanism(), nil
 	case saslMechanismScram256:

@@ -318,6 +318,70 @@ part of the design, not an afterthought. If the subsystem cannot be
 optional (brokers, auth), that's an explicit deviation worth flagging in
 review.
 
+### Cluster loading: per-cluster soft fail
+
+A single broken cluster (vault outage for its secret, unresolved
+placeholder, TLS conflict, bad SASL mechanism) does not abort startup.
+Each cluster runs through its load pipeline independently and failures
+are quarantined alongside successes; the picker surfaces broken
+clusters as non-selectable rows with the failure reason so the user
+sees what's wrong and can edit the YAML, while every other cluster
+stays usable.
+
+Why: clusters are often many and unrelated (dev, staging, multiple
+production regions). A vault outage that touches only one cluster's
+secrets used to deny access to all of them — and oncall doesn't have
+time to debug YAML during an incident.
+
+Deviation: global config (vault settings, CLI flags) stays hard-fail.
+The vault client cannot dial without a resolved address, and a bad CLI
+flag is explicit user input — degrading either situation would just
+defer the same error into confusing runtime failures.
+
+### CLI inline cluster: separate namespace from YAML
+
+`--brokers` creates an inline cluster for the session. Its name is
+always auto-generated with a `-cli` suffix (random prefix) — never
+taken from `--cluster` or any user-controlled source. `--cluster` is a
+pure selector that names which already-loaded cluster to auto-connect
+to at startup.
+
+Why: when both flags could name the inline cluster, name collisions
+with `clusters.yaml` were possible and the previous "silent override"
+behavior was dangerous — a user typo could replace a fully-configured
+production cluster (TLS, SASL, read-only) with a stripped-down inline
+one without the user noticing. Separating the namespaces removes the
+collision class entirely: inline names are unguessable, YAML names are
+unconstrained, and the two never meet.
+
+Deviation: inline-cluster persistent state (per-(cluster, topic) view
+state, etc.) does not survive between runs — the random part of the
+name changes each launch. Inline is by definition transient; for
+persistent configuration the user puts the cluster in `clusters.yaml`.
+
+### Config-value normalization
+
+Every enum-shaped config value (log level, compression, clipboard
+method, SASL mechanism, cluster color) passes through one shared
+normalization point that trims whitespace and case-folds against a
+canonical allowlist. Downstream parsers receive canonical input only
+and reject anything else strictly. The same normalization is reused by
+CLI flags so YAML and CLI behave identically.
+
+Why: nothing about case sensitivity or whitespace handling should
+depend on where a value happened to enter the system. Having one
+allowlist + one matcher means adding an enum is a single-place change
+and the answer to "is this value accepted?" never depends on the
+caller.
+
+Deviation: severity of an invalid value is per-field, not per-source.
+Cosmetic / non-critical fields (color, log level, compression,
+clipboard method) warn and fall back to a safe default so a YAML typo
+doesn't deny startup. Auth-critical fields (SASL mechanism) hard-fail
+the cluster because a wrong value would surface much later as a
+confusing handshake error. CLI flags always hard-fail — interactive
+input deserves an immediate, explicit error.
+
 ## Project commands
 
 - `make build` — build the binary into `dist/`

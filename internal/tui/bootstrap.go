@@ -51,8 +51,15 @@ func NewClusterPinger(d Dialer, timeout time.Duration) clusters.Pinger {
 type Bootstrap struct {
 	Loaded   *config.Loaded
 	Clusters []config.Cluster
-	// CLIName, when non-empty, marks the cluster from --brokers.
-	CLIName                 string
+	// CLIName, when non-empty, marks the cluster from --brokers. The
+	// inline cluster's auto-generated name lives here; the picker uses
+	// it to render the "(cli)" badge on the inline row.
+	CLIName string
+	// AutoSelectCluster, when non-empty, names the cluster the app
+	// should auto-connect to at startup instead of showing the picker.
+	// Sourced from --cluster (selector) or from CLIName as a fallback
+	// when --brokers was the only flag given.
+	AutoSelectCluster       string
 	GlobalPath, ProjectPath string
 	LogPath                 string
 	Dialer                  Dialer
