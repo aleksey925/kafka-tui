@@ -15,10 +15,11 @@ const (
 
 // IsLiteralCredential reports whether value is a non-empty literal
 // rather than a placeholder reference. Shared detector for every
-// credential-exposure check — see CLAUDE.md § Credential exposure
-// warnings.
-func IsLiteralCredential(value string) bool {
-	v := strings.TrimSpace(value)
+// credential-exposure check — see CLAUDE.md § Credentials: storage
+// and exposure warnings. Generic so [Secret] and raw string CLI-flag
+// values share one implementation.
+func IsLiteralCredential[T ~string](value T) bool {
+	v := strings.TrimSpace(string(value))
 	return v != "" && !strings.HasPrefix(v, "${")
 }
 

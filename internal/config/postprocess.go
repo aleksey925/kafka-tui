@@ -75,7 +75,7 @@ func applySoftEnum(value string, allowed []string, fieldLabel string, warnings [
 }
 
 // checkYAMLCredentialExposure inspects cluster.sasl.password and
-// cfg.vault.token for literal values. See CLAUDE.md § Credential
+// cfg.vault.token for literal values. See CLAUDE.md § Credentials: storage and
 // exposure warnings. Must run BEFORE the env+file phase resolves
 // placeholders.
 func checkYAMLCredentialExposure(vault VaultConfig, clusters []Cluster) []string {
@@ -95,7 +95,7 @@ func checkYAMLCredentialExposure(vault VaultConfig, clusters []Cluster) []string
 	return out
 }
 
-func literalCredentialWarning(label, value string) string {
+func literalCredentialWarning(label string, value Secret) string {
 	if !IsLiteralCredential(value) {
 		return ""
 	}

@@ -260,9 +260,9 @@ func boolToInt(b bool) int {
 }
 
 // CredentialExposureWarnings returns one warning per credential-bearing
-// flag whose value is a literal. See CLAUDE.md § Credential exposure
-// warnings. Must be called BEFORE the env+file phase resolves
-// placeholders.
+// flag whose value is a literal. See CLAUDE.md § Credentials: storage
+// and exposure warnings. Must be called BEFORE the env+file phase
+// resolves placeholders.
 func CredentialExposureWarnings(f *Flags) []string {
 	if f == nil {
 		return nil

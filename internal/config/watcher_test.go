@@ -234,7 +234,7 @@ func TestWatcher_ReloadsOnFilePlaceholderChange(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = w.Close() })
 	require.NotNil(t, initial.Clusters[0].SASL)
-	assert.Equal(t, "first-secret", initial.Clusters[0].SASL.Password)
+	assert.Equal(t, "first-secret", initial.Clusters[0].SASL.Password.Reveal())
 
 	// act: rewrite the placeholder file
 	require.NoError(t, os.WriteFile(tokenPath, []byte("rotated-secret"), 0o644))
@@ -244,7 +244,7 @@ func TestWatcher_ReloadsOnFilePlaceholderChange(t *testing.T) {
 	require.NoError(t, snap.Err)
 	require.NotNil(t, snap.Loaded)
 	require.NotNil(t, snap.Loaded.Clusters[0].SASL)
-	assert.Equal(t, "rotated-secret", snap.Loaded.Clusters[0].SASL.Password)
+	assert.Equal(t, "rotated-secret", snap.Loaded.Clusters[0].SASL.Password.Reveal())
 	assert.True(t, snap.ActiveClusterChanged)
 }
 

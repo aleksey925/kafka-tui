@@ -449,10 +449,54 @@ the cluster because a wrong value would surface much later as a
 confusing handshake error. CLI flags always hard-fail — interactive
 input deserves an immediate, explicit error.
 
-### Credential exposure warnings
+### Credentials: storage and exposure warnings
+
+Two complementary defenses around any field that can carry a secret
+(`sasl.password`, `vault.token`, `tls.key`):
+
+**Storage — the `Secret` type.**
+
+Every credential-bearing field is declared as a `Secret` (string alias
+in the `config` package) rather than `string`. `Secret` implements
+`fmt.Stringer` / `fmt.GoStringer` / `slog.LogValuer`, all returning
+the constant `[REDACTED]` — so `%v`, `%+v`, `%#v`, `slog.Any`, and
+embedded-struct formatters print the marker, not the value. The raw
+value is reachable only through an explicit `.Reveal()` call, placed
+at the API boundary (kafka SASL constructor, vault HTTP request, TLS
+key parser). Easy to grep for and obviously deliberate in code review.
+
+YAML marshaling is intentionally NOT redacted: the loader's
+remarshalInto pattern round-trips Secret values through `yaml.Marshal`
++ `Unmarshal`, and a redacted marshal would erase the secret before
+runtime ever sees it. JSON marshaling IS redacted — nothing in the
+loader round-trips config through JSON, so the safer default applies
+(a debug-time `json.MarshalIndent(loaded.Config, ...)` would not leak
+the value).
+
+An empty Secret renders as empty rather than as the redaction marker,
+so an operator reading a log entry can tell "field is unset" apart from
+"field is set, value redacted". The single-bit leak (empty vs set) is
+acceptable; the operator-debugging value is not.
+
+What `Secret` does NOT cover:
+- Wrapped external errors that may embed credentials. If `franz-go` or
+  `vault` HTTP ever start including secret material in `err.Error()`,
+  our `fmt.Errorf("...: %w", err)` would propagate it. Bounded-context
+  error wrapping (see [[feedback_error_prefixing]]) helps here.
+- Explicit `slog.Info("password is " + s.Reveal())` — the call is its
+  own loud warning. Code review catches it.
+- The CLI flag struct (`cli.Flags` / `cli.CLICluster`) holds password /
+  token as plain `string` because pflag binds to `string`. Wrapping into
+  `Secret` happens only when the loader / `cliInlineToCluster` builds
+  a `config.Cluster` / `VaultConfig` from those fields. Do NOT
+  slog or fmt the Flags struct as a whole — pull out non-secret fields
+  by name.
+
+**Exposure warnings.**
 
 *Applies the single-source rule above: every input source that can
-carry a secret runs through the same literal-vs-placeholder check.*
+carry a secret runs through the same literal-vs-placeholder check
+(`config.IsLiteralCredential`).*
 
 Any credential-bearing input — `--sasl-password` / `--vault-token` on
 the command line, `sasl.password` / `vault.token` in YAML — produces a
@@ -472,10 +516,12 @@ Detection must run BEFORE the env+file phase materializes placeholders.
 Once resolved, a literal and a placeholder-sourced value are
 indistinguishable.
 
-Deviation: inline TLS `cert` / `key` / `ca` PEM bodies in YAML are
-not checked. Literal is the only way to embed PEM material in YAML,
-and they don't single-step into a usable credential the way a
-password does.
+Deviation: inline TLS `cert` / `ca` PEM bodies in YAML are not checked.
+Literal is the only way to embed PEM material in YAML, and `cert` / `ca`
+are themselves public material. `tls.key` IS typed as `Secret` (storage
+defense) but is not checked by the literal-warning (same reason — PEM
+has no placeholder equivalent short of pulling the whole blob through
+vault).
 
 Routing: warnings flow through the existing startup-warnings →
 clusters-screen-toast pipeline so the operator sees them on first

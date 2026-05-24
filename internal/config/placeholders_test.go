@@ -458,7 +458,7 @@ func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, loaded.Clusters, 1)
 	require.NotNil(t, loaded.Clusters[0].SASL)
-	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password.Reveal())
 }
 
 func TestLoad_PlaceholderResolution_VaultBuilderNotInvokedWithoutPlaceholders(t *testing.T) {
@@ -574,7 +574,7 @@ func TestLoad_ResolveTargets_VaultBuilderReceivesMergedConfig(t *testing.T) {
 		"builder must observe the CLI override after env+file phase materialized it")
 	require.Len(t, loaded.Clusters, 1)
 	require.NotNil(t, loaded.Clusters[0].SASL)
-	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password.Reveal())
 }
 
 func TestLoad_ResolveTargets_ExtraTargetIsFrozenAcrossReloads(t *testing.T) {

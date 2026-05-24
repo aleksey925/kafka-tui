@@ -16,7 +16,7 @@ type Cluster struct {
 type SASLConfig struct {
 	Mechanism string `yaml:"mechanism"`
 	Username  string `yaml:"username"`
-	Password  string `yaml:"password"`
+	Password  Secret `yaml:"password"`
 }
 
 // TLSConfig holds TLS settings for a cluster. Inline fields (CA / Cert /
@@ -29,7 +29,7 @@ type TLSConfig struct {
 	CAFile     string `yaml:"ca_file,omitempty"`
 	Cert       string `yaml:"cert,omitempty"`
 	CertFile   string `yaml:"cert_file,omitempty"`
-	Key        string `yaml:"key,omitempty"`
+	Key        Secret `yaml:"key,omitempty"`
 	KeyFile    string `yaml:"key_file,omitempty"`
 	SkipVerify bool   `yaml:"skip_verify,omitempty"`
 }

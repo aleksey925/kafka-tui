@@ -105,7 +105,7 @@ func TestLoad_ProjectOverridesGlobal(t *testing.T) {
 	require.NotNil(t, prod.SASL)
 	assert.Equal(t, "PLAIN", prod.SASL.Mechanism, "global value preserved")
 	assert.Equal(t, "project-user", prod.SASL.Username, "project override")
-	assert.Equal(t, "prod-pass", prod.SASL.Password, "global value preserved")
+	assert.Equal(t, "prod-pass", prod.SASL.Password.Reveal(), "global value preserved")
 
 	// stage cluster only in global
 	stage := findCluster(t, loaded.Clusters, "stage")

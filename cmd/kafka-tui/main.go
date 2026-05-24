@@ -42,7 +42,7 @@ func main() {
 		return
 	}
 
-	// must run before EnvFileResolvers — see CLAUDE.md § Credential
+	// must run before EnvFileResolvers — see CLAUDE.md § Credentials: storage and
 	// exposure warnings.
 	cliWarnings := cli.CredentialExposureWarnings(flags)
 
@@ -140,7 +140,7 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 	if autoSelect == "" {
 		autoSelect = cliClu
 	}
-	// see CLAUDE.md § Credential exposure warnings — slog mirror is the
+	// see CLAUDE.md § Credentials: storage and exposure warnings — slog mirror is the
 	// safety net for the auto-skip path that bypasses clusters.Init.
 	startupWarnings := append([]string(nil), loaded.Warnings...)
 	startupWarnings = append(startupWarnings, cliWarnings...)
@@ -224,7 +224,7 @@ func cliInlineToCluster(inline cli.CLICluster) config.Cluster {
 		c.SASL = &config.SASLConfig{
 			Mechanism: inline.SASLMechanism,
 			Username:  inline.SASLUsername,
-			Password:  inline.SASLPassword,
+			Password:  config.Secret(inline.SASLPassword),
 		}
 	}
 	if inline.TLSEnabled || inline.TLSCAFile != "" || inline.TLSCertFile != "" || inline.TLSKeyFile != "" || inline.TLSSkipVerify {
@@ -299,11 +299,14 @@ func newVaultResolver(vc config.VaultConfig) (config.VaultResolver, error) {
 	if strings.Contains(vc.Address, "${vault:") {
 		return nil, errors.New("vault: vault.address cannot itself be a ${vault:...} placeholder")
 	}
-	if strings.Contains(vc.Token, "${vault:") {
+	// Reveal once at the API boundary, then reuse — keeps the escape
+	// from the redaction contract in a single grep-able spot.
+	token := vc.Token.Reveal()
+	if strings.Contains(token, "${vault:") {
 		return nil, errors.New("vault: vault.token cannot itself be a ${vault:...} placeholder")
 	}
 	//nolint:wrapcheck // vault.NewClient errors are already prefixed with "vault: ...".
-	return vault.NewClient(vault.Options{Address: vc.Address, Token: vc.Token})
+	return vault.NewClient(vault.Options{Address: vc.Address, Token: token})
 }
 
 // vaultBuilderWithCLIOverride returns a config.LoaderOptions.VaultBuilder
@@ -325,7 +328,7 @@ func mergeVaultConfig(yaml config.VaultConfig, flags *cli.Flags) config.VaultCon
 		yaml.Address = v
 	}
 	if v := strings.TrimSpace(flags.VaultToken); v != "" {
-		yaml.Token = v
+		yaml.Token = config.Secret(v)
 	}
 	return yaml
 }

@@ -125,7 +125,7 @@ func buildTLSConfig(t *config.TLSConfig) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	keyBytes, err := readMaterial("key", t.Key, t.KeyFile)
+	keyBytes, err := readMaterial("key", t.Key.Reveal(), t.KeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -171,13 +171,14 @@ func buildSASLMechanism(s *config.SASLConfig) (sasl.Mechanism, error) {
 	if s.Username == "" {
 		return nil, errors.New("username is empty")
 	}
+	pass := s.Password.Reveal()
 	switch s.Mechanism {
 	case saslMechanismPlain:
-		return plain.Auth{User: s.Username, Pass: s.Password}.AsMechanism(), nil
+		return plain.Auth{User: s.Username, Pass: pass}.AsMechanism(), nil
 	case saslMechanismScram256:
-		return scram.Auth{User: s.Username, Pass: s.Password}.AsSha256Mechanism(), nil
+		return scram.Auth{User: s.Username, Pass: pass}.AsSha256Mechanism(), nil
 	case saslMechanismScram512:
-		return scram.Auth{User: s.Username, Pass: s.Password}.AsSha512Mechanism(), nil
+		return scram.Auth{User: s.Username, Pass: pass}.AsSha512Mechanism(), nil
 	default:
 		return nil, fmt.Errorf("unsupported mechanism %q (allowed: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)", s.Mechanism)
 	}
