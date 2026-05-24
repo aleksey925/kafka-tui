@@ -161,14 +161,14 @@ func (c *Client) TopicsPartitions(ctx context.Context, topics ...string) (map[st
 func (c *Client) TopicPartitions(ctx context.Context, topic string) ([]PartitionDetail, error) {
 	md, err := c.freshMetadata(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: metadata for %q: %w", topic, err)
+		return nil, fmt.Errorf("kafka: metadata: %w", err)
 	}
 	td, ok := md.Topics[topic]
 	if !ok {
-		return nil, fmt.Errorf("kafka: topic %q not found", topic)
+		return nil, ErrTopicNotFound
 	}
 	if td.Err != nil {
-		return nil, fmt.Errorf("kafka: topic %q: %w", topic, td.Err)
+		return nil, fmt.Errorf("kafka: topic metadata: %w", td.Err)
 	}
 	parts := td.Partitions.Sorted()
 	out := make([]PartitionDetail, len(parts))
@@ -188,14 +188,14 @@ func (c *Client) TopicPartitions(ctx context.Context, topic string) ([]Partition
 func (c *Client) DescribeTopicConfigs(ctx context.Context, topic string) ([]TopicConfig, error) {
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", err)
 	}
 	r, err := rs.On(topic, nil)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", err)
 	}
 	if r.Err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, r.Err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", r.Err)
 	}
 
 	wanted := []string{ConfigCleanupPolicy, ConfigRetentionMs, ConfigMinInSyncReplica}
@@ -224,22 +224,25 @@ func (c *Client) DescribeTopicConfigs(ctx context.Context, topic string) ([]Topi
 // only when the broker accepts it; callers wanting to reset a key to its
 // default should use the dedicated reset path instead (not yet exposed).
 func (c *Client) AlterTopicConfig(ctx context.Context, topic, key, value string) error {
+	if err := c.ensureWritable(); err != nil {
+		return err
+	}
 	v := value
 	rs, err := c.adm.AlterTopicConfigs(ctx, []kadm.AlterConfig{
 		{Op: kadm.SetConfig, Name: key, Value: &v},
 	}, topic)
 	if err != nil {
-		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, err)
+		return fmt.Errorf("kafka: alter config: %w", err)
 	}
 	r, err := rs.On(topic, nil)
 	if err != nil {
-		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, err)
+		return fmt.Errorf("kafka: alter config: %w", err)
 	}
 	if r.Err != nil {
 		if r.ErrMessage != "" {
-			return fmt.Errorf("kafka: alter config %q on %q: %s: %w", key, topic, r.ErrMessage, r.Err)
+			return fmt.Errorf("kafka: alter config: %s: %w", r.ErrMessage, r.Err)
 		}
-		return fmt.Errorf("kafka: alter config %q on %q: %w", key, topic, r.Err)
+		return fmt.Errorf("kafka: alter config: %w", r.Err)
 	}
 	return nil
 }
@@ -248,14 +251,14 @@ func (c *Client) AlterTopicConfig(ctx context.Context, topic, key, value string)
 func (c *Client) DescribeAllTopicConfigs(ctx context.Context, topic string) ([]TopicConfig, error) {
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", err)
 	}
 	r, err := rs.On(topic, nil)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", err)
 	}
 	if r.Err != nil {
-		return nil, fmt.Errorf("kafka: describe configs for %q: %w", topic, r.Err)
+		return nil, fmt.Errorf("kafka: describe configs: %w", r.Err)
 	}
 	out := make([]TopicConfig, 0, len(r.Configs))
 	for _, cfg := range r.Configs {
@@ -272,14 +275,14 @@ func (c *Client) DescribeAllTopicConfigs(ctx context.Context, topic string) ([]T
 func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 	md, err := c.freshMetadata(ctx, topic)
 	if err != nil {
-		return 0, fmt.Errorf("kafka: metadata for %q: %w", topic, err)
+		return 0, fmt.Errorf("kafka: metadata: %w", err)
 	}
 	td, ok := md.Topics[topic]
 	if !ok {
-		return 0, fmt.Errorf("kafka: topic %q not found", topic)
+		return 0, ErrTopicNotFound
 	}
 	if td.Err != nil {
-		return 0, fmt.Errorf("kafka: topic %q: %w", topic, td.Err)
+		return 0, fmt.Errorf("kafka: topic metadata: %w", td.Err)
 	}
 	set := kadm.TopicsSet{}
 	for p := range td.Partitions {
@@ -287,7 +290,7 @@ func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 	}
 	dirs, err := c.adm.DescribeAllLogDirs(ctx, set)
 	if err != nil {
-		return 0, fmt.Errorf("kafka: describe log dirs for %q: %w", topic, err)
+		return 0, fmt.Errorf("kafka: describe log dirs: %w", err)
 	}
 	var total int64
 	for _, perBroker := range dirs {
@@ -314,8 +317,7 @@ func (c *Client) TopicSize(ctx context.Context, topic string) (int64, error) {
 func (c *Client) TopicWatermarks(ctx context.Context, topic string) (TopicWatermarks, error) {
 	all, err := c.TopicWatermarksBatch(ctx, topic)
 	if err != nil {
-		// preserve topic name in error — batch helper drops it.
-		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks for %q: %w", topic, err)
+		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks: %w", err)
 	}
 	w, ok := all[topic]
 	if !ok {
@@ -460,27 +462,33 @@ type CreateTopicSpec struct {
 // CreateTopic creates a topic. Pass partitions=-1 and replicationFactor=-1
 // to use broker defaults (Kafka 2.4+).
 func (c *Client) CreateTopic(ctx context.Context, spec CreateTopicSpec) error {
+	if err := c.ensureWritable(); err != nil {
+		return err
+	}
 	configs := make(map[string]*string, len(spec.Configs))
 	for k, v := range spec.Configs {
 		configs[k] = &v
 	}
 	resp, err := c.adm.CreateTopic(ctx, spec.Partitions, spec.ReplicationFactor, configs, spec.Name)
 	if err != nil {
-		return fmt.Errorf("kafka: create topic %q: %w", spec.Name, err)
+		return fmt.Errorf("kafka: create topic: %w", err)
 	}
 	if resp.Err != nil {
-		return fmt.Errorf("kafka: create topic %q: %w", spec.Name, resp.Err)
+		return fmt.Errorf("kafka: create topic: %w", resp.Err)
 	}
 	return nil
 }
 
 func (c *Client) DeleteTopic(ctx context.Context, topic string) error {
+	if err := c.ensureWritable(); err != nil {
+		return err
+	}
 	resp, err := c.adm.DeleteTopic(ctx, topic)
 	if err != nil {
-		return fmt.Errorf("kafka: delete topic %q: %w", topic, err)
+		return fmt.Errorf("kafka: delete topic: %w", err)
 	}
 	if resp.Err != nil {
-		return fmt.Errorf("kafka: delete topic %q: %w", topic, resp.Err)
+		return fmt.Errorf("kafka: delete topic: %w", resp.Err)
 	}
 	return nil
 }
@@ -503,23 +511,26 @@ type CloneOptions struct {
 // with the same partition count. The returned channel is closed when cloning
 // finishes (success or error).
 func (c *Client) CloneTopic(ctx context.Context, src, dst string, opts CloneOptions) (<-chan CloneProgress, error) {
+	if err := c.ensureWritable(); err != nil {
+		return nil, err
+	}
 	md, err := c.freshMetadata(ctx, src)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: clone %q→%q: source metadata: %w", src, dst, err)
+		return nil, fmt.Errorf("kafka: clone: source metadata: %w", err)
 	}
 	srcDetail, ok := md.Topics[src]
 	if !ok || srcDetail.Err != nil {
-		return nil, fmt.Errorf("kafka: clone %q→%q: source not found", src, dst)
+		return nil, ErrTopicNotFound
 	}
 	partitions, err := safeInt32(len(srcDetail.Partitions))
 	if err != nil {
-		return nil, fmt.Errorf("kafka: clone %q→%q: %w", src, dst, err)
+		return nil, fmt.Errorf("kafka: clone: %w", err)
 	}
 	rf := opts.ReplicationFactor
 	if rf == 0 {
 		rep, repErr := safeInt16(srcDetail.Partitions.NumReplicas())
 		if repErr != nil {
-			return nil, fmt.Errorf("kafka: clone %q→%q: %w", src, dst, repErr)
+			return nil, fmt.Errorf("kafka: clone: %w", repErr)
 		}
 		rf = rep
 		if rf == 0 {
@@ -531,7 +542,7 @@ func (c *Client) CloneTopic(ctx context.Context, src, dst string, opts CloneOpti
 	if opts.CopyConfigs {
 		srcConfigs, cfgErr := c.DescribeAllTopicConfigs(ctx, src)
 		if cfgErr != nil {
-			return nil, fmt.Errorf("kafka: clone %q→%q: source configs: %w", src, dst, cfgErr)
+			return nil, fmt.Errorf("kafka: clone: source configs: %w", cfgErr)
 		}
 		configs = make(map[string]string, len(srcConfigs))
 		for _, cfg := range srcConfigs {
@@ -554,7 +565,7 @@ func (c *Client) CloneTopic(ctx context.Context, src, dst string, opts CloneOpti
 
 	wm, err := c.TopicWatermarks(ctx, src)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: clone %q→%q: watermarks: %w", src, dst, err)
+		return nil, fmt.Errorf("kafka: clone: watermarks: %w", err)
 	}
 
 	progress := make(chan CloneProgress, 8)

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -43,8 +45,9 @@ type Client struct {
 	token string
 	http  *http.Client
 
-	mu    sync.Mutex
-	cache map[string]map[string]any
+	mu       sync.Mutex
+	cache    map[string]map[string]any
+	inFlight singleflight.Group
 }
 
 // NewClient constructs a Client. Token resolution order:
@@ -111,6 +114,9 @@ func (c *Client) LookupContext(ctx context.Context, path, key string) (string, e
 
 // fetch returns the cached secret for path. The mutex guards only the cache
 // map — HTTP runs unlocked so a slow Vault does not stall unrelated lookups.
+// singleflight collapses concurrent misses for the same path into one
+// request: at startup multiple clusters often resolve the same secret, and
+// N kgo.Dial races used to fire N HTTP calls instead of one.
 func (c *Client) fetch(ctx context.Context, path string) (map[string]any, error) {
 	c.mu.Lock()
 	if data, ok := c.cache[path]; ok {
@@ -119,15 +125,30 @@ func (c *Client) fetch(ctx context.Context, path string) (map[string]any, error)
 	}
 	c.mu.Unlock()
 
-	data, err := c.doRequest(ctx, path)
-	if err != nil {
-		return nil, err
-	}
+	v, err, _ := c.inFlight.Do(path, func() (any, error) {
+		// double-check under the same flight: another goroutine may have
+		// finished and cached between our miss above and singleflight
+		// admitting us.
+		c.mu.Lock()
+		if data, ok := c.cache[path]; ok {
+			c.mu.Unlock()
+			return data, nil
+		}
+		c.mu.Unlock()
 
-	c.mu.Lock()
-	c.cache[path] = data
-	c.mu.Unlock()
-	return data, nil
+		data, err := c.doRequest(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		c.cache[path] = data
+		c.mu.Unlock()
+		return data, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vault: %w", err)
+	}
+	return v.(map[string]any), nil
 }
 
 func (c *Client) doRequest(ctx context.Context, path string) (map[string]any, error) {

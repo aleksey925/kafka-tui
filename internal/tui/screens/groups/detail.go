@@ -79,6 +79,10 @@ type DetailModel struct {
 	loadErr       string
 	manualRefresh bool
 	lastRefresh   time.Time
+	// loadGen bumps on every detail reload (Init / refresh tick / `r`) so a
+	// slow describe-group that returns after the user has navigated away
+	// or already triggered the next refresh is silently dropped.
+	loadGen uint64
 
 	action DetailAction
 	now    func() time.Time
@@ -127,16 +131,22 @@ func partColumns() []components.Column {
 
 func (d *DetailModel) Init() tea.Cmd {
 	d.loading = true
-	return loadDetailCmd(d.svc, d.group)
+	d.loadGen++
+	return loadDetailCmd(d.svc, d.group, d.loadGen)
 }
 
 func (d *DetailModel) RefreshCmd() tea.Cmd {
 	d.loading = true
-	return loadDetailCmd(d.svc, d.group)
+	d.loadGen++
+	return loadDetailCmd(d.svc, d.group, d.loadGen)
 }
 
 func (d *DetailModel) Group() string                       { return d.group }
 func (d *DetailModel) Description() kafka.GroupDescription { return d.desc }
+
+// LoadGen exposes the current generation counter so tests can forge a
+// stale-but-Gen-matching [DetailLoadedMsg] without hard-coding values.
+func (d *DetailModel) LoadGen() uint64 { return d.loadGen }
 func (d *DetailModel) Rows() []kafka.PartitionLag {
 	out := make([]kafka.PartitionLag, len(d.rows))
 	copy(out, d.rows)
@@ -435,6 +445,9 @@ func (d *DetailModel) syncPartitions() {
 
 // HandleLoaded merges fresh data; also called by the list-screen router.
 func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
+	if msg.Group != d.group || msg.Gen != d.loadGen {
+		return
+	}
 	d.loading = false
 	if msg.Err != nil {
 		d.loadErr = msg.Err.Error()
@@ -650,26 +663,36 @@ func lagCell(v int64) string {
 // partition list so topic-scope resets target every partition, not just
 // the ones with prior commits — see [DetailModel.ResetScope].
 type DetailLoadedMsg struct {
+	// Group is the requested group name. The handler discards messages
+	// whose Group does not match the live [DetailModel.group] — necessary
+	// because a fresh DetailModel for group Y starts loadGen at 0/1 and
+	// would otherwise accept a Gen=1 result still in flight from a
+	// previous DetailModel for group X.
+	Group           string
 	Description     kafka.GroupDescription
 	Rows            []kafka.PartitionLag
 	TopicPartitions map[string][]int32
 	Err             error
+	// Gen pins the result to [DetailModel.loadGen] at dispatch time so
+	// late results from a superseded refresh within the same DetailModel
+	// are dropped.
+	Gen uint64
 }
 
-func loadDetailCmd(svc Service, group string) tea.Cmd {
+func loadDetailCmd(svc Service, group string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		desc, err := svc.DescribeConsumerGroup(ctx, group)
 		if err != nil {
-			return DetailLoadedMsg{Err: err}
+			return DetailLoadedMsg{Group: group, Err: err, Gen: gen}
 		}
 		rows, err := svc.GroupOffsets(ctx, group)
 		if err != nil {
-			return DetailLoadedMsg{Description: desc, Err: err}
+			return DetailLoadedMsg{Group: group, Description: desc, Err: err, Gen: gen}
 		}
 		parts, _ := svc.TopicsPartitions(ctx, uniqueTopicsFromRows(rows)...)
-		return DetailLoadedMsg{Description: desc, Rows: rows, TopicPartitions: parts}
+		return DetailLoadedMsg{Group: group, Description: desc, Rows: rows, TopicPartitions: parts, Gen: gen}
 	}
 }
 

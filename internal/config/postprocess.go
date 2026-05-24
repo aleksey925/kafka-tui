@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -54,6 +53,13 @@ func normalizeClusterHard(c *Cluster) error {
 // applySoftEnum normalizes value and either writes the canonical form
 // back, or zeros it out and appends a warning. Empty input passes
 // through untouched so the consumer's "" → default branch keeps working.
+//
+// Warnings go only into the returned slice — slog is intentionally NOT
+// called here because postprocess runs before logging.Init (the log
+// level itself comes from this config), so a slog write would land in
+// the pre-init default handler and corrupt the TUI screen at startup.
+// The cluster picker surfaces warnings via its toast queue, which then
+// mirrors to slog after the logger is wired up.
 func applySoftEnum(value string, allowed []string, fieldLabel string, warnings []string) (string, []string) {
 	if value == "" {
 		return "", warnings
@@ -65,9 +71,5 @@ func applySoftEnum(value string, allowed []string, fieldLabel string, warnings [
 		"%s: invalid value %q (allowed: %s); using default",
 		fieldLabel, value, strings.Join(allowed, ", "),
 	))
-	slog.Warn("config: invalid value, falling back to default",
-		slog.String("field", fieldLabel),
-		slog.String("value", value),
-	)
 	return "", warnings
 }

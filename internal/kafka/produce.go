@@ -56,6 +56,9 @@ type ProduceResult struct {
 // (b) the partitioner choice (manual vs. sticky) depends on whether the user
 // picked auto or manual partition.
 func (c *Client) Produce(ctx context.Context, spec ProduceSpec) (ProduceResult, error) {
+	if err := c.ensureWritable(); err != nil {
+		return ProduceResult{}, err
+	}
 	if spec.Topic == "" {
 		return ProduceResult{}, errors.New("kafka: produce: topic is empty")
 	}

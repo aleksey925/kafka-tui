@@ -14,6 +14,10 @@ type Refresher struct {
 	interval time.Duration
 	last     time.Time
 	now      func() time.Time
+	// manual flips on when the user presses `r` (vs. an auto tick) so the
+	// handler can surface a success toast on the user-initiated cycle
+	// only. CLAUDE.md "Auto-refresh: quiet by default" is the contract.
+	manual bool
 }
 
 // NewRefresher constructs a refresher. Zero or negative interval disables
@@ -57,6 +61,22 @@ func (r *Refresher) LastRefresh() time.Time { return r.last }
 // MarkSuccess records that a load completed. Errors should NOT call this so
 // "X ago" reflects the last *successful* refresh.
 func (r *Refresher) MarkSuccess() { r.last = r.now() }
+
+// MarkManual flags the in-flight load as user-initiated. The next
+// [ConsumeManual] call returns true once and clears the flag.
+func (r *Refresher) MarkManual() { r.manual = true }
+
+// ConsumeManual returns true if the in-flight load is user-initiated and
+// clears the flag. Use it to gate the "loud" success toast — auto ticks
+// must stay silent per the [auto-refresh contract] in CLAUDE.md.
+//
+// Also call it on the error path so a failed manual refresh doesn't bleed
+// its "loud" intent into the next (auto) cycle.
+func (r *Refresher) ConsumeManual() bool {
+	out := r.manual
+	r.manual = false
+	return out
+}
 
 // Tick returns a [tea.Cmd] that emits msg after one [Interval], or nil when
 // the refresher is disabled.

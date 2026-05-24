@@ -67,7 +67,7 @@ func DetectProtocol(c config.Cluster) Protocol {
 // opening any connections.
 func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protocol, error) {
 	if len(c.Brokers) == 0 {
-		return nil, "", fmt.Errorf("kafka: cluster %q has no brokers", c.Name)
+		return nil, "", errors.New("kafka: no brokers")
 	}
 
 	clientID := dopts.ClientID
@@ -83,7 +83,7 @@ func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protoco
 	if c.TLS != nil {
 		tlsCfg, err := buildTLSConfig(c.TLS)
 		if err != nil {
-			return nil, "", fmt.Errorf("kafka: cluster %q tls: %w", c.Name, err)
+			return nil, "", fmt.Errorf("kafka: tls: %w", err)
 		}
 		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
 	}
@@ -91,7 +91,7 @@ func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protoco
 	if c.SASL != nil {
 		mech, err := buildSASLMechanism(c.SASL)
 		if err != nil {
-			return nil, "", fmt.Errorf("kafka: cluster %q sasl: %w", c.Name, err)
+			return nil, "", fmt.Errorf("kafka: sasl: %w", err)
 		}
 		opts = append(opts, kgo.SASL(mech))
 	}
@@ -191,7 +191,7 @@ func Dial(c config.Cluster, dopts DialOptions) (*Client, error) {
 	}
 	kc, err := kgo.NewClient(opts...)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: cluster %q: new client: %w", c.Name, err)
+		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}
 	return newClient(kc, c, proto), nil
 }
@@ -204,7 +204,7 @@ func (c *Client) Ping(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if _, err := c.adm.BrokerMetadata(ctx); err != nil {
-		return fmt.Errorf("kafka: ping cluster %q: %w", c.cluster.Name, err)
+		return fmt.Errorf("kafka: ping: %w", err)
 	}
 	return nil
 }

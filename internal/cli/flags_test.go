@@ -102,6 +102,32 @@ func TestParse__tlsRequiresBrokers__fails(t *testing.T) {
 	assert.Contains(t, pe.Msg, "--tls requires --brokers")
 }
 
+func TestParse__colorRequiresBrokers__fails(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"--color", "red"}, &out, &errOut)
+
+	// assert
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Contains(t, pe.Msg, "--color requires --brokers")
+}
+
+func TestParse__readOnlyRequiresBrokers__fails(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"--read-only"}, &out, &errOut)
+
+	// assert
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Contains(t, pe.Msg, "--read-only requires --brokers")
+}
+
 func TestParse__partialSASL__fails(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer

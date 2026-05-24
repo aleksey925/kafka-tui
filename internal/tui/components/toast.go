@@ -1,6 +1,8 @@
 package components
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -86,6 +88,10 @@ func (t *Toasts) Push(level ToastLevel, message string) {
 }
 
 // PushWithLifetime is the explicit-lifetime variant. Pass 0 for sticky.
+//
+// Toasts at [ToastWarning] / [ToastError] are also written to [slog.Default]
+// so the operator can recover them from the log file after the toast expired
+// from the flash bar — see the "Toast / flash routing" contract in CLAUDE.md.
 func (t *Toasts) PushWithLifetime(level ToastLevel, message string, lifetime time.Duration) {
 	t.items = append(t.items, Toast{
 		Level:     level,
@@ -93,6 +99,20 @@ func (t *Toasts) PushWithLifetime(level ToastLevel, message string, lifetime tim
 		CreatedAt: t.now(),
 		Lifetime:  lifetime,
 	})
+	t.mirrorToLog(level, message)
+}
+
+func (t *Toasts) mirrorToLog(level ToastLevel, message string) {
+	var slogLevel slog.Level
+	switch level {
+	case ToastWarning:
+		slogLevel = slog.LevelWarn
+	case ToastError:
+		slogLevel = slog.LevelError
+	default:
+		return
+	}
+	slog.Default().LogAttrs(context.Background(), slogLevel, "toast", slog.String("text", message))
 }
 
 func (t *Toasts) Items() []Toast {

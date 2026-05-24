@@ -108,7 +108,12 @@ type Model struct {
 
 	width, height int
 	loading       bool
-	manualRefresh bool
+
+	// listGen bumps on every list reload so late results (groups + their
+	// fan-out lag fetches) from a superseded refresh are dropped. Critical
+	// for fast re-presses of `r` and for filter changes while a slow lag
+	// fetch is still in flight.
+	listGen uint64
 
 	action Action
 	now    func() time.Time
@@ -168,7 +173,8 @@ func listColumns() []components.Column {
 // auto-refresh tick — the recurring chain only sustains itself once started.
 func (m *Model) Init() tea.Cmd {
 	m.loading = true
-	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic), m.AutoRefreshTick())
+	m.listGen++
+	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic, m.listGen), m.AutoRefreshTick())
 }
 
 func (m *Model) Action() Action { return m.action }
@@ -347,7 +353,7 @@ func (m *Model) actListRefresh() tea.Cmd {
 	if m.loading {
 		return nil
 	}
-	m.manualRefresh = true
+	m.listRefresher.MarkManual()
 	return m.refreshCmd()
 }
 
@@ -588,16 +594,18 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) tea.Cmd {
+	if msg.Gen != m.listGen {
+		return nil
+	}
 	m.loading = false
+	manual := m.listRefresher.ConsumeManual()
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
-		m.manualRefresh = false
 		return nil
 	}
 	m.listRefresher.MarkSuccess()
-	if m.manualRefresh {
+	if manual {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d groups", len(msg.Groups)))
-		m.manualRefresh = false
 	}
 	m.groups = msg.Groups
 	m.pruneLagCache()
@@ -629,6 +637,9 @@ func (m *Model) pruneLagCache() {
 }
 
 func (m *Model) handleLagsLoaded(msg GroupLagsLoadedMsg) {
+	if msg.Gen != m.listGen {
+		return
+	}
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "lag for "+msg.Group+": "+msg.Err.Error())
 		return
@@ -692,7 +703,8 @@ func (m *Model) DetailRefreshTick() tea.Cmd { return m.detailRefresher.Tick(Deta
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	return loadGroupsCmd(m.svc, m.filterTopic)
+	m.listGen++
+	return loadGroupsCmd(m.svc, m.filterTopic, m.listGen)
 }
 
 func (m *Model) refreshTable() {
@@ -749,9 +761,10 @@ func (m *Model) FetchLagsForVisible() tea.Cmd {
 	if len(m.groups) == 0 {
 		return nil
 	}
+	gen := m.listGen
 	cmds := make([]tea.Cmd, 0, len(m.groups))
 	for _, g := range m.groups {
-		cmds = append(cmds, loadLagCmd(m.svc, g.Group))
+		cmds = append(cmds, loadLagCmd(m.svc, g.Group, gen))
 	}
 	return tea.Batch(cmds...)
 }
@@ -838,6 +851,8 @@ func (m *Model) persistRefreshInterval(screenID string, d time.Duration) {
 type GroupsLoadedMsg struct {
 	Groups []kafka.GroupListInfo
 	Err    error
+	// Gen pins the result to the [Model.listGen] at dispatch time.
+	Gen uint64
 }
 
 type GroupLagsLoadedMsg struct {
@@ -845,6 +860,8 @@ type GroupLagsLoadedMsg struct {
 	TotalLag    int64
 	MemberCount int
 	Err         error
+	// Gen pins the lag fetch to the list reload that fanned it out.
+	Gen uint64
 }
 
 type GroupDeletedMsg struct {
@@ -856,7 +873,7 @@ type ListRefreshTickMsg struct{}
 
 type DetailRefreshTickMsg struct{}
 
-func loadGroupsCmd(svc Service, filterTopic string) tea.Cmd {
+func loadGroupsCmd(svc Service, filterTopic string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -869,17 +886,17 @@ func loadGroupsCmd(svc Service, filterTopic string) tea.Cmd {
 		} else {
 			groups, err = svc.ListConsumerGroups(ctx)
 		}
-		return GroupsLoadedMsg{Groups: groups, Err: err}
+		return GroupsLoadedMsg{Groups: groups, Err: err, Gen: gen}
 	}
 }
 
-func loadLagCmd(svc Service, group string) tea.Cmd {
+func loadLagCmd(svc Service, group string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		rows, err := svc.GroupOffsets(ctx, group)
 		if err != nil {
-			return GroupLagsLoadedMsg{Group: group, Err: err}
+			return GroupLagsLoadedMsg{Group: group, Err: err, Gen: gen}
 		}
 		var total int64
 		members := map[string]struct{}{}
@@ -895,6 +912,7 @@ func loadLagCmd(svc Service, group string) tea.Cmd {
 			Group:       group,
 			TotalLag:    total,
 			MemberCount: len(members),
+			Gen:         gen,
 		}
 	}
 }

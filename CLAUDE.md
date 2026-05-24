@@ -224,7 +224,11 @@ The confirm contract:
   surfaces an inline error and the modal never mounts, so the user
   isn't asked to confirm a request the broker would have rejected.
 - Read-only clusters short-circuit the entry shortcut with a toast,
-  also before the modal opens.
+  also before the modal opens. The UI check is for UX (don't open a
+  modal the user can't commit); the load-bearing guard is in the
+  kafka package — every mutating method returns [kafka.ErrReadOnly]
+  on a read-only cluster. The two layers are intentionally redundant:
+  a UI bug or a future direct call still cannot mutate the cluster.
 
 Why: the same y/n muscle memory carries across every destructive
 action (delete topic, delete group, save config, produce, clone).
@@ -267,6 +271,13 @@ How to apply: if the active screen has no toast queue, route the toast to
 the screen the user will land on next (the parent / listing screen). A
 toast with no surface to land on is a dropped error.
 
+Toasts at warn / error severity are also mirrored to slog so the operator
+can recover them after the flash bar expired. The flash bar is for the
+moment; the log is for the post-mortem. The mirror lives inside the
+shared toast component so screens don't have to remember to also call
+slog at every push site — pushing into the queue is the single
+operation, mirroring is automatic.
+
 ### Auto-refresh: quiet by default
 
 Tick-driven refreshes are **silent** — no success toast on the auto cycle.
@@ -301,6 +312,14 @@ Two mechanisms:
 Use whichever fits the shape of the work: counter when there are many
 concurrent dispatches (seek variants, fetch retries, tick chains),
 context when the work is bound to a single long-lived resource.
+
+Generation counters that are scoped to a sub-model (one that gets
+re-instantiated on entry — `DetailModel`, popups, etc.) reset to zero on
+each re-entry, so the counter alone cannot tell apart a stale result
+from a previous instance whose Gen happens to collide. In that case the
+result must also carry the entity identity it was issued for (group
+name, topic name, …) and the handler must verify it matches the live
+model before applying.
 
 Why: tests don't reliably catch the failure modes here — they're tied to
 timing. A new screen that omits this protection won't fail in CI; it

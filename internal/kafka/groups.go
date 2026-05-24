@@ -188,14 +188,14 @@ func (c *Client) ListConsumerGroups(ctx context.Context) ([]GroupListInfo, error
 func (c *Client) DescribeConsumerGroup(ctx context.Context, group string) (GroupDescription, error) {
 	described, err := c.adm.DescribeGroups(ctx, group)
 	if err != nil {
-		return GroupDescription{}, fmt.Errorf("kafka: describe group %q: %w", group, err)
+		return GroupDescription{}, fmt.Errorf("kafka: describe group: %w", err)
 	}
 	d, ok := described[group]
 	if !ok {
-		return GroupDescription{}, fmt.Errorf("kafka: group %q not found", group)
+		return GroupDescription{}, ErrGroupNotFound
 	}
 	if d.Err != nil {
-		return GroupDescription{}, fmt.Errorf("kafka: describe group %q: %w", group, d.Err)
+		return GroupDescription{}, fmt.Errorf("kafka: describe group: %w", d.Err)
 	}
 	return groupDescriptionFromKadm(d), nil
 }
@@ -255,14 +255,14 @@ func groupDescriptionFromKadm(d kadm.DescribedGroup) GroupDescription {
 func (c *Client) GroupOffsets(ctx context.Context, group string) ([]PartitionLag, error) {
 	lags, err := c.adm.Lag(ctx, group)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: lag for %q: %w", group, err)
+		return nil, fmt.Errorf("kafka: lag: %w", err)
 	}
 	gl, ok := lags[group]
 	if !ok {
-		return nil, fmt.Errorf("kafka: group %q not found", group)
+		return nil, ErrGroupNotFound
 	}
 	if err := gl.Error(); err != nil {
-		return nil, fmt.Errorf("kafka: lag for %q: %w", group, err)
+		return nil, fmt.Errorf("kafka: lag: %w", err)
 	}
 
 	memberByPartition := map[TopicPartition]string{}
@@ -352,6 +352,9 @@ func (c *Client) PreviewReset(ctx context.Context, group string, spec ResetSpec)
 
 // ResetOffsets commits the offsets implied by spec and returns the preview.
 func (c *Client) ResetOffsets(ctx context.Context, group string, spec ResetSpec) (ResetPreview, error) {
+	if err := c.ensureWritable(); err != nil {
+		return ResetPreview{}, err
+	}
 	preview, err := c.computeReset(ctx, group, spec)
 	if err != nil {
 		return ResetPreview{}, err
@@ -369,7 +372,7 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, spec ResetSpec)
 		})
 	}
 	if err := c.adm.CommitAllOffsets(ctx, group, commits); err != nil {
-		return ResetPreview{}, fmt.Errorf("kafka: commit offsets for %q: %w", group, err)
+		return ResetPreview{}, fmt.Errorf("kafka: commit offsets: %w", err)
 	}
 	return preview, nil
 }
@@ -377,26 +380,29 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, spec ResetSpec)
 // DeleteConsumerGroup deletes a group, but only when it is in the Empty state
 // (KIP-229 requires no active members). Returns ErrNonEmptyGroup otherwise.
 func (c *Client) DeleteConsumerGroup(ctx context.Context, group string) error {
+	if err := c.ensureWritable(); err != nil {
+		return err
+	}
 	described, err := c.adm.DescribeGroups(ctx, group)
 	if err != nil {
-		return fmt.Errorf("kafka: describe group %q: %w", group, err)
+		return fmt.Errorf("kafka: describe group: %w", err)
 	}
 	d, ok := described[group]
 	if !ok {
-		return fmt.Errorf("kafka: group %q not found", group)
+		return ErrGroupNotFound
 	}
 	if d.Err != nil {
-		return fmt.Errorf("kafka: describe group %q: %w", group, d.Err)
+		return fmt.Errorf("kafka: describe group: %w", d.Err)
 	}
 	if d.State != "" && d.State != "Empty" && d.State != "Dead" {
-		return fmt.Errorf("kafka: refusing to delete group %q in state %q: %w", group, d.State, ErrNonEmptyGroup)
+		return fmt.Errorf("kafka: refusing to delete group in state %q: %w", d.State, ErrNonEmptyGroup)
 	}
 	resp, err := c.adm.DeleteGroup(ctx, group)
 	if err != nil {
-		return fmt.Errorf("kafka: delete group %q: %w", group, err)
+		return fmt.Errorf("kafka: delete group: %w", err)
 	}
 	if resp.Err != nil {
-		return fmt.Errorf("kafka: delete group %q: %w", group, resp.Err)
+		return fmt.Errorf("kafka: delete group: %w", resp.Err)
 	}
 	return nil
 }
@@ -408,22 +414,22 @@ func (c *Client) computeReset(ctx context.Context, group string, spec ResetSpec)
 
 	described, err := c.adm.DescribeGroups(ctx, group)
 	if err != nil {
-		return ResetPreview{}, fmt.Errorf("kafka: describe group %q: %w", group, err)
+		return ResetPreview{}, fmt.Errorf("kafka: describe group: %w", err)
 	}
 	d, ok := described[group]
 	if !ok {
-		return ResetPreview{}, fmt.Errorf("kafka: group %q not found", group)
+		return ResetPreview{}, ErrGroupNotFound
 	}
 	if d.Err != nil {
-		return ResetPreview{}, fmt.Errorf("kafka: describe group %q: %w", group, d.Err)
+		return ResetPreview{}, fmt.Errorf("kafka: describe group: %w", d.Err)
 	}
 	if d.State != "" && d.State != "Empty" && d.State != "Dead" {
-		return ResetPreview{}, fmt.Errorf("kafka: refusing to reset offsets for %q in state %q: %w", group, d.State, ErrNonEmptyGroup)
+		return ResetPreview{}, fmt.Errorf("kafka: refusing to reset offsets in state %q: %w", d.State, ErrNonEmptyGroup)
 	}
 
 	commits, err := c.adm.FetchOffsets(ctx, group)
 	if err != nil {
-		return ResetPreview{}, fmt.Errorf("kafka: fetch offsets for %q: %w", group, err)
+		return ResetPreview{}, fmt.Errorf("kafka: fetch offsets: %w", err)
 	}
 
 	targets := resolveResetTargets(spec.Targets, commits)

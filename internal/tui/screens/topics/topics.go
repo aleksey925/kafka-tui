@@ -108,11 +108,21 @@ type Model struct {
 	progress kafka.CloneProgress
 	cloneCh  <-chan kafka.CloneProgress
 	cloneCxl context.CancelFunc
+	// cloneSrc / cloneDst capture the names for the in-flight clone so
+	// the final success / error toast can identify which clone finished —
+	// m.clone is reset to nil before the result lands and CloneProgressMsg
+	// no longer carries them in its error path.
+	cloneSrc string
+	cloneDst string
 
 	width, height int
 	loading       bool
 	refresher     components.Refresher
-	manualRefresh bool
+
+	// listGen bumps on every list reload so a slow batch (watermarks,
+	// sizes, configs) from a superseded refresh cannot overwrite fresher
+	// data — fast `r` re-presses or filter-driven reloads otherwise race.
+	listGen uint64
 
 	refreshIntervals components.RefreshIntervalRepository
 	refreshPicker    *components.RefreshPicker
@@ -470,7 +480,7 @@ func (m *Model) actRefresh() tea.Cmd {
 	if m.loading {
 		return nil
 	}
-	m.manualRefresh = true
+	m.refresher.MarkManual()
 	return m.refreshCmd()
 }
 
@@ -489,14 +499,6 @@ func (m *Model) actNewTopic() tea.Cmd {
 		return m.blockedReadOnly("create")
 	}
 	m.openCreateForm()
-	return nil
-}
-
-func (m *Model) actCloneTopic() tea.Cmd {
-	if m.readOnly {
-		return m.blockedReadOnly("clone")
-	}
-	m.openCloneForm()
 	return nil
 }
 
@@ -536,16 +538,6 @@ func (m *Model) openCreateForm() {
 	m.mode = ModeCreate
 }
 
-func (m *Model) openCloneForm() {
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		m.toasts.Push(components.ToastWarning, "no topic selected")
-		return
-	}
-	m.clone = NewCloneForm(row.ID, m.styles)
-	m.mode = ModeClone
-}
-
 func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
 	// `s` is the submit shortcut in NORMAL but a literal letter in
 	// INSERT or with a segmented popup open — only fire the screen
@@ -561,41 +553,6 @@ func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
-	if m.cloneConfirm != nil {
-		return m.handleCloneConfirmKey(key)
-	}
-	inEdit := m.clone.Mode() == FormInsert || m.clone.Form().PopupActive()
-	if !inEdit || key.String() == "esc" {
-		if cmd, ok := keymap.Dispatch(m.cloneBindings(), key); ok {
-			return cmd
-		}
-	}
-	c, _ := m.clone.Update(key)
-	m.clone = c
-	return nil
-}
-
-func (m *Model) handleCloneConfirmKey(key tea.KeyPressMsg) tea.Cmd {
-	c, _ := m.cloneConfirm.Update(key)
-	m.cloneConfirm = c
-	switch c.Result() {
-	case components.ConfirmPending:
-		return nil
-	case components.ConfirmYes:
-		m.cloneConfirm = nil
-		return m.actCloneSubmit()
-	case components.ConfirmNo:
-		m.cloneConfirm = nil
-	}
-	return nil
-}
-
-func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
-	cmd, _ := keymap.Dispatch(m.cloningBindings(), key)
-	return cmd
-}
-
 // createBindings owns the create-topic form. esc has dual semantics: in
 // INSERT or with a popup it's owned by the form (returns to NORMAL / closes
 // popup); in plain NORMAL it closes the overlay.
@@ -603,22 +560,6 @@ func (m *Model) createBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
 		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Create topic", Hint: true, HandlerMsg: m.actCreateEsc},
-	}
-}
-
-func (m *Model) cloneBindings() []keymap.Binding {
-	if m.cloneConfirm != nil {
-		return m.cloneConfirm.Bindings("Clone topic", "clone")
-	}
-	return []keymap.Binding{
-		{Keys: []string{"s"}, Label: "submit (clone topic)", Category: "Clone topic", Hint: true, Handler: m.actOpenCloneConfirm},
-		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Clone topic", Hint: true, HandlerMsg: m.actCloneEsc},
-	}
-}
-
-func (m *Model) cloningBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"esc"}, Label: "leave (clone keeps running in background)", Category: "Cloning", Hint: true, Handler: m.actCloningLeave},
 	}
 }
 
@@ -642,82 +583,6 @@ func (m *Model) actCreateEsc(key tea.KeyPressMsg) tea.Cmd {
 	}
 	m.create = nil
 	m.mode = ModeList
-	return nil
-}
-
-// actOpenCloneConfirm validates the form and mounts the confirm modal so
-// the user sees `src → dst` before committing — clone is reversible but
-// can be expensive (it copies data), so we gate it the same way as a
-// destructive action.
-func (m *Model) actOpenCloneConfirm() tea.Cmd {
-	src, dst, err := m.clone.Submit()
-	if err != nil {
-		m.clone.SetError(err.Error())
-		return nil
-	}
-	m.clone.SetError("")
-	m.cloneConfirm = components.NewConfirm(
-		"Clone topic",
-		fmt.Sprintf("Clone %s → %s?", src, dst),
-		components.WithConfirmStyles(m.styles),
-	)
-	return nil
-}
-
-func (m *Model) actCloneSubmit() tea.Cmd {
-	src, dst, err := m.clone.Submit()
-	if err != nil {
-		m.clone.SetError(err.Error())
-		return nil
-	}
-	m.mode = ModeCloning
-	m.progress = kafka.CloneProgress{}
-	m.toasts.Push(components.ToastInfo, "cloning "+src+" → "+dst+"…")
-	return cloneStartCmd(m.svc, src, dst, m.clone.Options())
-}
-
-func (m *Model) actCloneEsc(key tea.KeyPressMsg) tea.Cmd {
-	if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
-		c, _ := m.clone.Update(key)
-		m.clone = c
-		return nil
-	}
-	m.clone = nil
-	m.mode = ModeList
-	return nil
-}
-
-func (m *Model) actCloningLeave() tea.Cmd {
-	m.mode = ModeList
-	return nil
-}
-
-func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
-	m.progress = msg.Progress
-	if msg.Progress.Done {
-		m.mode = ModeList
-		m.clone = nil
-		ch := m.cloneCh
-		m.cloneCh = nil
-		if m.cloneCxl != nil {
-			m.cloneCxl()
-			m.cloneCxl = nil
-		}
-		if msg.Progress.Err != nil {
-			m.toasts.Push(components.ToastError, "clone failed: "+msg.Progress.Err.Error())
-		} else {
-			m.toasts.Push(components.ToastSuccess, fmt.Sprintf("clone done — %d records", msg.Progress.Copied))
-		}
-		// drain any remaining items so the producer goroutine isn't blocked
-		// waiting on a closed-but-buffered channel.
-		if ch != nil {
-			go drainChannel(ch)
-		}
-		return nil
-	}
-	if m.cloneCh != nil {
-		return clonePollCmd(m.cloneCh)
-	}
 	return nil
 }
 
@@ -768,16 +633,18 @@ func (m *Model) PendingTopic() string {
 func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
 func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
+	if msg.Gen != m.listGen {
+		return
+	}
 	m.loading = false
+	manual := m.refresher.ConsumeManual()
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load topics: "+msg.Err.Error())
-		m.manualRefresh = false
 		return
 	}
 	m.refresher.MarkSuccess()
-	if m.manualRefresh {
+	if manual {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d topics", len(msg.Topics)))
-		m.manualRefresh = false
 	}
 	m.allTopics = msg.Topics
 	for _, w := range msg.Watermarks {
@@ -902,20 +769,10 @@ func (m *Model) View() string {
 	return m.table.View()
 }
 
-func (m *Model) renderCloningOverlay() string {
-	header := m.styles.HelpTitle.Render("Cloning…")
-	body := fmt.Sprintf(
-		"copied %s / %s records",
-		formatThousands(m.progress.Copied),
-		formatThousands(m.progress.Total),
-	)
-	hint := m.styles.HintLabel.Render("esc — return to list (clone continues in background)")
-	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
-}
-
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	return loadCmd(m.svc, m.lifeCtx)
+	m.listGen++
+	return loadCmd(m.svc, m.lifeCtx, m.listGen)
 }
 
 // AutoRefreshTick emits a tick for the configured refresh interval. Hosts
@@ -947,6 +804,8 @@ type TopicsLoadedMsg struct {
 	// Per-topic errors inside an otherwise-successful batch are dropped.
 	Warnings []string
 	Err      error
+	// Gen pins the result to [Model.listGen] at dispatch time.
+	Gen uint64
 }
 
 type TopicWatermarkResult struct {
@@ -971,17 +830,13 @@ type TopicMutatedMsg struct {
 	Err   error
 }
 
-type CloneProgressMsg struct {
-	Progress kafka.CloneProgress
-}
-
 type RefreshTickMsg struct{}
 
 // loadCmd refreshes the topics list along with per-topic watermarks, sizes,
 // and configs. The three batches run concurrently so wall-clock load time
 // is bound by the slowest single RPC, not by topic count. A whole-category
 // failure is surfaced as one warning toast.
-func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
+func loadCmd(svc Service, parentCtx context.Context, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
@@ -990,7 +845,7 @@ func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 			return nil
 		}
 		if err != nil {
-			return TopicsLoadedMsg{Err: err}
+			return TopicsLoadedMsg{Err: err, Gen: gen}
 		}
 		names := make([]string, len(topics))
 		for i, t := range topics {
@@ -1033,6 +888,7 @@ func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 				batchFetchStat{name: "size", err: szErr},
 				batchFetchStat{name: "configs", err: cfgErr},
 			),
+			Gen: gen,
 		}
 	}
 }
@@ -1106,46 +962,6 @@ func createCmd(svc Service, spec kafka.CreateTopicSpec) tea.Cmd {
 		defer cancel()
 		err := svc.CreateTopic(ctx, spec)
 		return TopicMutatedMsg{Op: "create", Topic: spec.Name, Err: err}
-	}
-}
-
-// cloneStartedMsg hands the freshly-opened progress channel back to the
-// model so it can drive a chain of clonePollCmds.
-type cloneStartedMsg struct {
-	ch     <-chan kafka.CloneProgress
-	cancel context.CancelFunc
-}
-
-func cloneStartCmd(svc Service, src, dst string, opts kafka.CloneOptions) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		ch, err := svc.CloneTopic(ctx, src, dst, opts)
-		if err != nil {
-			cancel()
-			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true, Err: err}}
-		}
-		return cloneStartedMsg{ch: ch, cancel: cancel}
-	}
-}
-
-// clonePollCmd reads one progress message from ch. When the channel closes
-// before a Done flag arrived, it synthesizes one so the screen always
-// transitions back to ModeList.
-func clonePollCmd(ch <-chan kafka.CloneProgress) tea.Cmd {
-	return func() tea.Msg {
-		p, ok := <-ch
-		if !ok {
-			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true}}
-		}
-		return CloneProgressMsg{Progress: p}
-	}
-}
-
-// drainChannel releases the clone goroutine when the user transitions away
-// before the channel is fully drained.
-func drainChannel(ch <-chan kafka.CloneProgress) {
-	for range ch {
-		_ = struct{}{}
 	}
 }
 

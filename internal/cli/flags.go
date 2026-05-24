@@ -227,6 +227,12 @@ func validateCluster(c *CLICluster) error {
 	if c.HasInlineCluster() && slices.Contains(c.Brokers, "") {
 		return &ParseError{Msg: "--brokers contains an empty entry"}
 	}
+	if c.Color != "" && !c.HasInlineCluster() {
+		return &ParseError{Msg: "--color requires --brokers (inline cluster)"}
+	}
+	if c.ReadOnly && !c.HasInlineCluster() {
+		return &ParseError{Msg: "--read-only requires --brokers (inline cluster)"}
+	}
 	if c.Color == "" {
 		return nil
 	}

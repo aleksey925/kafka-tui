@@ -165,6 +165,11 @@ type Model struct {
 
 	statuses map[string]ConnectionStatus
 	errors   map[string]string
+	// pingGen per cluster bumps on every ping dispatch. Late results from a
+	// superseded ping (user re-pings the same cluster mid-flight) are
+	// dropped — critical for the connect intent, where applying a stale
+	// "OK" would auto-connect to the wrong cluster after a re-press.
+	pingGen map[string]uint64
 
 	table  *components.Table
 	toasts *components.Toasts
@@ -260,6 +265,7 @@ func New(opts Options) *Model {
 		autoSelect:   opts.AutoSelectCluster,
 		statuses:     statuses,
 		errors:       errors,
+		pingGen:      make(map[string]uint64, len(merged)),
 		table:        tbl,
 		toasts:       components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		pinger:       opts.Pinger,
@@ -390,6 +396,14 @@ func (m *Model) SetClusters(list []config.Cluster, invalid []config.InvalidClust
 	}
 	newlyInvalid := newlyInvalidNames(m.invalidNames, invalidNames)
 	newWarnings := newWarningsSince(m.lastWarnings, warnings)
+	// invalidate every pending ping after a reload: a stale PingResult that
+	// arrives now could otherwise resurrect a removed cluster (cluster
+	// dropped from YAML), overwrite a freshly-invalid status with a phantom
+	// "OK" (valid→invalid transition keeps the name in keep, so per-name
+	// deletion wouldn't fire), or fire an Intent=connect for a cluster
+	// whose underlying config just changed. A fresh ping post-reload always
+	// re-bumps the counter from zero.
+	m.pingGen = make(map[string]uint64, len(keep))
 	m.clusters = merged
 	m.invalidNames = invalidNames
 	m.cliName = cliName
@@ -621,8 +635,9 @@ func (m *Model) connectCurrent() tea.Cmd {
 		return nil
 	}
 	m.statuses[name] = StatusChecking
+	m.pingGen[name]++
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentConnect)
+	return pingCmd(m.pinger, *c, m.pingTimeout, intentConnect, m.pingGen[name])
 }
 
 func (m *Model) testCurrent() tea.Cmd {
@@ -639,8 +654,9 @@ func (m *Model) testCurrent() tea.Cmd {
 		return nil
 	}
 	m.statuses[name] = StatusChecking
+	m.pingGen[name]++
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentTest)
+	return pingCmd(m.pinger, *c, m.pingTimeout, intentTest, m.pingGen[name])
 }
 
 func (m *Model) testAll() tea.Cmd {
@@ -656,7 +672,8 @@ func (m *Model) testAll() tea.Cmd {
 			continue
 		}
 		m.statuses[c.Name] = StatusChecking
-		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest))
+		m.pingGen[c.Name]++
+		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest, m.pingGen[c.Name]))
 	}
 	m.refreshTable()
 	if len(cmds) == 0 {
@@ -691,6 +708,9 @@ func (m *Model) findCluster(name string) *config.Cluster {
 }
 
 func (m *Model) handlePingResult(msg PingResultMsg) {
+	if msg.Gen != m.pingGen[msg.Name] {
+		return
+	}
 	if msg.Err != nil {
 		m.statuses[msg.Name] = StatusFailed
 		m.errors[msg.Name] = msg.Err.Error()
@@ -790,6 +810,9 @@ type PingResultMsg struct {
 	Name   string
 	Err    error
 	Intent pingIntent
+	// Gen pins the result to the [Model.pingGen] for Name at dispatch time
+	// so handlers drop stale arrivals from a re-issued ping.
+	Gen uint64
 }
 
 type EditCompletedMsg struct {
@@ -797,11 +820,11 @@ type EditCompletedMsg struct {
 	Err  error
 }
 
-func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingIntent) tea.Cmd {
+func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingIntent, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		err := p.Ping(ctx, c)
-		return PingResultMsg{Name: c.Name, Err: err, Intent: intent}
+		return PingResultMsg{Name: c.Name, Err: err, Intent: intent, Gen: gen}
 	}
 }
