@@ -114,12 +114,12 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 
 	fs.StringVar(&flags.Inline.SASLMechanism, "sasl-mechanism", "", "SASL mechanism (PLAIN|SCRAM-SHA-256|SCRAM-SHA-512)")
 	fs.StringVar(&flags.Inline.SASLUsername, "sasl-username", "", "SASL username")
-	fs.StringVar(&flags.Inline.SASLPassword, "sasl-password", "", "SASL password")
+	fs.StringVar(&flags.Inline.SASLPassword, "sasl-password", "", "SASL password — a literal value is visible in `ps`/`/proc/<pid>/cmdline`; prefer ${env:VAR}, ${file:/path}, or ${vault:path#key}")
 
 	fs.StringVar(&flags.LogLevel, "log-level", "", "log level (debug|info|warn|error); overrides logging.level from config")
 
 	fs.StringVar(&flags.VaultAddr, "vault-addr", "", "Vault address; overrides vault.address from config")
-	fs.StringVar(&flags.VaultToken, "vault-token", "", "Vault token; overrides vault.token from config")
+	fs.StringVar(&flags.VaultToken, "vault-token", "", "Vault token — a literal value is visible in `ps`/`/proc/<pid>/cmdline`; prefer ${env:VAR} or ${file:/path}; overrides vault.token from config")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
@@ -257,6 +257,36 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// CredentialExposureWarnings returns one warning per credential-bearing
+// flag whose value is a literal. See CLAUDE.md § Credential exposure
+// warnings. Must be called BEFORE the env+file phase resolves
+// placeholders.
+func CredentialExposureWarnings(f *Flags) []string {
+	if f == nil {
+		return nil
+	}
+	var warns []string
+	if w := plainCredentialWarning("--sasl-password", f.Inline.SASLPassword); w != "" {
+		warns = append(warns, w)
+	}
+	if w := plainCredentialWarning("--vault-token", f.VaultToken); w != "" {
+		warns = append(warns, w)
+	}
+	return warns
+}
+
+func plainCredentialWarning(flagName, value string) string {
+	if !config.IsLiteralCredential(value) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s: literal value passed on command line is visible to other "+
+			"processes via ps / /proc; prefer ${env:VAR}, ${file:/path}, "+
+			"or ${vault:path#key}",
+		flagName,
+	)
 }
 
 // MustParseOrExit parses os.Args, exits with code 2 on error, and returns

@@ -13,6 +13,15 @@ const (
 	placeholderVault = "vault"
 )
 
+// IsLiteralCredential reports whether value is a non-empty literal
+// rather than a placeholder reference. Shared detector for every
+// credential-exposure check — see CLAUDE.md § Credential exposure
+// warnings.
+func IsLiteralCredential(value string) bool {
+	v := strings.TrimSpace(value)
+	return v != "" && !strings.HasPrefix(v, "${")
+}
+
 // VaultResolver fetches a Vault secret for ${vault:path[#key]} placeholders.
 // When key is empty, the entire secret payload is returned as a string
 // (typically JSON — the exact representation is up to the implementation).

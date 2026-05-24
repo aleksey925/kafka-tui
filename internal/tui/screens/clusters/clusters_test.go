@@ -501,6 +501,27 @@ func TestView_RendersTableWithMarkers(t *testing.T) {
 	assert.Contains(t, out, "? unknown")
 }
 
+func TestView_RendersInsecureTLSMarker(t *testing.T) {
+	// a cluster with tls.skip_verify must surface the [NO-TLS-VERIFY]
+	// badge so an operator can't miss that server certs aren't validated
+	// for this row.
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "safe", Brokers: []string{"a:9092"}, TLS: &config.TLSConfig{}},
+			{Name: "risky", Brokers: []string{"b:9092"}, TLS: &config.TLSConfig{SkipVerify: true}},
+			{Name: "plain", Brokers: []string{"c:9092"}},
+		},
+	})
+	out := m.View()
+	assert.Contains(t, out, "[NO-TLS-VERIFY]", "skip_verify cluster must render the [NO-TLS-VERIFY] badge")
+	// the marker is row-scoped: it only follows the risky cluster's line.
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, "[NO-TLS-VERIFY]") {
+			assert.Contains(t, line, "risky", "[NO-TLS-VERIFY] must sit on the risky row, not safe/plain")
+		}
+	}
+}
+
 func TestView_GoldenWithStatuses(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{

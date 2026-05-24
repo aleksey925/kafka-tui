@@ -219,6 +219,32 @@ Vault address resolution: `--vault-addr CLI → vault.address in config`.
 
 Vault token resolution: `--vault-token CLI → vault.token in config → $VAULT_TOKEN → ~/.vault-token`.
 
+### Secrets on the command line
+
+`--sasl-password` and `--vault-token` accept the same `${env:...}` / `${file:...}` /
+`${vault:...}` placeholders as YAML fields — and you should always use them. A literal value
+typed on the command line ends up in `ps`, `/proc/<pid>/cmdline`, and your shell history,
+where any other user on the host can read it. The app prints a warning toast when it
+detects a literal credential, but the leak has already happened by then.
+
+Prefer one of:
+
+```bash
+# environment variable (works well with direnv / mise / etc)
+kafka-tui --brokers prod:9092 --sasl-mechanism SCRAM-SHA-512 \
+  --sasl-username svc --sasl-password '${env:KAFKA_PASS}'
+
+# file (works well with mode 0600 secrets)
+kafka-tui --vault-token '${file:/run/secrets/vault_token}' ...
+
+# vault (chained: --vault-token resolves the placeholder, then SASL pulls from vault)
+kafka-tui --brokers prod:9092 --sasl-mechanism PLAIN \
+  --sasl-username svc --sasl-password '${vault:secret/kafka/prod#password}'
+```
+
+CLI-supplied placeholders are resolved once at startup (YAML reloads pick up rotated
+secrets; CLI values do not).
+
 ## Development
 
 ### Prerequisites

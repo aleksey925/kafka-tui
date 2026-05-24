@@ -466,3 +466,105 @@ func TestParse__saslMechanism__invalidValue__fails(t *testing.T) {
 	assert.Contains(t, pe.Msg, "invalid --sasl-mechanism")
 	assert.Contains(t, pe.Msg, "kerberos")
 }
+
+func TestCredentialExposureWarnings(t *testing.T) {
+	cases := []struct {
+		name     string
+		flags    *Flags
+		wantHits []string // substrings every returned warning collectively must cover
+		wantLen  int
+	}{
+		{
+			name:    "nil flags",
+			flags:   nil,
+			wantLen: 0,
+		},
+		{
+			name:    "no credentials set",
+			flags:   &Flags{},
+			wantLen: 0,
+		},
+		{
+			name: "literal sasl-password warns",
+			flags: &Flags{
+				Inline: CLICluster{SASLPassword: "hunter2"},
+			},
+			wantHits: []string{"--sasl-password"},
+			wantLen:  1,
+		},
+		{
+			name: "env placeholder is silent",
+			flags: &Flags{
+				Inline: CLICluster{SASLPassword: "${env:KAFKA_PASS}"},
+			},
+			wantLen: 0,
+		},
+		{
+			name: "file placeholder is silent",
+			flags: &Flags{
+				Inline: CLICluster{SASLPassword: "${file:/run/secrets/p}"},
+			},
+			wantLen: 0,
+		},
+		{
+			name: "vault placeholder is silent",
+			flags: &Flags{
+				Inline: CLICluster{SASLPassword: "${vault:secret/kafka#pass}"},
+			},
+			wantLen: 0,
+		},
+		{
+			name: "whitespace-only is silent",
+			flags: &Flags{
+				Inline:     CLICluster{SASLPassword: "   "},
+				VaultToken: "\t",
+			},
+			wantLen: 0,
+		},
+		{
+			name: "literal vault-token warns",
+			flags: &Flags{
+				VaultToken: "s.deadbeef",
+			},
+			wantHits: []string{"--vault-token"},
+			wantLen:  1,
+		},
+		{
+			name: "both literals warn independently",
+			flags: &Flags{
+				Inline:     CLICluster{SASLPassword: "hunter2"},
+				VaultToken: "s.deadbeef",
+			},
+			wantHits: []string{"--sasl-password", "--vault-token"},
+			wantLen:  2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// act
+			warns := CredentialExposureWarnings(tc.flags)
+
+			// assert
+			assert.Len(t, warns, tc.wantLen)
+			joined := strings.Join(warns, "\n")
+			for _, sub := range tc.wantHits {
+				assert.Contains(t, joined, sub)
+			}
+		})
+	}
+}
+
+func TestParse__saslPasswordHelp__mentionsPlaceholders(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"--help"}, &out, &errOut)
+
+	// assert: --help is treated as a clean early exit, the usage went to errOut
+	require.ErrorIs(t, err, ErrHelpRequested)
+	usage := errOut.String()
+	assert.Contains(t, usage, "--sasl-password")
+	assert.Contains(t, usage, "${env:")
+	assert.Contains(t, usage, "--vault-token")
+}

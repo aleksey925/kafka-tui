@@ -40,6 +40,26 @@ func TestDetectProtocol(t *testing.T) {
 	}
 }
 
+func TestIsInsecureTLS(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		c    config.Cluster
+		want bool
+	}{
+		{"no tls", config.Cluster{}, false},
+		{"tls with verify", config.Cluster{TLS: &config.TLSConfig{}}, false},
+		{"tls skip_verify", config.Cluster{TLS: &config.TLSConfig{SkipVerify: true}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, IsInsecureTLS(tc.c))
+		})
+	}
+}
+
 func TestBuildClientOptions__noBrokers__error(t *testing.T) {
 	t.Parallel()
 

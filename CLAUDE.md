@@ -449,6 +449,40 @@ the cluster because a wrong value would surface much later as a
 confusing handshake error. CLI flags always hard-fail — interactive
 input deserves an immediate, explicit error.
 
+### Credential exposure warnings
+
+*Applies the single-source rule above: every input source that can
+carry a secret runs through the same literal-vs-placeholder check.*
+
+Any credential-bearing input — `--sasl-password` / `--vault-token` on
+the command line, `sasl.password` / `vault.token` in YAML — produces a
+startup warn-tost when the value is a literal rather than a
+`${env:...}` / `${file:...}` / `${vault:...}` placeholder. The check
+is shared across sources: trim whitespace; non-empty and not starting
+with `${` ⇒ literal ⇒ warn.
+
+Why: literals on the command line leak through `ps`,
+`/proc/<pid>/cmdline`, and shell history; literals in YAML survive in
+backups, git history, and shared filesystems. Both expose the secret
+to anyone with read access to that channel. The warn nudges operators
+toward the placeholder pipeline (see § Placeholder pipeline) — which
+the loader already resolves transparently.
+
+Detection must run BEFORE the env+file phase materializes placeholders.
+Once resolved, a literal and a placeholder-sourced value are
+indistinguishable.
+
+Deviation: inline TLS `cert` / `key` / `ca` PEM bodies in YAML are
+not checked. Literal is the only way to embed PEM material in YAML,
+and they don't single-step into a usable credential the way a
+password does.
+
+Routing: warnings flow through the existing startup-warnings →
+clusters-screen-toast pipeline so the operator sees them on first
+mount. CLI warnings are additionally mirrored to slog directly because
+auto-skip (`--cluster` selecting a single auto-connect target) bypasses
+the clusters screen entirely and the toast pipeline never fires there.
+
 ## Project commands
 
 - `make build` — build the binary into `dist/`

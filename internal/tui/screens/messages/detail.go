@@ -495,7 +495,10 @@ func defaultWriteFile(path string, data []byte) error {
 	if path == "" {
 		return errors.New("save: empty path")
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// 0o600: a saved record may carry PII / tokens / debug payloads —
+	// match the user-private posture of logs (rotate.go) and state
+	// (state.go) rather than the umask default.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("save: write %s: %w", path, err)
 	}
 	return nil

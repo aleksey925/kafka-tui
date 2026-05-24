@@ -639,3 +639,27 @@ func TestLoad_PlaceholderResolution_MissingEnv__loadError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KT_LOAD_MISSING")
 }
+
+func TestIsLiteralCredential(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"whitespace only", "   \t\n", false},
+		{"plain literal", "hunter2", true},
+		{"env placeholder", "${env:VAR}", false},
+		{"env placeholder with default", "${env:VAR:-fallback}", false},
+		{"file placeholder", "${file:/run/secrets/p}", false},
+		{"vault placeholder", "${vault:secret/p#k}", false},
+		{"placeholder with leading space treated as literal start", " ${env:X}", false},
+		{"literal that happens to contain a $ later", "pre${env:X}", true},
+		{"single dollar is literal", "$abc", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, config.IsLiteralCredential(tc.value))
+		})
+	}
+}

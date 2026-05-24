@@ -42,6 +42,10 @@ func main() {
 		return
 	}
 
+	// must run before EnvFileResolvers — see CLAUDE.md § Credential
+	// exposure warnings.
+	cliWarnings := cli.CredentialExposureWarnings(flags)
+
 	// resolve env/file in flags here for the --logs / --logs-dir paths
 	// which exit before Load runs. Load re-runs this pass (idempotent) plus
 	// the vault phase via ResolveTargets — see CLAUDE.md § Placeholder pipeline.
@@ -72,14 +76,14 @@ func main() {
 		return
 	}
 
-	if err := run(flags); err != nil {
+	if err := run(flags, cliWarnings); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 }
 
 // run is split out from main so deferred cleanup runs before any os.Exit.
-func run(flags *cli.Flags) error {
+func run(flags *cli.Flags, cliWarnings []string) error {
 	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
 		VaultBuilder:   vaultBuilderWithCLIOverride(flags),
@@ -136,6 +140,13 @@ func run(flags *cli.Flags) error {
 	if autoSelect == "" {
 		autoSelect = cliClu
 	}
+	// see CLAUDE.md § Credential exposure warnings — slog mirror is the
+	// safety net for the auto-skip path that bypasses clusters.Init.
+	startupWarnings := append([]string(nil), loaded.Warnings...)
+	startupWarnings = append(startupWarnings, cliWarnings...)
+	for _, w := range cliWarnings {
+		slog.Warn(w)
+	}
 	boot := &tui.Bootstrap{
 		Loaded:            loaded,
 		Clusters:          clusterList,
@@ -151,7 +162,7 @@ func run(flags *cli.Flags) error {
 		RefreshIntervals:  refreshIntervals(store, logger.Logger),
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
-		StartupWarnings:   loaded.Warnings,
+		StartupWarnings:   startupWarnings,
 		ReadOnly:          flags.Inline.ReadOnly,
 		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
 			fresh, err := config.Load(loaderOpts)

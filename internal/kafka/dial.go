@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -189,11 +190,26 @@ func Dial(c config.Cluster, dopts DialOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if IsInsecureTLS(c) {
+		// log every top-level dial (not the per-action transient consumers
+		// in messages.go / produce.go / topics.go — those reuse the same
+		// cluster config and would just spam). The badge in the picker /
+		// header is the visual counterpart; this is the audit trail.
+		slog.Warn("kafka: tls.skip_verify enabled — connection is not MitM-resistant",
+			slog.String("cluster", c.Name))
+	}
 	kc, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}
 	return newClient(kc, c, proto), nil
+}
+
+// IsInsecureTLS reports whether the cluster opts out of TLS server
+// verification. Shared with the UI so picker / header surface a badge
+// without re-deriving the rule.
+func IsInsecureTLS(c config.Cluster) bool {
+	return c.TLS != nil && c.TLS.SkipVerify
 }
 
 // Ping issues a bounded broker-metadata request to verify connectivity.

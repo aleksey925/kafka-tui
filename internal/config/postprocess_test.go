@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,4 +150,88 @@ func TestNormalizeClusterHard__noSASL__noOp(t *testing.T) {
 
 	// assert
 	require.NoError(t, err)
+}
+
+func TestCheckYAMLCredentialExposure(t *testing.T) {
+	cases := []struct {
+		name     string
+		vault    VaultConfig
+		clusters []Cluster
+		wantHits []string // substrings every warning collectively must cover
+		wantLen  int
+	}{
+		{
+			name:    "empty everything",
+			wantLen: 0,
+		},
+		{
+			name:     "no sasl on cluster",
+			clusters: []Cluster{{Name: "p"}},
+			wantLen:  0,
+		},
+		{
+			name:     "literal sasl password warns with cluster name",
+			clusters: []Cluster{{Name: "prod", SASL: &SASLConfig{Password: "hunter2"}}},
+			wantHits: []string{`cluster "prod"`, "sasl.password"},
+			wantLen:  1,
+		},
+		{
+			name:     "env placeholder is silent",
+			clusters: []Cluster{{Name: "p", SASL: &SASLConfig{Password: "${env:KAFKA_PASS}"}}},
+			wantLen:  0,
+		},
+		{
+			name:     "file placeholder is silent",
+			clusters: []Cluster{{Name: "p", SASL: &SASLConfig{Password: "${file:/secret}"}}},
+			wantLen:  0,
+		},
+		{
+			name:     "vault placeholder is silent",
+			clusters: []Cluster{{Name: "p", SASL: &SASLConfig{Password: "${vault:kv/p#k}"}}},
+			wantLen:  0,
+		},
+		{
+			name:     "whitespace-only password is silent",
+			clusters: []Cluster{{Name: "p", SASL: &SASLConfig{Password: "   "}}},
+			wantLen:  0,
+		},
+		{
+			name:     "literal vault.token warns",
+			vault:    VaultConfig{Token: "s.deadbeef"},
+			wantHits: []string{"vault.token"},
+			wantLen:  1,
+		},
+		{
+			name:  "vault.token placeholder is silent",
+			vault: VaultConfig{Token: "${env:VAULT_TOKEN}"},
+		},
+		{
+			name:  "vault address is not checked (it's not a secret)",
+			vault: VaultConfig{Address: "https://vault.example"},
+		},
+		{
+			name:  "both vault and one cluster warn independently",
+			vault: VaultConfig{Token: "literal"},
+			clusters: []Cluster{
+				{Name: "a", SASL: &SASLConfig{Password: "literal"}},
+				{Name: "b", SASL: &SASLConfig{Password: "${env:X}"}},
+				{Name: "c"},
+			},
+			wantHits: []string{"vault.token", `cluster "a"`},
+			wantLen:  2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// act
+			warns := checkYAMLCredentialExposure(tc.vault, tc.clusters)
+
+			// assert
+			assert.Len(t, warns, tc.wantLen)
+			joined := strings.Join(warns, "\n")
+			for _, sub := range tc.wantHits {
+				assert.Contains(t, joined, sub)
+			}
+		})
+	}
 }

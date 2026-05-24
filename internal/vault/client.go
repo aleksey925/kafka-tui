@@ -7,6 +7,7 @@ package vault
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +70,14 @@ func NewClient(opts Options) (*Client, error) {
 		if timeout == 0 {
 			timeout = DefaultTimeout
 		}
-		httpClient = &http.Client{Timeout: timeout}
+		// clone DefaultTransport to keep its proxy (HTTPS_PROXY), dial
+		// timeouts, idle pool, and HTTP/2 — a bare &http.Transport{} would
+		// silently drop all of them. Override only TLSClientConfig so the
+		// Vault path can't fall back below TLS 1.2 if the Go default ever
+		// shifts; mirrors the explicit MinVersion in kafka/dial.go.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		httpClient = &http.Client{Timeout: timeout, Transport: transport}
 	}
 
 	return &Client{

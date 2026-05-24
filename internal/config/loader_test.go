@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aleksey925/kafka-tui/internal/config"
@@ -354,6 +355,46 @@ func TestLoad_PartialFailure_OneClusterUnresolvedEnv_OthersLoad(t *testing.T) {
 	require.Len(t, loaded.InvalidClusters, 1)
 	assert.Equal(t, "needs-env", loaded.InvalidClusters[0].Cluster.Name)
 	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "KAFKA_TUI_TEST_NOT_SET_VAR")
+}
+
+func TestLoad_LiteralCredentialsInYAML_SurfaceAsWarnings(t *testing.T) {
+	// arrange — clusters.yaml with a literal sasl.password; config.yaml
+	// with a literal vault.token. Both must be flagged via loaded.Warnings.
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".kafka-tui"), 0o755))
+	clustersYAML := []byte(`clusters:
+  - name: leaky
+    brokers: [b1:9092]
+    sasl:
+      mechanism: PLAIN
+      username: u
+      password: hunter2
+  - name: safe
+    brokers: [b2:9092]
+    sasl:
+      mechanism: PLAIN
+      username: u
+      password: "${env:KAFKA_TUI_TEST_NOT_SET_VAR:-fallback}"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".kafka-tui", "clusters.yaml"), clustersYAML, 0o644))
+	configYAML := []byte("vault:\n  token: s.deadbeef\n")
+	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".kafka-tui", "config.yaml"), configYAML, 0o644))
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  homeDir,
+		StartDir: t.TempDir(),
+	})
+
+	// assert
+	require.NoError(t, err)
+	require.Len(t, loaded.Clusters, 2)
+	joined := strings.Join(loaded.Warnings, "\n")
+	assert.Contains(t, joined, `cluster "leaky"`)
+	assert.Contains(t, joined, "sasl.password")
+	assert.Contains(t, joined, "vault.token")
+	assert.NotContains(t, joined, `cluster "safe"`,
+		"placeholder-resolved password must not produce a warning")
 }
 
 func TestClusterContext_UnknownCluster(t *testing.T) {

@@ -183,3 +183,35 @@ func TestHeader_NarrowTerminalUsesCompactFallback(t *testing.T) {
 	assert.Contains(t, out, "[RO]")
 	assert.NotContains(t, out, "Cluster", "compact header must not include the multi-row labels")
 }
+
+func TestHeader_InsecureTLSRendersWarnInFullAndCompact(t *testing.T) {
+	s := theme.DefaultStyles()
+
+	full := layout.Header(s, layout.HeaderInfo{
+		Cluster:     "risky",
+		InsecureTLS: true,
+	}, layout.StatusInfo{Mode: layout.RefreshNotApplicable}, nil,
+		layout.Build{Version: "v0"}, 120)
+	assert.Contains(t, full, "no-tls-verify", "full header must annotate insecure-tls in Mode row")
+
+	compact := layout.Header(s, layout.HeaderInfo{
+		Cluster:     "risky",
+		InsecureTLS: true,
+	}, layout.StatusInfo{}, nil, layout.Build{}, 20)
+	assert.Contains(t, compact, "[NO-TLS-VERIFY]", "compact header must include [NO-TLS-VERIFY] marker")
+}
+
+func TestHeader_InsecureTLSAbsent_NoMarker(t *testing.T) {
+	// matched-pair negative test so a future regression that always renders
+	// the marker (e.g. dropping the `if info.InsecureTLS` guard) is caught.
+	s := theme.DefaultStyles()
+
+	full := layout.Header(s, layout.HeaderInfo{Cluster: "safe"},
+		layout.StatusInfo{Mode: layout.RefreshNotApplicable}, nil,
+		layout.Build{Version: "v0"}, 120)
+	assert.NotContains(t, full, "no-tls-verify")
+
+	compact := layout.Header(s, layout.HeaderInfo{Cluster: "safe"},
+		layout.StatusInfo{}, nil, layout.Build{}, 20)
+	assert.NotContains(t, compact, "[NO-TLS-VERIFY]")
+}

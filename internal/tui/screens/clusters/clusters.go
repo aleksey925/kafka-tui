@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/config"
+	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
@@ -288,7 +289,8 @@ func columnDefs() []components.Column {
 		{Title: " ", Width: 1},
 		{Title: "Name", Width: 24, Sortable: true},
 		{Title: "Brokers", Width: 32, Sortable: true},
-		{Title: "Flags", Width: 12, Sortable: false},
+		// Flags widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
+		{Title: "Flags", Width: 16, Sortable: false},
 		{Title: "Status", Width: 14, Sortable: false},
 	}
 }
@@ -761,6 +763,12 @@ func (m *Model) rowValues(c config.Cluster) []string {
 	}
 	if c.Name == m.cliName {
 		flags = append(flags, "(cli)")
+	}
+	if kafka.IsInsecureTLS(c) {
+		// [NO-TLS-VERIFY] mirrors the [RO] convention (capitalized,
+		// braces-wrapped) and names the exact thing that's off — matches
+		// the YAML field skip_verify and the --tls-skip-verify flag.
+		flags = append(flags, m.styles.StatusWarn.Render("[NO-TLS-VERIFY]"))
 	}
 	return []string{
 		colorDot,

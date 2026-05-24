@@ -169,6 +169,10 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 		clusters = cf.Clusters
 	}
 
+	// must run before resolveGlobals / loadClusters — see CLAUDE.md §
+	// Credential exposure warnings.
+	credWarnings := checkYAMLCredentialExposure(cfg.Vault, clusters)
+
 	envFile := EnvFileResolvers()
 	vaultPhase, err := resolveGlobals(&cfg, opts.ResolveTargets, envFile, opts.VaultBuilder)
 	if err != nil {
@@ -178,6 +182,7 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 	valid, invalid := loadClusters(clusters, envFile, vaultPhase)
 	warnings := postProcessConfig(&cfg)
 	warnings = append(warnings, postProcessClustersSoft(valid)...)
+	warnings = append(warnings, credWarnings...)
 
 	return &Loaded{
 		Config:          cfg,
