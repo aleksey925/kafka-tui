@@ -64,6 +64,13 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 		m.client.Close()
 	}
 	m.client = client
+	// closeActive must run BEFORE clear so the old screen's filter (which
+	// closeActive would capture into lastFilters) is wiped along with
+	// everything else. Reversing the order on `:cluster <name>` would
+	// re-pollute the map after the clear, and the new cluster's topics
+	// screen would inherit the stale filter via restoreFilter.
+	m.closeActive()
+	clear(m.lastFilters)
 	m.updateHeaderForActive(
 		clu.Name,
 		clu.Color,

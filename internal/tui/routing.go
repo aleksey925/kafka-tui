@@ -244,9 +244,15 @@ func (m *Model) popOrReplaceToHome() tea.Cmd {
 }
 
 // closeActive releases background resources held by the active screen
-// and clears the pointer.
+// and clears the pointer. The screen's current `/` filter is captured into
+// lastFilters first so a subsequent push/pop/replace can restore it on the
+// next instance — without this, popping back to topics after browsing a
+// message lands on an unfiltered list and the user has to re-type the query.
 func (m *Model) closeActive() {
 	if m.active != nil {
+		if id := m.router.Active(); id != "" {
+			m.lastFilters[id] = screenActiveFilter(m.active)
+		}
 		closeScreen(m.active)
 		m.active = nil
 	}
