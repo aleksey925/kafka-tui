@@ -271,8 +271,10 @@ func TestClient_TopicWatermarksBatch__kfake(t *testing.T) {
 
 	wm, err := c.TopicWatermarksBatch(ctx, "alpha", "beta")
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, wm["alpha"].Count())
-	assert.EqualValues(t, 1, wm["beta"].Count())
+	require.NoError(t, wm["alpha"].Err)
+	require.NoError(t, wm["beta"].Err)
+	assert.EqualValues(t, 2, wm["alpha"].Value.Count())
+	assert.EqualValues(t, 1, wm["beta"].Value.Count())
 }
 
 func TestClient_TopicWatermarksBatch__empty(t *testing.T) {
@@ -300,11 +302,15 @@ func TestClient_TopicSizesBatch__kfake(t *testing.T) {
 
 	sizes, err := c.TopicSizesBatch(ctx, "sz-1", "sz-2")
 	require.NoError(t, err)
-	// kfake may report zero sizes; we just need both keys present (or
-	// absent uniformly) and the call to succeed without error.
-	_, ok1 := sizes["sz-1"]
-	_, ok2 := sizes["sz-2"]
-	assert.Equal(t, ok1, ok2, "kfake should be consistent across topics")
+	// kfake doesn't enforce ACLs and may legitimately report zero bytes
+	// — both topics behave identically (both present with Value, both
+	// surfacing the same Err, or both absent for empty topics).
+	r1, ok1 := sizes["sz-1"]
+	r2, ok2 := sizes["sz-2"]
+	assert.Equal(t, ok1, ok2)
+	if ok1 {
+		assert.Equal(t, r1.Err == nil, r2.Err == nil)
+	}
 }
 
 func TestClient_DescribeTopicConfigsBatch__kfake(t *testing.T) {
@@ -331,8 +337,10 @@ func TestClient_DescribeTopicConfigsBatch__kfake(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, cfgs, "with-cfg")
 	require.Contains(t, cfgs, "no-cfg")
+	require.NoError(t, cfgs["with-cfg"].Err)
+	require.NoError(t, cfgs["no-cfg"].Err)
 	var found bool
-	for _, cfg := range cfgs["with-cfg"] {
+	for _, cfg := range cfgs["with-cfg"].Value {
 		if cfg.Key == ConfigCleanupPolicy && cfg.Value == cleanup {
 			found = true
 		}

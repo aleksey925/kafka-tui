@@ -4,6 +4,8 @@ package topics
 import (
 	"context"
 	"fmt"
+	"maps"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,9 +45,14 @@ type Service interface {
 	AlterTopicConfig(ctx context.Context, topic, key, value string) error
 
 	// Batch fetchers — one RPC per category regardless of topic count.
-	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.TopicWatermarks, error)
-	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error)
-	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]kafka.TopicConfig, error)
+	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[kafka.TopicWatermarks], error)
+	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[int64], error)
+	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[[]kafka.TopicConfig], error)
+
+	// RegisterDenials returns the subset of per-topic ACL denials not
+	// yet observed by the session-scoped dedup cache (one aggregated
+	// warn-toast per RPC group).
+	RegisterDenials(ds []kafka.Denial) []kafka.Denial
 }
 
 // Action describes the screen's pending intent for the host (router).
@@ -91,9 +98,9 @@ type Model struct {
 	hiddenIntern int
 	showInternal bool
 
-	watermarks map[string]kafka.TopicWatermarks
-	sizes      map[string]int64
-	configs    map[string][]kafka.TopicConfig
+	watermarks map[string]kafka.BatchResult[kafka.TopicWatermarks]
+	sizes      map[string]kafka.BatchResult[int64]
+	configs    map[string]kafka.BatchResult[[]kafka.TopicConfig]
 
 	shownWarnings map[string]struct{}
 
@@ -160,9 +167,9 @@ func New(opts Options) *Model {
 		readOnly:         opts.ReadOnly,
 		columns:          cols,
 		focusTopic:       opts.FocusTopic,
-		watermarks:       map[string]kafka.TopicWatermarks{},
-		sizes:            map[string]int64{},
-		configs:          map[string][]kafka.TopicConfig{},
+		watermarks:       map[string]kafka.BatchResult[kafka.TopicWatermarks]{},
+		sizes:            map[string]kafka.BatchResult[int64]{},
+		configs:          map[string]kafka.BatchResult[[]kafka.TopicConfig]{},
 		shownWarnings:    map[string]struct{}{},
 		table:            tbl,
 		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
@@ -636,15 +643,9 @@ func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d topics", len(msg.Topics)))
 	}
 	m.allTopics = msg.Topics
-	for _, w := range msg.Watermarks {
-		m.watermarks[w.Topic] = w.Watermarks
-	}
-	for _, s := range msg.Sizes {
-		m.sizes[s.Topic] = s.Size
-	}
-	for _, c := range msg.Configs {
-		m.configs[c.Topic] = c.Configs
-	}
+	maps.Copy(m.watermarks, msg.Watermarks)
+	maps.Copy(m.sizes, msg.Sizes)
+	maps.Copy(m.configs, msg.Configs)
 	for _, w := range msg.Warnings {
 		if _, seen := m.shownWarnings[w]; seen {
 			continue
@@ -710,13 +711,19 @@ func (m *Model) cellFor(col string, t kafka.TopicSummary) string {
 	case "replicas":
 		return strconv.Itoa(t.Replicas)
 	case "messages":
-		if w, ok := m.watermarks[t.Name]; ok {
-			return formatThousands(w.MessageCount)
+		if r, ok := m.watermarks[t.Name]; ok {
+			if marker, denied := denialMarker(r.Err); denied {
+				return marker
+			}
+			return formatThousands(r.Value.MessageCount)
 		}
 		return "—"
 	case "size":
-		if s, ok := m.sizes[t.Name]; ok {
-			return formatBytes(s)
+		if r, ok := m.sizes[t.Name]; ok {
+			if marker, denied := denialMarker(r.Err); denied {
+				return marker
+			}
+			return formatBytes(r.Value)
 		}
 		return "—"
 	case "cleanup_policy":
@@ -786,31 +793,16 @@ func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
 // TopicsLoadedMsg is dispatched after a refresh completes.
 type TopicsLoadedMsg struct {
 	Topics     []kafka.TopicSummary
-	Watermarks []TopicWatermarkResult
-	Sizes      []TopicSizeResult
-	Configs    []TopicConfigResult
-	// Warnings carries summaries of whole-category batch-RPC failures.
-	// Per-topic errors inside an otherwise-successful batch are dropped.
+	Watermarks map[string]kafka.BatchResult[kafka.TopicWatermarks]
+	Sizes      map[string]kafka.BatchResult[int64]
+	Configs    map[string]kafka.BatchResult[[]kafka.TopicConfig]
+	// Warnings carries whole-category batch-RPC failures plus the
+	// freshly-observed per-topic ACL denials returned by the dedup cache.
 	Warnings []string
 	Err      error
 	// Gen pins the result to the dispatch-time generation; the handler
 	// drops mismatches via [lifecycle.Tracker.Validate].
 	Gen uint64
-}
-
-type TopicWatermarkResult struct {
-	Topic      string
-	Watermarks kafka.TopicWatermarks
-}
-
-type TopicSizeResult struct {
-	Topic string
-	Size  int64
-}
-
-type TopicConfigResult struct {
-	Topic   string
-	Configs []kafka.TopicConfig
 }
 
 // TopicMutatedMsg reports the result of a create / delete / clone op.
@@ -824,8 +816,9 @@ type RefreshTickMsg struct{}
 
 // loadCmd refreshes the topics list along with per-topic watermarks, sizes,
 // and configs. The three batches run concurrently so wall-clock load time
-// is bound by the slowest single RPC, not by topic count. A whole-category
-// failure is surfaced as one warning toast.
+// is bound by the slowest single RPC, not by topic count. Whole-category
+// failures and per-topic ACL denials are aggregated into one warning toast
+// each via the session-scoped dedup cache.
 func loadCmd(svc Service, parentCtx context.Context, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
@@ -843,9 +836,9 @@ func loadCmd(svc Service, parentCtx context.Context, gen uint64) tea.Cmd {
 		}
 
 		var (
-			wmMap                map[string]kafka.TopicWatermarks
-			sizeMap              map[string]int64
-			cfgMap               map[string][]kafka.TopicConfig
+			wmMap                map[string]kafka.BatchResult[kafka.TopicWatermarks]
+			sizeMap              map[string]kafka.BatchResult[int64]
+			cfgMap               map[string]kafka.BatchResult[[]kafka.TopicConfig]
 			wmErr, szErr, cfgErr error
 			wg                   sync.WaitGroup
 		)
@@ -868,58 +861,25 @@ func loadCmd(svc Service, parentCtx context.Context, gen uint64) tea.Cmd {
 			return nil
 		}
 
+		warnings := batchFetchWarnings(
+			batchFetchStat{name: "watermarks", err: wmErr},
+			batchFetchStat{name: "size", err: szErr},
+			batchFetchStat{name: "configs", err: cfgErr},
+		)
+		denials := kafka.CollectDenials(kafka.RPCKindWatermarks, wmMap)
+		denials = append(denials, kafka.CollectDenials(kafka.RPCKindSize, sizeMap)...)
+		denials = append(denials, kafka.CollectDenials(kafka.RPCKindConfigs, cfgMap)...)
+		warnings = append(warnings, formatDenialWarnings(svc.RegisterDenials(denials))...)
+
 		return TopicsLoadedMsg{
 			Topics:     topics,
-			Watermarks: flattenWatermarks(wmMap, topics),
-			Sizes:      flattenSizes(sizeMap, topics),
-			Configs:    flattenConfigs(cfgMap, topics),
-			Warnings: batchFetchWarnings(
-				batchFetchStat{name: "watermarks", err: wmErr},
-				batchFetchStat{name: "size", err: szErr},
-				batchFetchStat{name: "configs", err: cfgErr},
-			),
-			Gen: gen,
+			Watermarks: wmMap,
+			Sizes:      sizeMap,
+			Configs:    cfgMap,
+			Warnings:   warnings,
+			Gen:        gen,
 		}
 	}
-}
-
-func flattenWatermarks(m map[string]kafka.TopicWatermarks, topics []kafka.TopicSummary) []TopicWatermarkResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicWatermarkResult, 0, len(m))
-	for _, t := range topics {
-		if w, ok := m[t.Name]; ok {
-			out = append(out, TopicWatermarkResult{Topic: t.Name, Watermarks: w})
-		}
-	}
-	return out
-}
-
-func flattenSizes(m map[string]int64, topics []kafka.TopicSummary) []TopicSizeResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicSizeResult, 0, len(m))
-	for _, t := range topics {
-		if s, ok := m[t.Name]; ok {
-			out = append(out, TopicSizeResult{Topic: t.Name, Size: s})
-		}
-	}
-	return out
-}
-
-func flattenConfigs(m map[string][]kafka.TopicConfig, topics []kafka.TopicSummary) []TopicConfigResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicConfigResult, 0, len(m))
-	for _, t := range topics {
-		if c, ok := m[t.Name]; ok {
-			out = append(out, TopicConfigResult{Topic: t.Name, Configs: c})
-		}
-	}
-	return out
 }
 
 type batchFetchStat struct {
@@ -936,6 +896,42 @@ func batchFetchWarnings(stats ...batchFetchStat) []string {
 	}
 	return out
 }
+
+// formatDenialWarnings groups freshly-observed denials by RPC and
+// produces one warn-toast string per group. CollectDenials filters to
+// ACL only, so the label is hardcoded — add a kind dimension here if a
+// future ErrKind starts flowing through.
+func formatDenialWarnings(fresh []kafka.Denial) []string {
+	if len(fresh) == 0 {
+		return nil
+	}
+	grouped := make(map[kafka.RPCKind][]string)
+	for _, d := range fresh {
+		grouped[d.RPC] = append(grouped[d.RPC], d.Topic)
+	}
+	out := make([]string, 0, len(grouped))
+	for rpc, topics := range grouped {
+		sort.Strings(topics)
+		shown := topics
+		var suffix string
+		if len(topics) > maxDenialTopicsShown {
+			shown = topics[:maxDenialTopicsShown]
+			suffix = fmt.Sprintf(", +%d more", len(topics)-maxDenialTopicsShown)
+		}
+		noun := "topic"
+		if len(topics) != 1 {
+			noun = "topics"
+		}
+		out = append(out, fmt.Sprintf(
+			"%s: %d %s denied (ACL): %s%s",
+			rpc, len(topics), noun, strings.Join(shown, ", "), suffix,
+		))
+	}
+	sort.Strings(out)
+	return out
+}
+
+const maxDenialTopicsShown = 5
 
 func deleteCmd(svc Service, topic string) tea.Cmd {
 	return func() tea.Msg {
@@ -988,13 +984,29 @@ func columnSpec(key string) components.Column {
 	}
 }
 
-func findConfig(cfgs []kafka.TopicConfig, key string) string {
-	for _, c := range cfgs {
+func findConfig(r kafka.BatchResult[[]kafka.TopicConfig], key string) string {
+	if marker, denied := denialMarker(r.Err); denied {
+		return marker
+	}
+	for _, c := range r.Value {
 		if c.Key == key {
 			return c.Value
 		}
 	}
 	return "—"
+}
+
+// denialMarker returns ⊘ for ACL-class errors, — otherwise. The second
+// return is false when err is nil so the caller falls through to the
+// value rendering.
+func denialMarker(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if kafka.ClassifyError(err) == kafka.ErrKindACL {
+		return "⊘", true
+	}
+	return "—", true
 }
 
 func formatThousands(n int64) string {

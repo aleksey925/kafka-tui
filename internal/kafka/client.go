@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -31,6 +32,9 @@ type Client struct {
 	adm      *kadm.Client
 	cluster  config.Cluster
 	protocol Protocol
+
+	denialsMu sync.Mutex
+	denials   map[Denial]struct{}
 }
 
 func newClient(kc *kgo.Client, cluster config.Cluster, proto Protocol) *Client {
@@ -70,4 +74,28 @@ func (c *Client) Close() {
 	c.kc.Close()
 	c.kc = nil
 	c.adm = nil
+}
+
+// RegisterDenials adds each denial to the session-scoped cache and
+// returns the subset that wasn't present yet — see § Per-topic batch
+// failures in CLAUDE.md for why the cache lives here and not on the
+// screen.
+func (c *Client) RegisterDenials(ds []Denial) []Denial {
+	if len(ds) == 0 {
+		return nil
+	}
+	c.denialsMu.Lock()
+	defer c.denialsMu.Unlock()
+	if c.denials == nil {
+		c.denials = make(map[Denial]struct{})
+	}
+	fresh := make([]Denial, 0, len(ds))
+	for _, d := range ds {
+		if _, seen := c.denials[d]; seen {
+			continue
+		}
+		c.denials[d] = struct{}{}
+		fresh = append(fresh, d)
+	}
+	return fresh
 }

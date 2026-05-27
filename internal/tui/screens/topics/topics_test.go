@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kerr"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/topics"
@@ -101,6 +102,94 @@ func TestInit_ErrorRaisesToast(t *testing.T) {
 
 	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
 	assert.Contains(t, m.Toasts().Items()[m.Toasts().Len()-1].Message, "connection refused")
+}
+
+func TestACLDenial_RendersMarkerInsteadOfDash(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "secret", Partitions: 1, Replicas: 1},
+		{Name: "open", Partitions: 1, Replicas: 1},
+	}, nil)
+	svc.configErrs = map[string]error{"secret": kerr.TopicAuthorizationFailed}
+	svc.sizeErrs = map[string]error{"secret": kerr.TopicAuthorizationFailed}
+	m := topics.New(topics.Options{
+		Service: svc,
+		Columns: []string{"name", "cleanup_policy", "size"},
+	})
+
+	drive(t, m, m.Init())
+
+	out := m.View()
+	secretLine := lineWithPrefix(t, out, "secret")
+	openLine := lineWithPrefix(t, out, "open")
+	assert.Contains(t, secretLine, "⊘", "ACL-denied cells must render the denial marker, not a plain dash")
+	assert.NotContains(t, openLine, "⊘", "topics without denials must keep their normal rendering")
+}
+
+func TestACLDenial_AggregatedWarnToast(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "a", Partitions: 1, Replicas: 1},
+		{Name: "b", Partitions: 1, Replicas: 1},
+	}, nil)
+	svc.configErrs = map[string]error{
+		"a": kerr.TopicAuthorizationFailed,
+		"b": kerr.TopicAuthorizationFailed,
+	}
+	m := topics.New(topics.Options{Service: svc})
+
+	drive(t, m, m.Init())
+
+	got := findToast(t, m, "configs:")
+	assert.Contains(t, got, "2 topics denied (ACL)")
+	assert.Contains(t, got, "a, b")
+}
+
+func TestACLDenial_DedupAcrossLoads(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{
+		{Name: "a", Partitions: 1, Replicas: 1},
+	}, nil)
+	svc.configErrs = map[string]error{"a": kerr.TopicAuthorizationFailed}
+	m := topics.New(topics.Options{Service: svc})
+
+	drive(t, m, m.Init())
+	initialDenialToasts := countToasts(m, "denied")
+	require.Equal(t, 1, initialDenialToasts, "first load surfaces the denial once")
+
+	drive(t, m, m.HandleRefreshTick())
+
+	assert.Equal(t, 1, countToasts(m, "denied"),
+		"the second tick observes the same denial set and must stay silent")
+}
+
+func lineWithPrefix(t *testing.T, out, prefix string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("no rendered line contained %q", prefix)
+	return ""
+}
+
+func findToast(t *testing.T, m *topics.Model, needle string) string {
+	t.Helper()
+	for _, item := range m.Toasts().Items() {
+		if strings.Contains(item.Message, needle) {
+			return item.Message
+		}
+	}
+	t.Fatalf("no toast contained %q", needle)
+	return ""
+}
+
+func countToasts(m *topics.Model, needle string) int {
+	n := 0
+	for _, item := range m.Toasts().Items() {
+		if strings.Contains(item.Message, needle) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestInternalToggle_HidesAndShowsInternalTopics(t *testing.T) {
@@ -650,6 +739,14 @@ type fakeService struct {
 	// terminate it with a Done=true event; otherwise tests will hang on
 	// the channel close path.
 	clonePartial []kafka.CloneProgress
+
+	// per-topic batch errors injected into BatchResult.Err.
+	configErrs map[string]error
+	sizeErrs   map[string]error
+	wmErrs     map[string]error
+
+	// denials emulates the Client-side dedup cache.
+	denials map[kafka.Denial]struct{}
 }
 
 // fakeRefreshRepo is a stub [components.RefreshIntervalRepository] that
@@ -793,28 +890,49 @@ func (f *fakeService) DescribeAllTopicConfigs(_ context.Context, topic string) (
 	return f.configs[topic], nil
 }
 
-func (f *fakeService) TopicWatermarksBatch(_ context.Context, names ...string) (map[string]kafka.TopicWatermarks, error) {
-	out := make(map[string]kafka.TopicWatermarks, len(names))
+func (f *fakeService) TopicWatermarksBatch(_ context.Context, names ...string) (map[string]kafka.BatchResult[kafka.TopicWatermarks], error) {
+	out := make(map[string]kafka.BatchResult[kafka.TopicWatermarks], len(names))
 	for _, t := range names {
-		out[t] = kafka.TopicWatermarks{}
+		out[t] = kafka.BatchResult[kafka.TopicWatermarks]{Err: f.wmErrs[t]}
 	}
 	return out, nil
 }
 
-func (f *fakeService) TopicSizesBatch(_ context.Context, names ...string) (map[string]int64, error) {
-	out := make(map[string]int64, len(names))
+func (f *fakeService) TopicSizesBatch(_ context.Context, names ...string) (map[string]kafka.BatchResult[int64], error) {
+	out := make(map[string]kafka.BatchResult[int64], len(names))
 	for _, t := range names {
-		out[t] = 0
+		out[t] = kafka.BatchResult[int64]{Err: f.sizeErrs[t]}
 	}
 	return out, nil
 }
 
-func (f *fakeService) DescribeTopicConfigsBatch(_ context.Context, names ...string) (map[string][]kafka.TopicConfig, error) {
-	out := make(map[string][]kafka.TopicConfig, len(names))
+func (f *fakeService) DescribeTopicConfigsBatch(_ context.Context, names ...string) (map[string]kafka.BatchResult[[]kafka.TopicConfig], error) {
+	out := make(map[string]kafka.BatchResult[[]kafka.TopicConfig], len(names))
 	for _, t := range names {
-		out[t] = f.configs[t]
+		if err, ok := f.configErrs[t]; ok {
+			out[t] = kafka.BatchResult[[]kafka.TopicConfig]{Err: err}
+			continue
+		}
+		out[t] = kafka.BatchResult[[]kafka.TopicConfig]{Value: f.configs[t]}
 	}
 	return out, nil
+}
+
+func (f *fakeService) RegisterDenials(ds []kafka.Denial) []kafka.Denial {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.denials == nil {
+		f.denials = make(map[kafka.Denial]struct{})
+	}
+	fresh := make([]kafka.Denial, 0, len(ds))
+	for _, d := range ds {
+		if _, seen := f.denials[d]; seen {
+			continue
+		}
+		f.denials[d] = struct{}{}
+		fresh = append(fresh, d)
+	}
+	return fresh
 }
 
 func (f *fakeService) TopicPartitions(_ context.Context, topic string) ([]kafka.PartitionDetail, error) {

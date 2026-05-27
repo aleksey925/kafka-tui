@@ -329,6 +329,41 @@ How to apply: any goroutine or background command that calls the network
 or sleeps for a tick — stamp it or scope it. No exceptions for "this
 fetch is fast enough to not race".
 
+### Per-topic batch failures: typed marker + session dedup
+
+Batch RPCs (configs, sizes, watermarks) routinely return mixed
+per-topic outcomes — one topic denied by ACL, the rest fine. The
+screen surfaces denied cells with a distinct marker (`⊘`) rather than
+the generic `—` ("no data"), and aggregates per-tick into one
+warn-toast per RPC group listing the affected topics (clipped after a
+few when many).
+
+Dedup of those toasts is **session-scoped**: the cache lives on the
+kafka client, not the screen. Screens get re-instantiated on
+navigation; a screen-scoped cache would re-fire the same denial every
+time the user returned. The cache resets only when the connection
+itself is rebuilt.
+
+Why: per-topic ACL is an operator state, not an outage. Without the
+typed marker the user can't tell denied from missing; without
+client-scoped dedup every refresh tick re-spams the same warning. The
+combination keeps the flash bar useful (per § Auto-refresh: quiet by
+default).
+
+Deviation: the kadm library short-circuits its sharded response on
+the first auth-denied entry, losing per-topic data for topics it
+never got to process. We attribute the wrapped auth error to every
+topic missing from the partial response. In uniform-deny this is
+correct; in rare heterogeneous-ACL cases a few allowed topics may
+temporarily show the marker until the connection rebuilds. Accepted
+— without the attribution the user gets no signal at all in the
+uniform-deny case.
+
+How to apply: any new batch RPC surfacing per-topic data returns
+per-topic results carrying value-or-error, not a flat success map +
+top-level error. The client's denial-dedup method is the single hook
+for emitting new-denial warnings.
+
 ### Placeholder pipeline
 
 *Applies the single-source rule above: one pipeline resolves placeholders in

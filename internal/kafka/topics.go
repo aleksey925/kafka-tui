@@ -319,43 +319,57 @@ func (c *Client) TopicWatermarks(ctx context.Context, topic string) (TopicWaterm
 	if err != nil {
 		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks: %w", err)
 	}
-	w, ok := all[topic]
+	r, ok := all[topic]
 	if !ok {
 		return TopicWatermarks{Partitions: map[int32]PartitionWatermarks{}}, nil
 	}
-	return w, nil
+	if r.Err != nil {
+		return TopicWatermarks{}, fmt.Errorf("kafka: watermarks: %w", r.Err)
+	}
+	return r.Value, nil
 }
 
-// TopicWatermarksBatch fetches per-partition low/high watermarks for many
-// topics in two RPCs (ListStartOffsets, ListEndOffsets). Topics with
-// per-topic broker errors are silently dropped from the result map. An
-// empty topics list returns an empty map without contacting the broker.
-func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]TopicWatermarks, error) {
-	out := make(map[string]TopicWatermarks, len(topics))
+// TopicWatermarksBatch fetches per-partition low/high watermarks for
+// many topics in two RPCs (ListStartOffsets, ListEndOffsets). A topic
+// with at least one successful partition returns the partial Value
+// with Err == nil; otherwise the per-topic Err carries the failure.
+// Empty topics returns an empty map without contacting the broker.
+func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]BatchResult[TopicWatermarks], error) {
+	out := make(map[string]BatchResult[TopicWatermarks], len(topics))
 	if len(topics) == 0 {
 		return out, nil
 	}
-	starts, err := c.adm.ListStartOffsets(ctx, topics...)
-	if err != nil {
-		return nil, fmt.Errorf("kafka: list start offsets: %w", err)
+	starts, sErr := c.adm.ListStartOffsets(ctx, topics...)
+	deniedStart, isAuthStart := UnwrapKadmAuthErr(sErr)
+	if sErr != nil && !isAuthStart {
+		return nil, fmt.Errorf("kafka: list start offsets: %w", sErr)
 	}
-	ends, err := c.adm.ListEndOffsets(ctx, topics...)
-	if err != nil {
-		return nil, fmt.Errorf("kafka: list end offsets: %w", err)
+	ends, eErr := c.adm.ListEndOffsets(ctx, topics...)
+	deniedEnd, isAuthEnd := UnwrapKadmAuthErr(eErr)
+	if eErr != nil && !isAuthEnd {
+		return nil, fmt.Errorf("kafka: list end offsets: %w", eErr)
+	}
+	denied := deniedEnd
+	if denied == nil {
+		denied = deniedStart
 	}
 	for _, t := range topics {
 		startMap := starts[t]
 		endMap := ends[t]
-		if len(endMap) == 0 {
-			continue
-		}
-		w := TopicWatermarks{Partitions: make(map[int32]PartitionWatermarks, len(endMap))}
+		w := TopicWatermarks{Partitions: make(map[int32]PartitionWatermarks)}
+		var firstPartErr error
 		for p, e := range endMap {
 			if e.Err != nil {
+				if firstPartErr == nil {
+					firstPartErr = e.Err
+				}
 				continue
 			}
 			s, ok := startMap[p]
 			if !ok || s.Err != nil {
+				if firstPartErr == nil && ok {
+					firstPartErr = s.Err
+				}
 				continue
 			}
 			pw := PartitionWatermarks{Low: s.Offset, High: e.Offset}
@@ -364,15 +378,28 @@ func (c *Client) TopicWatermarksBatch(ctx context.Context, topics ...string) (ma
 				w.MessageCount += pw.High - pw.Low
 			}
 		}
-		out[t] = w
+		if len(w.Partitions) == 0 {
+			if firstPartErr != nil {
+				out[t] = BatchResult[TopicWatermarks]{Err: firstPartErr}
+				continue
+			}
+			if denied != nil {
+				out[t] = BatchResult[TopicWatermarks]{Err: denied}
+				continue
+			}
+		}
+		out[t] = BatchResult[TopicWatermarks]{Value: w}
 	}
 	return out, nil
 }
 
 // TopicSizesBatch returns total on-disk size (bytes) per topic via one
-// Metadata RPC plus one DescribeAllLogDirs covering every (topic, partition).
-func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error) {
-	out := make(map[string]int64, len(topics))
+// Metadata RPC plus one DescribeAllLogDirs. Metadata-level and
+// log-dir-level failures both flow through per-topic [BatchResult.Err]
+// so the caller can render a denial marker; topics neither measured
+// nor errored are absent from the map.
+func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[string]BatchResult[int64], error) {
+	out := make(map[string]BatchResult[int64], len(topics))
 	if len(topics) == 0 {
 		return out, nil
 	}
@@ -383,7 +410,12 @@ func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[str
 	set := kadm.TopicsSet{}
 	for _, t := range topics {
 		td, ok := md.Topics[t]
-		if !ok || td.Err != nil {
+		if !ok {
+			out[t] = BatchResult[int64]{Err: ErrTopicNotFound}
+			continue
+		}
+		if td.Err != nil {
+			out[t] = BatchResult[int64]{Err: td.Err}
 			continue
 		}
 		for p := range td.Partitions {
@@ -394,41 +426,78 @@ func (c *Client) TopicSizesBatch(ctx context.Context, topics ...string) (map[str
 		return out, nil
 	}
 	dirs, err := c.adm.DescribeAllLogDirs(ctx, set)
-	if err != nil {
+	denied, isAuth := UnwrapKadmAuthErr(err)
+	if err != nil && !isAuth {
 		return nil, fmt.Errorf("kafka: describe log dirs: %w", err)
 	}
+	sizes, firstDirErr := aggregateLogDirs(dirs, set)
+	for t := range set {
+		if _, ok := sizes[t]; ok {
+			out[t] = BatchResult[int64]{Value: sizes[t]}
+			continue
+		}
+		if err, ok := firstDirErr[t]; ok {
+			out[t] = BatchResult[int64]{Err: err}
+			continue
+		}
+		if denied != nil {
+			out[t] = BatchResult[int64]{Err: denied}
+			continue
+		}
+		// no contribution and no error — leave absent so the UI renders
+		// "—" ("unknown"), not "0 B" ("measured zero").
+	}
+	return out, nil
+}
+
+// aggregateLogDirs sums broker contributions per topic and records the
+// first broker-level error each topic may have been affected by. The
+// broker error attributes to every requested topic — the response
+// shape can't tell us which topics that broker hosted — so the caller
+// must prefer real data over the recorded error when both exist.
+func aggregateLogDirs(dirs kadm.DescribedAllLogDirs, set kadm.TopicsSet) (sizes map[string]int64, firstDirErr map[string]error) {
+	sizes = make(map[string]int64, len(set))
+	firstDirErr = make(map[string]error, len(set))
 	for _, perBroker := range dirs {
 		for _, dir := range perBroker {
 			if dir.Err != nil {
+				for topic := range set {
+					if _, seen := firstDirErr[topic]; !seen {
+						firstDirErr[topic] = dir.Err
+					}
+				}
 				continue
 			}
 			for topic, parts := range dir.Topics {
 				for _, p := range parts {
 					if p.Size > 0 {
-						out[topic] += p.Size
+						sizes[topic] += p.Size
 					}
 				}
 			}
 		}
 	}
-	return out, nil
+	return sizes, firstDirErr
 }
 
-// DescribeTopicConfigsBatch fetches the UI-relevant configs for many topics
-// in a single RPC. Per-topic errors inside the batch response (e.g. ACL
-// denied for one topic only) are silently dropped.
-func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]TopicConfig, error) {
-	out := make(map[string][]TopicConfig, len(topics))
+// DescribeTopicConfigsBatch fetches the UI-relevant configs for many
+// topics in a single RPC. Per-topic failures (typically ACL) flow
+// through [BatchResult.Err]; successes carry the picked config slice
+// in Value.
+func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string]BatchResult[[]TopicConfig], error) {
+	out := make(map[string]BatchResult[[]TopicConfig], len(topics))
 	if len(topics) == 0 {
 		return out, nil
 	}
 	rs, err := c.adm.DescribeTopicConfigs(ctx, topics...)
-	if err != nil {
+	denied, isAuth := UnwrapKadmAuthErr(err)
+	if err != nil && !isAuth {
 		return nil, fmt.Errorf("kafka: describe configs: %w", err)
 	}
 	wanted := []string{ConfigCleanupPolicy, ConfigRetentionMs, ConfigMinInSyncReplica}
 	for _, r := range rs {
 		if r.Err != nil {
+			out[r.Name] = BatchResult[[]TopicConfig]{Err: r.Err}
 			continue
 		}
 		byName := make(map[string]kadm.Config, len(r.Configs))
@@ -447,7 +516,14 @@ func (c *Client) DescribeTopicConfigsBatch(ctx context.Context, topics ...string
 				Source: cfg.Source.String(),
 			})
 		}
-		out[r.Name] = picked
+		out[r.Name] = BatchResult[[]TopicConfig]{Value: picked}
+	}
+	if denied != nil {
+		for _, t := range topics {
+			if _, ok := out[t]; !ok {
+				out[t] = BatchResult[[]TopicConfig]{Err: denied}
+			}
+		}
 	}
 	return out, nil
 }
