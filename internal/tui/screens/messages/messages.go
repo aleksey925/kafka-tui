@@ -17,6 +17,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -153,16 +154,12 @@ type Model struct {
 	// during the dial window before the session attaches.
 	live bool
 
-	// lifeCtx scopes the FOLLOW session only; see "Async lifecycle" in
-	// CLAUDE.md for which paths use ctx vs. [fetchGen].
-	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
-	lifeCancel context.CancelFunc
+	track *lifecycle.Tracker
 
 	seek SeekState
 	// captured edges of the active seek window so `[` / `]` can clamp.
 	fromBoundary map[int32]int64
 	toBoundary   map[int32]int64
-	fetchGen     uint64
 
 	// spinnerFrame advances on LiveTickMsg so the LIVE label always
 	// shows movement on quiet topics.
@@ -216,28 +213,26 @@ func New(opts Options) *Model {
 	}
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
-	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	return &Model{
-		svc:        opts.Service,
-		topic:      opts.Topic,
-		cluster:    opts.Cluster,
-		readOnly:   opts.ReadOnly,
-		repo:       opts.ViewState,
-		columns:    cols,
-		pageSize:   pageSize,
-		clipboard:  opts.Clipboard,
-		writer:     opts.FileWriter,
-		pager:      opts.Pager,
-		outputDir:  opts.OutputDir,
-		table:      tbl,
-		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:        now,
-		styles:     styles,
-		wrap:       true,
-		seek:       SeekState{Mode: SeekLatest},
-		lifeCtx:    lifeCtx,
-		lifeCancel: lifeCancel,
-		copyMenu:   NewCopyMenu(opts.Clipboard, styles),
+		svc:       opts.Service,
+		topic:     opts.Topic,
+		cluster:   opts.Cluster,
+		readOnly:  opts.ReadOnly,
+		repo:      opts.ViewState,
+		columns:   cols,
+		pageSize:  pageSize,
+		clipboard: opts.Clipboard,
+		writer:    opts.FileWriter,
+		pager:     opts.Pager,
+		outputDir: opts.OutputDir,
+		table:     tbl,
+		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:       now,
+		styles:    styles,
+		wrap:      true,
+		seek:      SeekState{Mode: SeekLatest},
+		track:     lifecycle.New(),
+		copyMenu:  NewCopyMenu(opts.Clipboard, styles),
 	}
 }
 
@@ -338,7 +333,7 @@ func (m *Model) SeekState() SeekState { return m.seek }
 
 // FetchGen is exported so tests can forge race-protected messages with
 // the right Gen so the handler accepts them.
-func (m *Model) FetchGen() uint64 { return m.fetchGen }
+func (m *Model) FetchGen() uint64 { return m.track.Gen() }
 
 func (m *Model) PartitionFilter() []int32 {
 	out := make([]int32, len(m.filter))
@@ -558,11 +553,11 @@ func (m *Model) handleAsync(msg tea.Msg) tea.Cmd {
 	case FollowStartedMsg:
 		return m.handleFollowStarted(msg)
 	case LiveTickMsg:
-		if !m.live || msg.Gen != m.fetchGen {
+		if !m.live || !m.track.Validate(msg.Gen) {
 			return nil
 		}
 		m.spinnerFrame++
-		return liveTickCmd(m.fetchGen)
+		return liveTickCmd(m.track.Gen())
 	case FollowChunkMsg:
 		m.handleFollowChunk(msg)
 		if msg.Closed {
@@ -743,7 +738,7 @@ func (m *Model) cursorIndex() (int, bool) {
 }
 
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.loading = false
@@ -767,7 +762,7 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 }
 
 func (m *Model) handleAppended(msg MessagesAppendedMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.loading = false
@@ -788,7 +783,7 @@ func (m *Model) handleAppended(msg MessagesAppendedMsg) {
 }
 
 func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	if len(msg.Messages) > 0 {
@@ -809,7 +804,7 @@ func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 const liveBufferCap = 1000
 
 func (m *Model) handleFollowErr(msg FollowErrMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.toasts.Push(components.ToastError, "follow: "+msg.Err.Error())
@@ -831,7 +826,7 @@ func startFollowCmd(ctx context.Context, svc Service, topic string, parts []int3
 }
 
 func (m *Model) handleFollowStarted(msg FollowStartedMsg) tea.Cmd {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		if msg.Session != nil {
 			msg.Session.Close()
 		}
@@ -859,7 +854,7 @@ func (m *Model) stopFollow() {
 		m.follow = nil
 	}
 	m.live = false
-	m.fetchGen++
+	m.track.Bump()
 	// every load-context switch goes through stopFollow first, so clearing
 	// here prevents a stale `r` flag (whose response never arrived) from
 	// leaking a misleading "refreshed" toast onto a later dispatchSeek.
@@ -869,9 +864,7 @@ func (m *Model) stopFollow() {
 
 func (m *Model) Close() {
 	m.stopFollow()
-	if m.lifeCancel != nil {
-		m.lifeCancel()
-	}
+	m.track.Close()
 }
 
 func (m *Model) followPollCmd() tea.Cmd {
@@ -879,7 +872,7 @@ func (m *Model) followPollCmd() tea.Cmd {
 		return nil
 	}
 	sess := m.follow
-	gen := m.fetchGen
+	gen := m.track.Gen()
 	return func() tea.Msg {
 		select {
 		case msg, ok := <-sess.Messages:
@@ -928,7 +921,7 @@ func (m *Model) loadEarlier() tea.Cmd {
 	}
 	baseline := lowestOffsets(m.messages)
 	m.loading = true
-	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
+	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.track.Gen())
 }
 
 func (m *Model) loadLater() tea.Cmd {
@@ -949,7 +942,7 @@ func (m *Model) loadLater() tea.Cmd {
 	}
 	baseline := highestOffsets(m.messages)
 	m.loading = true
-	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
+	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.track.Gen())
 }
 
 // partitionsFromBaseline restricts paging to partitions the user has
@@ -992,8 +985,7 @@ func (m *Model) refresh() tea.Cmd {
 // dispatchSeek clears the table so stale records don't linger during the
 // new fetch, then dispatches the command for the active seek state.
 func (m *Model) dispatchSeek() tea.Cmd {
-	m.fetchGen++
-	gen := m.fetchGen
+	ctx, gen := m.track.Dispatch()
 	m.messages = nil
 	m.refreshTable()
 	switch m.seek.Mode {
@@ -1016,7 +1008,7 @@ func (m *Model) dispatchSeek() tea.Cmd {
 		// kafbat-ui / AKHQ / kafka-console-consumer semantics.
 		m.live = true
 		return tea.Batch(
-			startFollowCmd(m.lifeCtx, m.svc, m.topic, m.filter, gen),
+			startFollowCmd(ctx, m.svc, m.topic, m.filter, gen),
 			liveTickCmd(gen),
 		)
 	}
@@ -1564,9 +1556,10 @@ func maxInt(a, b int) int {
 
 // ----- Messages -----
 
-// MessagesLoadedMsg replaces the current window. Gen pins the message to
-// the [Model.fetchGen] at dispatch time so handlers drop stale arrivals.
-// SetBoundary flips the handler from "keep existing edges" to "replace".
+// MessagesLoadedMsg replaces the current window. Gen pins the message
+// to the dispatch-time generation so handlers drop stale arrivals via
+// [lifecycle.Tracker.Validate]. SetBoundary flips the handler from
+// "keep existing edges" to "replace".
 type MessagesLoadedMsg struct {
 	Messages     []kafka.Message
 	FromBoundary map[int32]int64

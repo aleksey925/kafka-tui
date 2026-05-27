@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
 )
 
@@ -166,11 +167,10 @@ func TestDetail_StaleLoadForPreviousGroupIsDropped(t *testing.T) {
 	require.Equal(t, "Empty", d.Description().State)
 
 	// act — forge a late g1 result whose Gen matches d's live counter, so
-	// only the Group mismatch can save us.
+	// only the Identity mismatch can save us.
 	m.Update(groups.DetailLoadedMsg{
-		Group:       "g1",
+		Tag:         lifecycle.NewTag(d.LoadGen(), "g1"),
 		Description: kafka.GroupDescription{Group: "g1", State: "Stable", ProtocolType: "consumer"},
-		Gen:         d.LoadGen(),
 	})
 
 	// assert — g2's state must not have been overwritten with g1's data.

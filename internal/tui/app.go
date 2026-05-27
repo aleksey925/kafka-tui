@@ -97,9 +97,10 @@ type Model struct {
 	// lastConfigKey restores the configs screen cursor after the user
 	// returns from the edit screen.
 	lastConfigKey string
-	// lastFilters preserves each screen's `/` filter across re-instantiation
-	// (push, pop, replace). Cleared on cluster switch — see connectCluster.
-	lastFilters map[ScreenID]string
+	// sessionState holds each screen's Stateful snapshot across
+	// re-instantiation (push, pop, replace). Cleared on cluster switch —
+	// see connectCluster.
+	sessionState map[ScreenID]any
 
 	// flashSeenAt tracks the CreatedAt of the last promoted toast so an
 	// older or repeated push isn't re-shown.
@@ -127,7 +128,7 @@ func New(opts Options) *Model {
 		mode:                ModeNormal,
 		searchHistories:     make(map[ScreenID]*filterhistory.History),
 		searchSuggestionIdx: -1,
-		lastFilters:         make(map[ScreenID]string),
+		sessionState:        make(map[ScreenID]any),
 		header: layout.HeaderInfo{
 			Cluster:      opts.Cluster,
 			ClusterColor: opts.ClusterColor,

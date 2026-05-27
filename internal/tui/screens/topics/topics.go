@@ -16,6 +16,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -119,18 +120,12 @@ type Model struct {
 	loading       bool
 	refresher     components.Refresher
 
-	// listGen bumps on every list reload so a slow batch (watermarks,
-	// sizes, configs) from a superseded refresh cannot overwrite fresher
-	// data — fast `r` re-presses or filter-driven reloads otherwise race.
-	listGen uint64
-
 	refreshIntervals components.RefreshIntervalRepository
 	refreshPicker    *components.RefreshPicker
 
 	action Action
 
-	lifeCtx    context.Context
-	lifeCancel context.CancelFunc
+	track *lifecycle.Tracker
 
 	now    func() time.Time
 	styles theme.Styles
@@ -160,8 +155,6 @@ func New(opts Options) *Model {
 
 	interval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenID, defaultRefreshInterval)
 
-	lifeCtx, lifeCancel := context.WithCancel(context.Background())
-
 	return &Model{
 		svc:              opts.Service,
 		readOnly:         opts.ReadOnly,
@@ -177,8 +170,7 @@ func New(opts Options) *Model {
 		styles:           styles,
 		refresher:        components.NewRefresher(interval, now),
 		refreshIntervals: opts.RefreshIntervals,
-		lifeCtx:          lifeCtx,
-		lifeCancel:       lifeCancel,
+		track:            lifecycle.New(),
 	}
 }
 
@@ -590,10 +582,7 @@ func (m *Model) actCreateEsc(key tea.KeyPressMsg) tea.Cmd {
 // screens so an in-flight clone goroutine doesn't keep its kgo.Client
 // pinned until the outer context times out. Safe when nothing is in flight.
 func (m *Model) Close() {
-	if m.lifeCancel != nil {
-		m.lifeCancel()
-		m.lifeCancel = nil
-	}
+	m.track.Close()
 	if m.cloneCxl != nil {
 		m.cloneCxl()
 		m.cloneCxl = nil
@@ -633,7 +622,7 @@ func (m *Model) PendingTopic() string {
 func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
 func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
-	if msg.Gen != m.listGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.loading = false
@@ -771,8 +760,8 @@ func (m *Model) View() string {
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	m.listGen++
-	return loadCmd(m.svc, m.lifeCtx, m.listGen)
+	ctx, gen := m.track.Dispatch()
+	return loadCmd(m.svc, ctx, gen)
 }
 
 // AutoRefreshTick emits a tick for the configured refresh interval. Hosts
@@ -804,7 +793,8 @@ type TopicsLoadedMsg struct {
 	// Per-topic errors inside an otherwise-successful batch are dropped.
 	Warnings []string
 	Err      error
-	// Gen pins the result to [Model.listGen] at dispatch time.
+	// Gen pins the result to the dispatch-time generation; the handler
+	// drops mismatches via [lifecycle.Tracker.Validate].
 	Gen uint64
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -109,11 +110,7 @@ type Model struct {
 	width, height int
 	loading       bool
 
-	// listGen bumps on every list reload so late results (groups + their
-	// fan-out lag fetches) from a superseded refresh are dropped. Critical
-	// for fast re-presses of `r` and for filter changes while a slow lag
-	// fetch is still in flight.
-	listGen uint64
+	track *lifecycle.Tracker
 
 	action Action
 	now    func() time.Time
@@ -153,6 +150,7 @@ func New(opts Options) *Model {
 		listRefresher:    components.NewRefresher(listInterval, now),
 		detailRefresher:  components.NewRefresher(detailInterval, now),
 		refreshIntervals: opts.RefreshIntervals,
+		track:            lifecycle.New(),
 		now:              now,
 		styles:           styles,
 	}
@@ -173,8 +171,8 @@ func listColumns() []components.Column {
 // auto-refresh tick — the recurring chain only sustains itself once started.
 func (m *Model) Init() tea.Cmd {
 	m.loading = true
-	m.listGen++
-	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic, m.listGen), m.AutoRefreshTick())
+	gen := m.track.Bump()
+	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic, gen), m.AutoRefreshTick())
 }
 
 func (m *Model) Action() Action { return m.action }
@@ -594,7 +592,7 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) tea.Cmd {
-	if msg.Gen != m.listGen {
+	if !m.track.Validate(msg.Gen) {
 		return nil
 	}
 	m.loading = false
@@ -637,7 +635,7 @@ func (m *Model) pruneLagCache() {
 }
 
 func (m *Model) handleLagsLoaded(msg GroupLagsLoadedMsg) {
-	if msg.Gen != m.listGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	if msg.Err != nil {
@@ -703,8 +701,8 @@ func (m *Model) DetailRefreshTick() tea.Cmd { return m.detailRefresher.Tick(Deta
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	m.listGen++
-	return loadGroupsCmd(m.svc, m.filterTopic, m.listGen)
+	gen := m.track.Bump()
+	return loadGroupsCmd(m.svc, m.filterTopic, gen)
 }
 
 func (m *Model) refreshTable() {
@@ -761,7 +759,7 @@ func (m *Model) FetchLagsForVisible() tea.Cmd {
 	if len(m.groups) == 0 {
 		return nil
 	}
-	gen := m.listGen
+	gen := m.track.Gen()
 	cmds := make([]tea.Cmd, 0, len(m.groups))
 	for _, g := range m.groups {
 		cmds = append(cmds, loadLagCmd(m.svc, g.Group, gen))
@@ -851,7 +849,8 @@ func (m *Model) persistRefreshInterval(screenID string, d time.Duration) {
 type GroupsLoadedMsg struct {
 	Groups []kafka.GroupListInfo
 	Err    error
-	// Gen pins the result to the [Model.listGen] at dispatch time.
+	// Gen pins the result to the dispatch-time generation; the handler
+	// drops mismatches via [lifecycle.Tracker.Validate].
 	Gen uint64
 }
 

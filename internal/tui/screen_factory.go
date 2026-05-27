@@ -38,7 +38,7 @@ func (m *Model) instantiate(id ScreenID) {
 		m.navTopic = m.lastTopic
 	}
 	defer m.clearNavSeeds()
-	defer m.restoreFilter(id)
+	defer m.restoreState(id)
 	switch id {
 	case ScreenClusters:
 		m.active = m.newClusters()
@@ -83,19 +83,19 @@ func (m *Model) clearNavSeeds() {
 	m.navConfigValue = ""
 }
 
-// restoreFilter re-applies the `/` filter captured by closeActive on the
-// previous instance of this screen. No-op when the screen failed to
-// construct (m.active == nil), when no filter was saved, or when the
-// screen doesn't implement Searchable.
-func (m *Model) restoreFilter(id ScreenID) {
+// restoreState re-applies the Stateful snapshot captured by closeActive
+// on the previous instance of this screen. No-op when the screen failed
+// to construct, when no state was saved, or when the screen doesn't
+// implement Stateful.
+func (m *Model) restoreState(id ScreenID) {
 	if m.active == nil {
 		return
 	}
-	filter, ok := m.lastFilters[id]
-	if !ok || filter == "" {
+	blob, ok := m.sessionState[id]
+	if !ok {
 		return
 	}
-	setScreenSearch(m.active, filter)
+	screenRestore(m.active, blob)
 }
 
 func (m *Model) newClusters() *clusters.Model {

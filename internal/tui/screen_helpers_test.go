@@ -150,6 +150,58 @@ func TestScreenActiveFilter_RoundTripsSearchableState(t *testing.T) {
 	assert.Equal(t, "foo", screenActiveFilter(s))
 }
 
+// --- screenSnapshot / screenRestore defaults ---
+
+func TestScreenSnapshot_NoneForMinimalScreen(t *testing.T) {
+	_, ok := screenSnapshot(minimalScreen{})
+	assert.False(t, ok, "non-Stateful, non-Searchable screens have nothing to round-trip")
+}
+
+func TestScreenSnapshot_NoneForSearchableWithEmptyFilter(t *testing.T) {
+	_, ok := screenSnapshot(&alwaysSearchable{})
+	assert.False(t, ok, "empty filter must not pollute the session-state map")
+}
+
+func TestScreenSnapshotRestore_RoundTripsFilterForSearchableOnly(t *testing.T) {
+	src := &alwaysSearchable{filter: "ord"}
+	blob, ok := screenSnapshot(src)
+	assert.True(t, ok, "applied filter must be captured for Searchable screens")
+
+	dst := &alwaysSearchable{}
+	screenRestore(dst, blob)
+	assert.Equal(t, "ord", dst.filter, "filter must restore through the Searchable fallback")
+}
+
+func TestScreenRestore_IgnoresUnknownBlobOnMinimalScreen(t *testing.T) {
+	// the host never calls Restore on a screen for which it never called
+	// Snapshot, but defending against a stray blob keeps the helper safe.
+	screenRestore(minimalScreen{}, defaultFilterState{filter: "x"})
+}
+
+// statefulScreen takes precedence over the Searchable fallback when both
+// are implemented — Stateful is the opt-in for screens that need to
+// preserve more than just the filter.
+type statefulScreen struct {
+	alwaysSearchable
+	saved any
+}
+
+func (s *statefulScreen) Snapshot() any { return "from-stateful" }
+func (s *statefulScreen) Restore(b any) { s.saved = b }
+
+func TestScreenSnapshot_PrefersStatefulOverSearchableFallback(t *testing.T) {
+	s := &statefulScreen{alwaysSearchable: alwaysSearchable{filter: "ord"}}
+	blob, ok := screenSnapshot(s)
+	assert.True(t, ok)
+	assert.Equal(t, "from-stateful", blob, "Stateful must win — its Snapshot owns the contract")
+}
+
+func TestScreenRestore_RoutesToStatefulWhenImplemented(t *testing.T) {
+	s := &statefulScreen{}
+	screenRestore(s, "payload")
+	assert.Equal(t, "payload", s.saved, "Restore must call Stateful, not the filter fallback")
+}
+
 // --- screenHasOverlay ---
 
 func TestScreenHasOverlay_FalseForNonOverlayable(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -79,10 +80,7 @@ type DetailModel struct {
 	loadErr       string
 	manualRefresh bool
 	lastRefresh   time.Time
-	// loadGen bumps on every detail reload (Init / refresh tick / `r`) so a
-	// slow describe-group that returns after the user has navigated away
-	// or already triggered the next refresh is silently dropped.
-	loadGen uint64
+	track         *lifecycle.Tracker
 
 	action DetailAction
 	now    func() time.Time
@@ -105,6 +103,7 @@ func NewDetailModel(opts DetailOptions) *DetailModel {
 		topicsTable: components.NewTable(topicColumns(), components.WithStyles(styles)),
 		partsTable:  components.NewTable(partColumns(), components.WithStyles(styles)),
 		toasts:      components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		track:       lifecycle.New(),
 		now:         now,
 		styles:      styles,
 	}
@@ -131,14 +130,14 @@ func partColumns() []components.Column {
 
 func (d *DetailModel) Init() tea.Cmd {
 	d.loading = true
-	d.loadGen++
-	return loadDetailCmd(d.svc, d.group, d.loadGen)
+	gen := d.track.Bump()
+	return loadDetailCmd(d.svc, d.group, gen)
 }
 
 func (d *DetailModel) RefreshCmd() tea.Cmd {
 	d.loading = true
-	d.loadGen++
-	return loadDetailCmd(d.svc, d.group, d.loadGen)
+	gen := d.track.Bump()
+	return loadDetailCmd(d.svc, d.group, gen)
 }
 
 func (d *DetailModel) Group() string                       { return d.group }
@@ -146,7 +145,7 @@ func (d *DetailModel) Description() kafka.GroupDescription { return d.desc }
 
 // LoadGen exposes the current generation counter so tests can forge a
 // stale-but-Gen-matching [DetailLoadedMsg] without hard-coding values.
-func (d *DetailModel) LoadGen() uint64 { return d.loadGen }
+func (d *DetailModel) LoadGen() uint64 { return d.track.Gen() }
 func (d *DetailModel) Rows() []kafka.PartitionLag {
 	out := make([]kafka.PartitionLag, len(d.rows))
 	copy(out, d.rows)
@@ -445,7 +444,7 @@ func (d *DetailModel) syncPartitions() {
 
 // HandleLoaded merges fresh data; also called by the list-screen router.
 func (d *DetailModel) HandleLoaded(msg DetailLoadedMsg) {
-	if msg.Group != d.group || msg.Gen != d.loadGen {
+	if !msg.IsFor(d.track.Gen(), d.group) {
 		return
 	}
 	d.loading = false
@@ -662,37 +661,34 @@ func lagCell(v int64) string {
 // partitions) snapshot. TopicPartitions carries the full per-topic
 // partition list so topic-scope resets target every partition, not just
 // the ones with prior commits — see [DetailModel.ResetScope].
+//
+// The embedded [lifecycle.Tag] carries the (gen, group-name) pair: gen
+// drops superseded refreshes within the same DetailModel; the group
+// name drops results meant for a previously-popped DetailModel whose
+// gen happens to collide with the new instance's fresh counter.
 type DetailLoadedMsg struct {
-	// Group is the requested group name. The handler discards messages
-	// whose Group does not match the live [DetailModel.group] — necessary
-	// because a fresh DetailModel for group Y starts loadGen at 0/1 and
-	// would otherwise accept a Gen=1 result still in flight from a
-	// previous DetailModel for group X.
-	Group           string
+	lifecycle.Tag
 	Description     kafka.GroupDescription
 	Rows            []kafka.PartitionLag
 	TopicPartitions map[string][]int32
 	Err             error
-	// Gen pins the result to [DetailModel.loadGen] at dispatch time so
-	// late results from a superseded refresh within the same DetailModel
-	// are dropped.
-	Gen uint64
 }
 
 func loadDetailCmd(svc Service, group string, gen uint64) tea.Cmd {
+	tag := lifecycle.NewTag(gen, group)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		desc, err := svc.DescribeConsumerGroup(ctx, group)
 		if err != nil {
-			return DetailLoadedMsg{Group: group, Err: err, Gen: gen}
+			return DetailLoadedMsg{Tag: tag, Err: err}
 		}
 		rows, err := svc.GroupOffsets(ctx, group)
 		if err != nil {
-			return DetailLoadedMsg{Group: group, Description: desc, Err: err, Gen: gen}
+			return DetailLoadedMsg{Tag: tag, Description: desc, Err: err}
 		}
 		parts, _ := svc.TopicsPartitions(ctx, uniqueTopicsFromRows(rows)...)
-		return DetailLoadedMsg{Group: group, Description: desc, Rows: rows, TopicPartitions: parts, Gen: gen}
+		return DetailLoadedMsg{Tag: tag, Description: desc, Rows: rows, TopicPartitions: parts}
 	}
 }
 
