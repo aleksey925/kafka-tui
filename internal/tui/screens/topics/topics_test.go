@@ -321,7 +321,10 @@ func TestN_OpensCreateForm(t *testing.T) {
 	assert.Equal(t, topics.ModeCreate, m.CurrentMode())
 	out := m.View()
 	assert.Contains(t, out, "New topic")
-	assert.Contains(t, out, "s create")
+	// "create" is the save-verb label in the create-form hint footer
+	// and appears nowhere else in the form output, so this assertion
+	// pins that the footer is rendered.
+	assert.Contains(t, out, "create")
 }
 
 func TestCreateForm_EscReturnsToList(t *testing.T) {

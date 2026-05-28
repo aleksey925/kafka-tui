@@ -89,8 +89,10 @@ func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 // are the body-area dimensions to center within; pass 0 for either axis
 // to skip placement on that axis.
 func (c *Confirm) View(width, height int) string {
-	hint := c.styles.HintKey.Render(c.YesKey) + c.styles.HintLabel.Render(" yes  ") +
-		c.styles.HintKey.Render(c.NoKey) + c.styles.HintLabel.Render(" no")
+	hint := HintLine(c.styles,
+		Hint{Key: c.YesKey, Label: "yes"},
+		Hint{Key: c.NoKey, Label: "no"},
+	)
 
 	body := []string{}
 	if c.Title != "" {

@@ -418,7 +418,13 @@ func (m *Model) renderPartitionsPopup() string {
 		inputErr = "    " + m.styles.StatusWarn.Render("none of the listed partitions exist in this topic")
 	}
 
-	hint := m.styles.HintLabel.Render("tab switch   space toggle   a all/none   enter apply   esc back")
+	hint := components.HintLine(m.styles,
+		components.Hint{Key: "tab", Label: "switch"},
+		components.Hint{Key: "space", Label: "toggle"},
+		components.Hint{Key: "a", Label: "all/none"},
+		components.Hint{Key: "enter", Label: "apply"},
+		components.Hint{Key: "esc", Label: "back"},
+	)
 
 	parts := []string{
 		title,

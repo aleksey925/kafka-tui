@@ -182,7 +182,9 @@ func (m *Model) renderCloningOverlay() string {
 		formatThousands(m.progress.Copied),
 		formatThousands(m.progress.Total),
 	)
-	hint := m.styles.HintLabel.Render("esc — return to list (clone continues in background)")
+	hint := components.HintLine(m.styles,
+		components.Hint{Key: "esc", Label: "return to list (clone continues in background)"},
+	)
 	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
 }
 

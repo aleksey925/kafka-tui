@@ -578,7 +578,11 @@ func (r *ResetModel) renderPreviewStep() string {
 	if r.step == StepDone {
 		parts = append(parts, "", r.styles.StatusInfo.Render("commit applied"))
 	} else {
-		parts = append(parts, "", r.styles.HintLabel.Render("y commit  n/esc cancel  j/k scroll"))
+		parts = append(parts, "", components.HintLine(r.styles,
+			components.Hint{Key: "y", Label: "commit"},
+			components.Hint{Key: "n/esc", Label: "cancel"},
+			components.Hint{Key: "j/k", Label: "scroll"},
+		))
 	}
 	return strings.Join(parts, "\n")
 }

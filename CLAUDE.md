@@ -35,7 +35,8 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Handing the terminal off** (one handoff path for full-screen subprocesses),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
-toasts), **Tab navigation** (one paired contract for forward/backward).
+toasts), **Tab navigation** (one paired contract for forward/backward),
+**Inline hint footer** (one renderer for every `<key> <label>` hint surface).
 
 ### Text input
 
@@ -247,6 +248,31 @@ or data-loss → confirm modal with minimum identifying context;
 reversible → direct NORMAL shortcut. The confirm primitive is
 existing; multi-variant cases extend it by adding a letter, not by
 swapping in the picker menu.
+
+### Inline hint footer
+
+*Applies the single-source rule above: every `<key> <label>` hint
+surface in the app — modal overlays, form footers, popup bodies —
+routes through one renderer.*
+
+Each entry renders the key in the accent style and the label in the
+muted style, separated by two spaces. A key token may be single (`y`,
+`esc`) or a slash-joined alternative (`n/esc`, `tab/shift+tab`) — the
+whole token is one accent-styled chunk so alternatives read as one
+shortcut, matching the global hint-bar convention. A bare label (no
+key) renders as a descriptive prefix used for section markers
+("readline:", "type to edit", "on headers:") that aren't bound to a
+keystroke.
+
+Why: the "active keys are highlighted" affordance from the destructive
+confirm modal (§ Confirm for destructive actions) only works if every
+other hint surface follows the same key/label split. Otherwise keys
+visually blend into descriptive prose and users can't tell at a glance
+what they can press — the affordance is uniform or it's nothing.
+
+How to apply: never embed a key name inside a label string ("then s —
+save"); split it into a separate `<key, label>` entry. Two short
+labels are clearer than one that buries a key in prose.
 
 ### Toast / flash routing
 

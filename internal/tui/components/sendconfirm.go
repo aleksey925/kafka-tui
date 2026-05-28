@@ -94,9 +94,11 @@ func (c *SendConfirm) View(width, height int) string {
 	if c.Topic != "" {
 		body = append(body, c.styles.Command.Render("Topic:    "+c.Topic))
 	}
-	hint := c.styles.HintKey.Render("y") + c.styles.HintLabel.Render(" send  ") +
-		c.styles.HintKey.Render("k") + c.styles.HintLabel.Render(" send & keep  ") +
-		c.styles.HintKey.Render("esc") + c.styles.HintLabel.Render(" cancel")
+	hint := HintLine(c.styles,
+		Hint{Key: "y", Label: "send"},
+		Hint{Key: "k", Label: "send & keep"},
+		Hint{Key: "esc", Label: "cancel"},
+	)
 	body = append(body, "", lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, hint))
 
 	box := lipgloss.NewStyle().

@@ -884,16 +884,7 @@ func (m *Model) View() string {
 	if m.sendConfirm != nil {
 		return m.sendConfirm.View(m.width, m.height)
 	}
-	var hintText string
-	switch {
-	case m.mode == ModeInsert:
-		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  readline: ctrl+a/e ctrl+u/k ctrl+w  on headers: ctrl+n add row  ctrl+x remove row"
-	case m.fullscreen:
-		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  s send  ctrl+u clear  e $EDITOR  esc back to split"
-	default:
-		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  s send  ctrl+u clear form  e $EDITOR  esc cancel"
-	}
-	hint := m.styles.HintLabel.Render(hintText)
+	hint := components.HintLine(m.styles, m.hintEntries()...)
 
 	chromeAbove := 0
 	if m.err != "" {
@@ -942,6 +933,45 @@ var fieldLabel = map[string]string{
 	fieldKey:         "Key",
 	fieldHeaders:     "Headers",
 	fieldValue:       "Value",
+}
+
+func (m *Model) hintEntries() []components.Hint {
+	switch {
+	case m.mode == ModeInsert:
+		return []components.Hint{
+			{Label: "type to edit"},
+			{Key: "tab", Label: "next"},
+			{Key: "enter", Label: "commit/newline"},
+			{Key: "esc", Label: "back to NORMAL"},
+			{Label: "readline:"},
+			{Key: "ctrl+a/e"},
+			{Key: "ctrl+u/k"},
+			{Key: "ctrl+w"},
+			{Label: "on headers:"},
+			{Key: "ctrl+n", Label: "add row"},
+			{Key: "ctrl+x", Label: "remove row"},
+		}
+	case m.fullscreen:
+		return []components.Hint{
+			{Key: "tab/shift+tab", Label: "cycle field"},
+			{Key: "enter", Label: "edit"},
+			{Key: "+/_", Label: "exit fullscreen"},
+			{Key: "s", Label: "send"},
+			{Key: "ctrl+u", Label: "clear"},
+			{Key: "e", Label: "$EDITOR"},
+			{Key: "esc", Label: "back to split"},
+		}
+	default:
+		return []components.Hint{
+			{Key: "tab/shift+tab", Label: "navigate"},
+			{Key: "enter", Label: "edit"},
+			{Key: "+/_", Label: "fullscreen"},
+			{Key: "s", Label: "send"},
+			{Key: "ctrl+u", Label: "clear form"},
+			{Key: "e", Label: "$EDITOR"},
+			{Key: "esc", Label: "cancel"},
+		}
+	}
 }
 
 func (m *Model) renderFullscreen() string {

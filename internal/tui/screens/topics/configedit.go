@@ -401,7 +401,7 @@ func (m *ConfigEditModel) View() string {
 		parts = append(parts, "", wrap(m.entry.Doc, m.docWidth()))
 	}
 
-	parts = append(parts, "", m.styles.HintLabel.Render(m.hintLine()))
+	parts = append(parts, "", components.HintLine(m.styles, m.hintLine()...))
 
 	if m.saving {
 		parts = append(parts, m.styles.StatusInfo.Render("(saving…)"))
@@ -413,18 +413,31 @@ func (m *ConfigEditModel) docWidth() int {
 	return max(min(m.width-4, 100), 40)
 }
 
-// hintLine renders the bottom keybind hint. The edit form has a single
+// hintLine builds the bottom keybind hint. The edit form has a single
 // field, so the create/clone hint (which advertises tab/shift+tab/↑/↓
 // for inter-field navigation) would be misleading — tab/shift+tab are
 // no-ops here. We pick keys based on the field kind instead.
-func (m *ConfigEditModel) hintLine() string {
+func (m *ConfigEditModel) hintLine() []components.Hint {
 	if m.mode == FormInsert {
-		return "type to edit  enter/esc — confirm  esc to NORMAL then s — save"
+		return []components.Hint{
+			{Label: "type to edit"},
+			{Key: "enter/esc", Label: "to NORMAL"},
+			{Key: "s", Label: "save"},
+		}
 	}
 	if isPicker(m.form.FocusedField().Kind) {
-		return "←/→ — change  enter — pick from list  s — save  esc — cancel"
+		return []components.Hint{
+			{Key: "←/→", Label: "change"},
+			{Key: "enter", Label: "pick from list"},
+			{Key: "s", Label: "save"},
+			{Key: "esc", Label: "cancel"},
+		}
 	}
-	return "enter — edit  s — save  esc — cancel"
+	return []components.Hint{
+		{Key: "enter", Label: "edit"},
+		{Key: "s", Label: "save"},
+		{Key: "esc", Label: "cancel"},
+	}
 }
 
 // ConfigAlteredMsg reports the result of an AlterTopicConfig RPC.

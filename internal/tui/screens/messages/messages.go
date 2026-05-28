@@ -1184,7 +1184,7 @@ func (m *Model) handleSmartFilterKey(key tea.KeyPressMsg) tea.Cmd {
 func (m *Model) renderSmartFilter() string {
 	title := m.styles.HelpTitle.Render("smart filter")
 	body := m.styles.Command.Render(smartFilterDescription)
-	hint := m.styles.HintLabel.Render("esc close")
+	hint := components.HintLine(m.styles, components.Hint{Key: "esc", Label: "close"})
 	content := title + "\n\n" + body + "\n\n" + hint
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

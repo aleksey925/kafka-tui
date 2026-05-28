@@ -204,7 +204,10 @@ func (m *Model) renderSeekPopup() string {
 		return m.seekPopup.menu.View(0)
 	}
 	title := m.styles.HelpTitle.Render("seek · " + m.seekPopup.chosen.String())
-	hint := m.styles.HintLabel.Render("enter ok   esc back")
+	hint := components.HintLine(m.styles,
+		components.Hint{Key: "enter", Label: "ok"},
+		components.Hint{Key: "esc", Label: "back"},
+	)
 	body := title + "\n\n" + m.seekPopup.form.View() + "\n\n" + hint
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
