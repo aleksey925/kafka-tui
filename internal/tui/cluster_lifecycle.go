@@ -7,6 +7,7 @@ import (
 
 	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/logging"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
@@ -24,6 +25,7 @@ func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI, ins
 		InsecureTLS:  insecureTLS,
 		Context:      m.activeClusterContext(name),
 	}
+	logging.SetCluster(name)
 }
 
 // activeClusterContext derives the configuration-source label for the

@@ -86,7 +86,7 @@ func Init(opts Options) (*Logger, error) {
 		return nil, err
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	handler := NewHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 	logger := slog.New(handler)
 
 	return &Logger{Logger: logger, Writer: w, ResolvedAt: resolved}, nil
