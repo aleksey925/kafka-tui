@@ -410,16 +410,20 @@ func TestLoad_PlaceholderResolution_VaultErrorsWhenNoResolver(t *testing.T) {
 	)
 	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "clusters.yaml"), clustersYAML, 0o644))
 
-	// act — without a vault resolver, leftover ${vault:...} must fail loud
-	// so unresolved secrets cannot leak into runtime fields like SASL passwords.
-	_, err := config.Load(config.LoaderOptions{
+	// act — without a vault resolver, the leftover ${vault:...} must
+	// quarantine that cluster (not the whole app) so unresolved secrets
+	// cannot reach runtime fields like SASL passwords.
+	loaded, err := config.Load(config.LoaderOptions{
 		HomeDir:  homeDir,
 		StartDir: t.TempDir(),
 	})
 
 	// assert
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "${vault:kv/db#pw}")
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Clusters)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "prod", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "${vault:kv/db#pw}")
 }
 
 func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
@@ -454,7 +458,7 @@ func TestLoad_PlaceholderResolution_VaultRunsWhenResolverPresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, loaded.Clusters, 1)
 	require.NotNil(t, loaded.Clusters[0].SASL)
-	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password.Reveal())
 }
 
 func TestLoad_PlaceholderResolution_VaultBuilderNotInvokedWithoutPlaceholders(t *testing.T) {
@@ -570,7 +574,7 @@ func TestLoad_ResolveTargets_VaultBuilderReceivesMergedConfig(t *testing.T) {
 		"builder must observe the CLI override after env+file phase materialized it")
 	require.Len(t, loaded.Clusters, 1)
 	require.NotNil(t, loaded.Clusters[0].SASL)
-	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password.Reveal())
 }
 
 func TestLoad_ResolveTargets_ExtraTargetIsFrozenAcrossReloads(t *testing.T) {
@@ -634,4 +638,28 @@ func TestLoad_PlaceholderResolution_MissingEnv__loadError(t *testing.T) {
 	// assert
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "KT_LOAD_MISSING")
+}
+
+func TestIsLiteralCredential(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"whitespace only", "   \t\n", false},
+		{"plain literal", "hunter2", true},
+		{"env placeholder", "${env:VAR}", false},
+		{"env placeholder with default", "${env:VAR:-fallback}", false},
+		{"file placeholder", "${file:/run/secrets/p}", false},
+		{"vault placeholder", "${vault:secret/p#k}", false},
+		{"placeholder with leading space treated as literal start", " ${env:X}", false},
+		{"literal that happens to contain a $ later", "pre${env:X}", true},
+		{"single dollar is literal", "$abc", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, config.IsLiteralCredential(tc.value))
+		})
+	}
 }

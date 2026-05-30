@@ -42,6 +42,10 @@ func main() {
 		return
 	}
 
+	// must run before EnvFileResolvers — see CLAUDE.md § Credentials: storage and
+	// exposure warnings.
+	cliWarnings := cli.CredentialExposureWarnings(flags)
+
 	// resolve env/file in flags here for the --logs / --logs-dir paths
 	// which exit before Load runs. Load re-runs this pass (idempotent) plus
 	// the vault phase via ResolveTargets — see CLAUDE.md § Placeholder pipeline.
@@ -72,17 +76,16 @@ func main() {
 		return
 	}
 
-	if err := run(flags); err != nil {
+	if err := run(flags, cliWarnings); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 }
 
 // run is split out from main so deferred cleanup runs before any os.Exit.
-func run(flags *cli.Flags) error {
+func run(flags *cli.Flags, cliWarnings []string) error {
 	loaderOpts := config.LoaderOptions{
 		ConfigPath:     flags.ConfigPath,
-		CLIClusterName: flags.Inline.Name,
 		VaultBuilder:   vaultBuilderWithCLIOverride(flags),
 		ResolveTargets: []any{flags},
 	}
@@ -91,8 +94,12 @@ func run(flags *cli.Flags) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	logLevel := loaded.Config.Logging.Level
+	if flags.LogLevel != "" {
+		logLevel = flags.LogLevel
+	}
 	logger, err := logging.Init(logging.Options{
-		Level:     loaded.Config.Logging.Level,
+		Level:     logLevel,
 		File:      loaded.Config.Logging.File,
 		MaxSizeMB: loaded.Config.Logging.MaxSizeMB,
 		MaxFiles:  loaded.Config.Logging.MaxFiles,
@@ -129,10 +136,22 @@ func run(flags *cli.Flags) error {
 	}
 	clip := clipboard.New(clipboard.Options{Method: method})
 
+	autoSelect := flags.ClusterName
+	if autoSelect == "" {
+		autoSelect = cliClu
+	}
+	// see CLAUDE.md § Credentials: storage and exposure warnings — slog mirror is the
+	// safety net for the auto-skip path that bypasses clusters.Init.
+	startupWarnings := append([]string(nil), loaded.Warnings...)
+	startupWarnings = append(startupWarnings, cliWarnings...)
+	for _, w := range cliWarnings {
+		slog.Warn(w)
+	}
 	boot := &tui.Bootstrap{
 		Loaded:            loaded,
 		Clusters:          clusterList,
 		CLIName:           cliClu,
+		AutoSelectCluster: autoSelect,
 		GlobalPath:        globalPath,
 		ProjectPath:       projectPath,
 		LogPath:           logger.ResolvedAt,
@@ -143,7 +162,7 @@ func run(flags *cli.Flags) error {
 		RefreshIntervals:  refreshIntervals(store, logger.Logger),
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
-		StartupWarnings:   loaded.Warnings,
+		StartupWarnings:   startupWarnings,
 		ReadOnly:          flags.Inline.ReadOnly,
 		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
 			fresh, err := config.Load(loaderOpts)
@@ -178,9 +197,9 @@ func run(flags *cli.Flags) error {
 	return nil
 }
 
-// buildClusterList prepends the CLI inline cluster onto the loaded list. The
-// loader has already removed any same-named entry from clusters.yaml before
-// we get here, so a simple append is safe.
+// buildClusterList prepends the CLI inline cluster onto the loaded list.
+// The inline name is auto-generated with a "-cli" suffix (cli.Parse), so
+// it cannot collide with any YAML cluster name — append is safe.
 func buildClusterList(loaded []config.Cluster, inline cli.CLICluster) ([]config.Cluster, string) {
 	if !inline.HasInlineCluster() {
 		return loaded, ""
@@ -205,7 +224,7 @@ func cliInlineToCluster(inline cli.CLICluster) config.Cluster {
 		c.SASL = &config.SASLConfig{
 			Mechanism: inline.SASLMechanism,
 			Username:  inline.SASLUsername,
-			Password:  inline.SASLPassword,
+			Password:  config.Secret(inline.SASLPassword),
 		}
 	}
 	if inline.TLSEnabled || inline.TLSCAFile != "" || inline.TLSCertFile != "" || inline.TLSKeyFile != "" || inline.TLSSkipVerify {
@@ -280,11 +299,14 @@ func newVaultResolver(vc config.VaultConfig) (config.VaultResolver, error) {
 	if strings.Contains(vc.Address, "${vault:") {
 		return nil, errors.New("vault: vault.address cannot itself be a ${vault:...} placeholder")
 	}
-	if strings.Contains(vc.Token, "${vault:") {
+	// Reveal once at the API boundary, then reuse — keeps the escape
+	// from the redaction contract in a single grep-able spot.
+	token := vc.Token.Reveal()
+	if strings.Contains(token, "${vault:") {
 		return nil, errors.New("vault: vault.token cannot itself be a ${vault:...} placeholder")
 	}
 	//nolint:wrapcheck // vault.NewClient errors are already prefixed with "vault: ...".
-	return vault.NewClient(vault.Options{Address: vc.Address, Token: vc.Token})
+	return vault.NewClient(vault.Options{Address: vc.Address, Token: token})
 }
 
 // vaultBuilderWithCLIOverride returns a config.LoaderOptions.VaultBuilder
@@ -306,7 +328,7 @@ func mergeVaultConfig(yaml config.VaultConfig, flags *cli.Flags) config.VaultCon
 		yaml.Address = v
 	}
 	if v := strings.TrimSpace(flags.VaultToken); v != "" {
-		yaml.Token = v
+		yaml.Token = config.Secret(v)
 	}
 	return yaml
 }

@@ -1,14 +1,37 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
+
+	"github.com/aleksey925/kafka-tui/internal/config"
 )
+
+const cliInlineSuffix = "-cli"
+
+// generateInlineName produces "<random>-cli" via crypto/rand → base32
+// (8 chars), with a nanosecond-timestamp fallback for the rare case of
+// a broken entropy source. See CLAUDE.md § "CLI inline cluster".
+func generateInlineName() string {
+	var b [5]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		nano := time.Now().UnixNano()
+		for i := range b {
+			b[i] = byte(nano >> (8 * i))
+		}
+	}
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
+	return strings.ToLower(encoded) + cliInlineSuffix
+}
 
 // CLICluster holds an inline cluster definition assembled from CLI flags.
 // It is populated only when --brokers is provided.
@@ -42,6 +65,10 @@ type Flags struct {
 	ClusterName string
 	Inline      CLICluster
 
+	// LogLevel, when non-empty, overrides cfg.Logging.Level from YAML.
+	// Accepts the same values as logging.ParseLevel (debug|info|warn|error).
+	LogLevel string
+
 	// VaultAddr and VaultToken override the corresponding fields of
 	// cfg.Vault loaded from YAML. They accept the same placeholder syntax
 	// (${env:...}, ${file:...}) as YAML values, resolved by the loader
@@ -73,9 +100,9 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 
 	fs.StringVar(&flags.ConfigPath, "config", "", "path to a config file or directory (disables config hierarchy lookup)")
 
-	fs.StringVar(&flags.ClusterName, "cluster", "", "cluster name to connect to (matches name from clusters.yaml or --brokers)")
+	fs.StringVar(&flags.ClusterName, "cluster", "", "name of a cluster from clusters.yaml to auto-connect to at startup")
 
-	fs.StringSliceVar(&flags.Inline.Brokers, "brokers", nil, "comma-separated list of broker addresses (defines an inline CLI cluster)")
+	fs.StringSliceVar(&flags.Inline.Brokers, "brokers", nil, "comma-separated broker addresses; creates an inline cluster named <random>-cli for this session")
 	fs.StringVar(&flags.Inline.Color, "color", "", "cluster color (red|yellow|green|gray|white) for the inline CLI cluster")
 	fs.BoolVar(&flags.Inline.ReadOnly, "read-only", false, "mark the inline CLI cluster as read-only")
 
@@ -87,10 +114,12 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 
 	fs.StringVar(&flags.Inline.SASLMechanism, "sasl-mechanism", "", "SASL mechanism (PLAIN|SCRAM-SHA-256|SCRAM-SHA-512)")
 	fs.StringVar(&flags.Inline.SASLUsername, "sasl-username", "", "SASL username")
-	fs.StringVar(&flags.Inline.SASLPassword, "sasl-password", "", "SASL password")
+	fs.StringVar(&flags.Inline.SASLPassword, "sasl-password", "", "SASL password — a literal value is visible in `ps`/`/proc/<pid>/cmdline`; prefer ${env:VAR}, ${file:/path}, or ${vault:path#key}")
+
+	fs.StringVar(&flags.LogLevel, "log-level", "", "log level (debug|info|warn|error); overrides logging.level from config")
 
 	fs.StringVar(&flags.VaultAddr, "vault-addr", "", "Vault address; overrides vault.address from config")
-	fs.StringVar(&flags.VaultToken, "vault-token", "", "Vault token; overrides vault.token from config")
+	fs.StringVar(&flags.VaultToken, "vault-token", "", "Vault token — a literal value is visible in `ps`/`/proc/<pid>/cmdline`; prefer ${env:VAR} or ${file:/path}; overrides vault.token from config")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
@@ -103,11 +132,10 @@ func Parse(args []string, stdout, stderr io.Writer) (*Flags, error) {
 		return nil, &ParseError{Msg: fmt.Sprintf("unexpected argument: %q", fs.Arg(0))}
 	}
 
-	if flags.Inline.HasInlineCluster() && flags.Inline.Name == "" {
-		flags.Inline.Name = flags.ClusterName
-		if flags.Inline.Name == "" {
-			flags.Inline.Name = "cli"
-		}
+	if flags.Inline.HasInlineCluster() {
+		// --cluster is a separate selector concern, handled by the
+		// clusters screen; the inline name is always auto-generated.
+		flags.Inline.Name = generateInlineName()
 	}
 
 	if err := validate(flags); err != nil {
@@ -129,7 +157,22 @@ func validate(f *Flags) error {
 	if err := validateCluster(&f.Inline); err != nil {
 		return err
 	}
+	if err := validateLogLevel(f); err != nil {
+		return err
+	}
 	return validateExitFlags(f)
+}
+
+func validateLogLevel(f *Flags) error {
+	if f.LogLevel == "" {
+		return nil
+	}
+	norm, ok := config.NormalizeEnum(f.LogLevel, config.AllowedLogLevels)
+	if !ok {
+		return &ParseError{Msg: fmt.Sprintf("invalid --log-level %q (allowed: debug, info, warn, error)", f.LogLevel)}
+	}
+	f.LogLevel = norm
+	return nil
 }
 
 func validateTLS(c *CLICluster) error {
@@ -170,6 +213,13 @@ func validateSASL(c *CLICluster) error {
 	if anySet && !c.HasInlineCluster() {
 		return &ParseError{Msg: "SASL flags require --brokers (inline cluster)"}
 	}
+	if hasMech {
+		norm, ok := config.NormalizeEnum(c.SASLMechanism, config.AllowedSASLMechanisms)
+		if !ok {
+			return &ParseError{Msg: fmt.Sprintf("invalid --sasl-mechanism %q (allowed: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)", c.SASLMechanism)}
+		}
+		c.SASLMechanism = norm
+	}
 	return nil
 }
 
@@ -177,13 +227,20 @@ func validateCluster(c *CLICluster) error {
 	if c.HasInlineCluster() && slices.Contains(c.Brokers, "") {
 		return &ParseError{Msg: "--brokers contains an empty entry"}
 	}
-	if c.Color != "" {
-		switch c.Color {
-		case "red", "yellow", "green", "gray", "white":
-		default:
-			return &ParseError{Msg: fmt.Sprintf("invalid --color %q (allowed: red, yellow, green, gray, white)", c.Color)}
-		}
+	if c.Color != "" && !c.HasInlineCluster() {
+		return &ParseError{Msg: "--color requires --brokers (inline cluster)"}
 	}
+	if c.ReadOnly && !c.HasInlineCluster() {
+		return &ParseError{Msg: "--read-only requires --brokers (inline cluster)"}
+	}
+	if c.Color == "" {
+		return nil
+	}
+	norm, ok := config.NormalizeEnum(c.Color, config.AllowedClusterColors)
+	if !ok {
+		return &ParseError{Msg: fmt.Sprintf("invalid --color %q (allowed: red, yellow, green, gray, white)", c.Color)}
+	}
+	c.Color = norm
 	return nil
 }
 
@@ -200,6 +257,36 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// CredentialExposureWarnings returns one warning per credential-bearing
+// flag whose value is a literal. See CLAUDE.md § Credentials: storage
+// and exposure warnings. Must be called BEFORE the env+file phase
+// resolves placeholders.
+func CredentialExposureWarnings(f *Flags) []string {
+	if f == nil {
+		return nil
+	}
+	var warns []string
+	if w := plainCredentialWarning("--sasl-password", f.Inline.SASLPassword); w != "" {
+		warns = append(warns, w)
+	}
+	if w := plainCredentialWarning("--vault-token", f.VaultToken); w != "" {
+		warns = append(warns, w)
+	}
+	return warns
+}
+
+func plainCredentialWarning(flagName, value string) string {
+	if !config.IsLiteralCredential(value) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s: literal value passed on command line is visible to other "+
+			"processes via ps / /proc; prefer ${env:VAR}, ${file:/path}, "+
+			"or ${vault:path#key}",
+		flagName,
+	)
 }
 
 // MustParseOrExit parses os.Args, exits with code 2 on error, and returns

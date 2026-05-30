@@ -379,7 +379,11 @@ func (p *RefreshPicker) View(width int) string {
 	}
 
 	parts = append(parts, "",
-		p.styles.HintLabel.Render("tab switch · enter apply · esc cancel"))
+		HintLine(p.styles,
+			Hint{Key: "tab", Label: "switch"},
+			Hint{Key: "enter", Label: "apply"},
+			Hint{Key: "esc", Label: "cancel"},
+		))
 
 	body := strings.Join(parts, "\n")
 	box := lipgloss.NewStyle().

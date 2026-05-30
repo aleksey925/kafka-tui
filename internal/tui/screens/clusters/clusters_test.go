@@ -50,6 +50,7 @@ func TestStatusLabels(t *testing.T) {
 		{clusters.StatusChecking, "◐ checking…"},
 		{clusters.StatusOK, "✓ ok"},
 		{clusters.StatusFailed, "✗ failed"},
+		{clusters.StatusInvalid, "! invalid"},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, tc.s.Label())
@@ -85,17 +86,57 @@ func TestSkipTarget_SingleClusterAutoSkips(t *testing.T) {
 	assert.Equal(t, "only", name)
 }
 
-func TestSkipTarget_CLINameAlwaysWins(t *testing.T) {
+func TestSkipTarget_AutoSelectMatchingClusterWins(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
 			{Name: "a", Brokers: []string{"x"}},
 			{Name: "b", Brokers: []string{"y"}},
 		},
-		CLIName: "cli",
+		AutoSelectCluster: "b",
 	})
 	name, ok := m.SkipTarget()
 	assert.True(t, ok)
-	assert.Equal(t, "cli", name)
+	assert.Equal(t, "b", name)
+}
+
+func TestSkipTarget_AutoSelectUnknownCluster_LandsOnPickerWithToast(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "a", Brokers: []string{"x"}},
+			{Name: "b", Brokers: []string{"y"}},
+		},
+		AutoSelectCluster: "nonexistent",
+	})
+
+	_, ok := m.SkipTarget()
+	assert.False(t, ok, "unknown autoSelect must not auto-connect")
+
+	// Init drains the SkipTarget miss into a toast so the user sees what
+	// went wrong instead of silently landing on the picker.
+	_ = m.Init()
+	require.Equal(t, 1, m.Toasts().Len())
+	assert.Contains(t, m.Toasts().Items()[0].Message, "nonexistent")
+	assert.Contains(t, m.Toasts().Items()[0].Message, "not found")
+}
+
+func TestSkipTarget_AutoSelectInvalidCluster_LandsOnPickerWithToast(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "ok"}},
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken"}, Reason: errors.New("vault")},
+		},
+		AutoSelectCluster: "broken",
+	})
+
+	_, ok := m.SkipTarget()
+	assert.False(t, ok, "invalid autoSelect must not auto-connect")
+
+	_ = m.Init()
+	require.GreaterOrEqual(t, m.Toasts().Len(), 1)
+	// first toast should explain the invalid autoSelect — the generic
+	// "N cluster(s) failed to load" summary comes after.
+	assert.Contains(t, m.Toasts().Items()[0].Message, "broken")
+	assert.Contains(t, m.Toasts().Items()[0].Message, "invalid")
 }
 
 func TestSkipTarget_NoSkipWhenMultipleClusters(t *testing.T) {
@@ -169,6 +210,84 @@ func TestEnter_PingerSuccessSetsOKAndConnects(t *testing.T) {
 	assert.Equal(t, clusters.StatusOK, m.Status("a"))
 	assert.Equal(t, "a", m.ConsumeAction().Connect)
 	assert.Equal(t, 1, calls)
+}
+
+func TestPing_StaleResultIsDropped(t *testing.T) {
+	// arrange
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+	})
+	cmd := m.Update(keyPress("enter"))
+	drive(t, m, cmd)
+	_ = m.ConsumeAction()
+	require.Equal(t, clusters.StatusOK, m.Status("a"))
+
+	// act — a late result from a superseded ping (Gen 0) must not
+	// downgrade the live OK status or trigger a phantom connect.
+	m.Update(clusters.PingResultMsg{
+		Name: "a",
+		Err:  errors.New("stale broker error"),
+		Gen:  0,
+	})
+
+	// assert
+	assert.Equal(t, clusters.StatusOK, m.Status("a"))
+	assert.Empty(t, m.ConsumeAction().Connect)
+	assert.Equal(t, 0, m.Toasts().Len(), "stale result must not push a toast")
+}
+
+func TestPing_StaleResultForRemovedClusterIsDropped(t *testing.T) {
+	// arrange — connect to `a` so pingGen[a] is bumped, then config-reload
+	// removes `a` entirely.
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+	})
+	cmd := m.Update(keyPress("enter"))
+	require.NotNil(t, cmd)
+	gen := uint64(1) // first ping dispatch bumps from 0 to 1
+	_ = m.ConsumeAction()
+	m.SetClusters([]config.Cluster{{Name: "b", Brokers: []string{"y"}}}, nil, nil, "")
+
+	// act — the in-flight ping for the removed `a` finally returns
+	m.Update(clusters.PingResultMsg{Name: "a", Err: nil, Gen: gen})
+
+	// assert — must not resurrect status or fire a phantom Connect
+	assert.Empty(t, m.ConsumeAction().Connect, "removed cluster must not auto-connect")
+	assert.Equal(t, clusters.StatusUnknown, m.Status("a"))
+}
+
+func TestPing_StaleResultForNewlyInvalidClusterIsDropped(t *testing.T) {
+	// arrange — connect to `a` so pingGen[a]=1 and a ping is in flight.
+	// Then reload makes `a` invalid (e.g. its vault placeholder broke).
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+	})
+	cmd := m.Update(keyPress("enter"))
+	require.NotNil(t, cmd)
+	gen := uint64(1)
+	_ = m.ConsumeAction()
+	m.SetClusters(nil, []config.InvalidCluster{{
+		Cluster: config.Cluster{Name: "a", Brokers: []string{"x"}},
+		Reason:  errors.New("vault placeholder broke"),
+	}}, nil, "")
+	require.Equal(t, clusters.StatusInvalid, m.Status("a"))
+
+	// act — late ping result must not overwrite StatusInvalid with OK
+	// nor trigger a phantom Connect to a cluster with broken config.
+	m.Update(clusters.PingResultMsg{Name: "a", Err: nil, Gen: gen})
+
+	// assert
+	assert.Equal(t, clusters.StatusInvalid, m.Status("a"))
+	assert.Empty(t, m.ConsumeAction().Connect, "invalid cluster must not auto-connect")
 }
 
 func TestEnter_PingerFailureSetsFailedAndRaisesToast(t *testing.T) {
@@ -382,6 +501,27 @@ func TestView_RendersTableWithMarkers(t *testing.T) {
 	assert.Contains(t, out, "? unknown")
 }
 
+func TestView_RendersInsecureTLSMarker(t *testing.T) {
+	// a cluster with tls.skip_verify must surface the [NO-TLS-VERIFY]
+	// badge so an operator can't miss that server certs aren't validated
+	// for this row.
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{
+			{Name: "safe", Brokers: []string{"a:9092"}, TLS: &config.TLSConfig{}},
+			{Name: "risky", Brokers: []string{"b:9092"}, TLS: &config.TLSConfig{SkipVerify: true}},
+			{Name: "plain", Brokers: []string{"c:9092"}},
+		},
+	})
+	out := m.View()
+	assert.Contains(t, out, "[NO-TLS-VERIFY]", "skip_verify cluster must render the [NO-TLS-VERIFY] badge")
+	// the marker is row-scoped: it only follows the risky cluster's line.
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, "[NO-TLS-VERIFY]") {
+			assert.Contains(t, line, "risky", "[NO-TLS-VERIFY] must sit on the risky row, not safe/plain")
+		}
+	}
+}
+
 func TestView_GoldenWithStatuses(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
@@ -425,7 +565,17 @@ func TestView_EditChooserModalRendered(t *testing.T) {
 	assert.Contains(t, out, "global")
 	assert.Contains(t, out, "project")
 	assert.Contains(t, out, "/g/clusters.yaml")
-	assert.Contains(t, out, "esc cancel")
+
+	// hints for the open chooser live in the screen's KeyHints (which the
+	// host renders into the global hint bar), not inside the popup itself —
+	// same as the copy/seek menus.
+	labels := []string{}
+	for _, h := range m.KeyHints() {
+		labels = append(labels, h.Label)
+	}
+	joined := strings.Join(labels, ",")
+	assert.Contains(t, joined, "select")
+	assert.Contains(t, joined, "cancel")
 }
 
 func TestKeyHints_ContainExpectedLabels(t *testing.T) {
@@ -484,6 +634,183 @@ func TestEditCompleted_ErrorRaisesToast(t *testing.T) {
 	drive(t, m, cmd)
 	require.Equal(t, 1, m.Toasts().Len())
 	assert.Contains(t, m.Toasts().Items()[0].Message, "editor crashed")
+}
+
+func TestNew_InvalidClusters_SeedStatusAndErrors(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "ok", Brokers: []string{"a:9092"}}},
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken", Brokers: []string{"b:9092"}}, Reason: errors.New("vault is not configured")},
+		},
+	})
+	assert.Equal(t, clusters.StatusUnknown, m.Status("ok"))
+	assert.Equal(t, clusters.StatusInvalid, m.Status("broken"))
+}
+
+func TestInit_InvalidClustersRaiseSummaryToast(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "ok", Brokers: []string{"a:9092"}}},
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken1"}, Reason: errors.New("x")},
+			{Cluster: config.Cluster{Name: "broken2"}, Reason: errors.New("y")},
+		},
+	})
+	_ = m.Init()
+	require.Equal(t, 1, m.Toasts().Len())
+	assert.Contains(t, m.Toasts().Items()[0].Message, "2 cluster(s) failed to load")
+}
+
+func TestEnter_InvalidClusterShowsReasonAndDoesNotConnect(t *testing.T) {
+	pings := 0
+	m := clusters.New(clusters.Options{
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken", Brokers: []string{"b:9092"}}, Reason: errors.New("vault is not configured")},
+		},
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			pings++
+			return nil
+		}),
+	})
+
+	_ = m.Update(keyPress("enter"))
+
+	assert.Equal(t, 0, pings, "must not dial an invalid cluster")
+	assert.Empty(t, m.ConsumeAction().Connect)
+	// summary toast from Init was not triggered here; first toast is the reason
+	require.Equal(t, 1, m.Toasts().Len())
+	assert.Contains(t, m.Toasts().Items()[0].Message, "vault is not configured")
+}
+
+func TestShiftT_TestAllSkipsInvalidClusters(t *testing.T) {
+	probed := []string{}
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "ok", Brokers: []string{"a:9092"}}},
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken"}, Reason: errors.New("x")},
+		},
+		Pinger: clusters.PingerFunc(func(_ context.Context, c config.Cluster) error {
+			probed = append(probed, c.Name)
+			return nil
+		}),
+	})
+
+	cmd := m.Update(keyPress("T"))
+	drive(t, m, cmd)
+
+	assert.Equal(t, []string{"ok"}, probed)
+	assert.Equal(t, clusters.StatusInvalid, m.Status("broken"))
+}
+
+func TestSkipTarget_InvalidLoneClusterDoesNotAutoSkip(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken"}, Reason: errors.New("x")},
+		},
+	})
+	_, ok := m.SkipTarget()
+	assert.False(t, ok, "lone-cluster auto-skip must not run when the only cluster is invalid")
+}
+
+func TestSetClusters_NewlyInvalidClusterRaisesToast(t *testing.T) {
+	// arrange — clean state, then a reload introduces a new invalid cluster.
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a"}, {Name: "b"}},
+	})
+
+	// act
+	m.SetClusters(
+		[]config.Cluster{{Name: "a"}},
+		[]config.InvalidCluster{{Cluster: config.Cluster{Name: "b"}, Reason: errors.New("vault")}},
+		nil,
+		"",
+	)
+
+	// assert
+	require.Equal(t, 1, m.Toasts().Len())
+	assert.Contains(t, m.Toasts().Items()[0].Message, "now invalid")
+	assert.Contains(t, m.Toasts().Items()[0].Message, "b")
+}
+
+func TestSetClusters_AlreadyInvalidClusterDoesNotReToast(t *testing.T) {
+	// arrange — "b" is invalid from the start; a reload that keeps "b"
+	// invalid (no change) must not re-toast.
+	m := clusters.New(clusters.Options{
+		Clusters:        []config.Cluster{{Name: "a"}},
+		InvalidClusters: []config.InvalidCluster{{Cluster: config.Cluster{Name: "b"}, Reason: errors.New("vault")}},
+	})
+
+	// act
+	m.SetClusters(
+		[]config.Cluster{{Name: "a"}},
+		[]config.InvalidCluster{{Cluster: config.Cluster{Name: "b"}, Reason: errors.New("vault still")}},
+		nil,
+		"",
+	)
+
+	// assert
+	assert.Equal(t, 0, m.Toasts().Len(), "persistent invalid must not re-toast on every reload")
+}
+
+func TestSetClusters_NewWarningRaisesToast(t *testing.T) {
+	// arrange — clean startup, no warnings.
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a"}},
+	})
+
+	// act — reload introduces a new soft-fallback warning.
+	m.SetClusters(
+		[]config.Cluster{{Name: "a"}},
+		nil,
+		[]string{"clipboard.method: invalid value \"xclip\"; using default"},
+		"",
+	)
+
+	// assert
+	require.Equal(t, 1, m.Toasts().Len())
+	assert.Contains(t, m.Toasts().Items()[0].Message, "clipboard.method")
+}
+
+func TestSetClusters_PersistentWarningDoesNotReToast(t *testing.T) {
+	// arrange — same warning was already shown at startup.
+	startup := []string{"clipboard.method: invalid value \"xclip\"; using default"}
+	m := clusters.New(clusters.Options{
+		Clusters:        []config.Cluster{{Name: "a"}},
+		StartupWarnings: startup,
+	})
+	_ = m.Init() // drain startupWarn
+	startupCount := m.Toasts().Len()
+
+	// act — reload reports the same warning (user did not fix the YAML).
+	m.SetClusters([]config.Cluster{{Name: "a"}}, nil, startup, "")
+
+	// assert
+	assert.Equal(t, startupCount, m.Toasts().Len(), "persistent warning must not re-toast")
+}
+
+func TestSetClusters_ClusterFixedTransitionsInvalidToUnknown(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "c", Brokers: []string{"a:9092"}}, Reason: errors.New("vault")},
+		},
+	})
+	require.Equal(t, clusters.StatusInvalid, m.Status("c"))
+
+	m.SetClusters([]config.Cluster{{Name: "c", Brokers: []string{"a:9092"}}}, nil, nil, "")
+
+	assert.Equal(t, clusters.StatusUnknown, m.Status("c"))
+}
+
+func TestSetClusters_ClusterBrokenTransitionsValidToInvalid(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "c", Brokers: []string{"a:9092"}}},
+	})
+	require.Equal(t, clusters.StatusUnknown, m.Status("c"))
+
+	m.SetClusters(nil, []config.InvalidCluster{
+		{Cluster: config.Cluster{Name: "c"}, Reason: errors.New("vault")},
+	}, nil, "")
+
+	assert.Equal(t, clusters.StatusInvalid, m.Status("c"))
 }
 
 // ----- helpers -----

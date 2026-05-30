@@ -66,7 +66,7 @@ func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 	m.refreshHeaderContext()
 	cs, onClusters := m.active.(*clusters.Model)
 	if onClusters {
-		cs.SetClusters(list, cli)
+		cs.SetClusters(list, snap.Loaded.InvalidClusters, snap.Loaded.Warnings, cli)
 		if clustersChanged {
 			cs.Toasts().Push(components.ToastSuccess, fmt.Sprintf("clusters refreshed · %d", len(list)))
 		} else {
@@ -122,7 +122,7 @@ func (m *Model) reloadClusters(s *clusters.Model) {
 	m.boot.Clusters = list
 	m.boot.CLIName = cli
 	m.refreshHeaderContext()
-	s.SetClusters(list, cli)
+	s.SetClusters(list, loaded.InvalidClusters, loaded.Warnings, cli)
 	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d clusters", len(list)))
 }
 

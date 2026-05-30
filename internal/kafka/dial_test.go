@@ -40,6 +40,26 @@ func TestDetectProtocol(t *testing.T) {
 	}
 }
 
+func TestIsInsecureTLS(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		c    config.Cluster
+		want bool
+	}{
+		{"no tls", config.Cluster{}, false},
+		{"tls with verify", config.Cluster{TLS: &config.TLSConfig{}}, false},
+		{"tls skip_verify", config.Cluster{TLS: &config.TLSConfig{SkipVerify: true}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, IsInsecureTLS(tc.c))
+		})
+	}
+}
+
 func TestBuildClientOptions__noBrokers__error(t *testing.T) {
 	t.Parallel()
 
@@ -93,14 +113,18 @@ func TestBuildClientOptions__extraOpts__appended(t *testing.T) {
 func TestBuildClientOptions__sasl(t *testing.T) {
 	t.Parallel()
 
+	// buildSASLMechanism is strict — input must be the canonical upper-case
+	// form. The config loader normalizes YAML before this point, so a
+	// bogus mechanism would have been quarantined at load.
 	cases := []struct {
 		mechanism string
 		wantErr   bool
 	}{
 		{"PLAIN", false},
-		{"plain", false},
 		{"SCRAM-SHA-256", false},
 		{"SCRAM-SHA-512", false},
+		// non-canonical (would normally be rejected/normalized upstream)
+		{"plain", true},
 		{"unknown", true},
 		{"", true},
 	}

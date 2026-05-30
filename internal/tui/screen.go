@@ -61,6 +61,21 @@ type SearchGate interface {
 	SearchAvailable() bool
 }
 
+// Stateful is implemented by screens that need to preserve UI state
+// beyond the `/` filter across re-instantiation (push/pop/replace). The
+// host calls Snapshot before destroying a screen and Restore on the new
+// instance with the blob the previous instance returned. The blob is
+// opaque — each screen defines its own shape.
+//
+// Filter-only preservation is automatic for [Searchable] screens — the
+// host captures and restores their filter without any opt-in. Implement
+// Stateful only when there is additional state (cursor, expanded rows,
+// view mode, …) that must round-trip alongside the filter.
+type Stateful interface {
+	Snapshot() any
+	Restore(any)
+}
+
 // Overlayable is implemented by screens that may render a transient
 // modal-like overlay which owns esc. When HasOverlay returns true the
 // host yields esc to the screen instead of running its filter-clear or
@@ -147,6 +162,33 @@ func screenActiveFilter(s Screen) string {
 		return sr.ActiveFilter()
 	}
 	return ""
+}
+
+// defaultFilterState is the blob the host uses to round-trip the `/`
+// filter for [Searchable] screens that don't opt into [Stateful]. The
+// typed wrapper (vs. a bare string) keeps the default path
+// distinguishable from any future Stateful blob that happens to use a
+// string.
+type defaultFilterState struct{ filter string }
+
+func screenSnapshot(s Screen) (any, bool) {
+	if st, ok := s.(Stateful); ok {
+		return st.Snapshot(), true
+	}
+	if filter := screenActiveFilter(s); filter != "" {
+		return defaultFilterState{filter: filter}, true
+	}
+	return nil, false
+}
+
+func screenRestore(s Screen, blob any) {
+	if st, ok := s.(Stateful); ok {
+		st.Restore(blob)
+		return
+	}
+	if f, ok := blob.(defaultFilterState); ok {
+		setScreenSearch(s, f.filter)
+	}
 }
 
 func screenHasOverlay(s Screen) bool {

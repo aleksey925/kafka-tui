@@ -35,7 +35,8 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Handing the terminal off** (one handoff path for full-screen subprocesses),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
-toasts), **Tab navigation** (one paired contract for forward/backward).
+toasts), **Tab navigation** (one paired contract for forward/backward),
+**Inline hint footer** (one renderer for every `<key> <label>` hint surface).
 
 ### Text input
 
@@ -196,6 +197,83 @@ open it owns the input stream — the screen's own bindings (including
 digits used elsewhere as view-mode toggles) are suspended until the
 menu confirms or cancels.
 
+### Confirm for destructive actions
+
+*Applies the single-source rule above: every "are you sure" modal in
+the app shares one key contract (no default cursor, no enter binding,
+explicit letter keys).*
+
+A mutation that is **irreversible or causes data loss** is gated
+through a confirm modal that shows the minimum context needed to
+identify what is about to happen (cluster, topic, group, src→dst,
+etc.). A mutation that is reversible (create topic, …) fires
+directly from its NORMAL-mode shortcut without a modal — popping a
+confirm for trivially-undoable work just trains users to mash `y`.
+
+The confirm contract:
+
+- `y` is the only commit key; cancel is `n` or `esc`.
+- No default cursor, no enter binding — a reflexive enter must not
+  fire the action.
+- Multi-variant confirms (e.g. send & close vs send & keep open) add
+  another explicit letter (`k` for keep). Never digits — digit
+  popups are the *picker* contract for speed, not the *confirm*
+  contract for deliberation.
+- The modal owns input while open; the screen's own bindings are
+  suspended until it confirms or cancels.
+- Validation runs **before** the modal opens: an invalid form
+  surfaces an inline error and the modal never mounts, so the user
+  isn't asked to confirm a request the broker would have rejected.
+- Read-only clusters short-circuit the entry shortcut with a toast,
+  also before the modal opens. The UI check is for UX (don't open a
+  modal the user can't commit); the load-bearing guard is in the
+  kafka package — every mutating method returns [kafka.ErrReadOnly]
+  on a read-only cluster. The two layers are intentionally redundant:
+  a UI bug or a future direct call still cannot mutate the cluster.
+
+Why: the same y/n muscle memory carries across every destructive
+action (delete topic, delete group, save config, produce, clone).
+The "no default + different finger" geometry (entry key is `s` /
+`ctrl+d`, commit key is `y`) is what breaks the muscle-memory class
+of accidents — a popup with default-confirm collapses back into
+"one keystroke away" and adds chrome without adding safety.
+
+Deviation: the reset-offsets flow has its own multi-step preview →
+`y/Y` commit because the preview *is* the context — reusing the
+generic confirm would lose the per-partition diff that's the whole
+point of previewing.
+
+How to apply: when adding a new mutation, classify it: irreversible
+or data-loss → confirm modal with minimum identifying context;
+reversible → direct NORMAL shortcut. The confirm primitive is
+existing; multi-variant cases extend it by adding a letter, not by
+swapping in the picker menu.
+
+### Inline hint footer
+
+*Applies the single-source rule above: every `<key> <label>` hint
+surface in the app — modal overlays, form footers, popup bodies —
+routes through one renderer.*
+
+Each entry renders the key in the accent style and the label in the
+muted style, separated by two spaces. A key token may be single (`y`,
+`esc`) or a slash-joined alternative (`n/esc`, `tab/shift+tab`) — the
+whole token is one accent-styled chunk so alternatives read as one
+shortcut, matching the global hint-bar convention. A bare label (no
+key) renders as a descriptive prefix used for section markers
+("readline:", "type to edit", "on headers:") that aren't bound to a
+keystroke.
+
+Why: the "active keys are highlighted" affordance from the destructive
+confirm modal (§ Confirm for destructive actions) only works if every
+other hint surface follows the same key/label split. Otherwise keys
+visually blend into descriptive prose and users can't tell at a glance
+what they can press — the affordance is uniform or it's nothing.
+
+How to apply: never embed a key name inside a label string ("then s —
+save"); split it into a separate `<key, label>` entry. Two short
+labels are clearer than one that buries a key in prose.
+
 ### Toast / flash routing
 
 *Applies the single-source rule above: one flash bar above the body chrome
@@ -218,6 +296,13 @@ user lands on after the form closes — not the popped form itself.
 How to apply: if the active screen has no toast queue, route the toast to
 the screen the user will land on next (the parent / listing screen). A
 toast with no surface to land on is a dropped error.
+
+Toasts at warn / error severity are also mirrored to slog so the operator
+can recover them after the flash bar expired. The flash bar is for the
+moment; the log is for the post-mortem. The mirror lives inside the
+shared toast component so screens don't have to remember to also call
+slog at every push site — pushing into the queue is the single
+operation, mirroring is automatic.
 
 ### Auto-refresh: quiet by default
 
@@ -254,6 +339,14 @@ Use whichever fits the shape of the work: counter when there are many
 concurrent dispatches (seek variants, fetch retries, tick chains),
 context when the work is bound to a single long-lived resource.
 
+Generation counters that are scoped to a sub-model (one that gets
+re-instantiated on entry — `DetailModel`, popups, etc.) reset to zero on
+each re-entry, so the counter alone cannot tell apart a stale result
+from a previous instance whose Gen happens to collide. In that case the
+result must also carry the entity identity it was issued for (group
+name, topic name, …) and the handler must verify it matches the live
+model before applying.
+
 Why: tests don't reliably catch the failure modes here — they're tied to
 timing. A new screen that omits this protection won't fail in CI; it
 will fail when a user pops the screen mid-fetch on a slow broker.
@@ -261,6 +354,41 @@ will fail when a user pops the screen mid-fetch on a slow broker.
 How to apply: any goroutine or background command that calls the network
 or sleeps for a tick — stamp it or scope it. No exceptions for "this
 fetch is fast enough to not race".
+
+### Per-topic batch failures: typed marker + session dedup
+
+Batch RPCs (configs, sizes, watermarks) routinely return mixed
+per-topic outcomes — one topic denied by ACL, the rest fine. The
+screen surfaces denied cells with a distinct marker (`⊘`) rather than
+the generic `—` ("no data"), and aggregates per-tick into one
+warn-toast per RPC group listing the affected topics (clipped after a
+few when many).
+
+Dedup of those toasts is **session-scoped**: the cache lives on the
+kafka client, not the screen. Screens get re-instantiated on
+navigation; a screen-scoped cache would re-fire the same denial every
+time the user returned. The cache resets only when the connection
+itself is rebuilt.
+
+Why: per-topic ACL is an operator state, not an outage. Without the
+typed marker the user can't tell denied from missing; without
+client-scoped dedup every refresh tick re-spams the same warning. The
+combination keeps the flash bar useful (per § Auto-refresh: quiet by
+default).
+
+Deviation: the kadm library short-circuits its sharded response on
+the first auth-denied entry, losing per-topic data for topics it
+never got to process. We attribute the wrapped auth error to every
+topic missing from the partial response. In uniform-deny this is
+correct; in rare heterogeneous-ACL cases a few allowed topics may
+temporarily show the marker until the connection rebuilds. Accepted
+— without the attribution the user gets no signal at all in the
+uniform-deny case.
+
+How to apply: any new batch RPC surfacing per-topic data returns
+per-topic results carrying value-or-error, not a flat success map +
+top-level error. The client's denial-dedup method is the single hook
+for emitting new-denial warnings.
 
 ### Placeholder pipeline
 
@@ -317,6 +445,150 @@ How to apply: when adding a new dependency to a screen, the nil case is
 part of the design, not an afterthought. If the subsystem cannot be
 optional (brokers, auth), that's an explicit deviation worth flagging in
 review.
+
+### Cluster loading: per-cluster soft fail
+
+A single broken cluster (vault outage for its secret, unresolved
+placeholder, TLS conflict, bad SASL mechanism) does not abort startup.
+Each cluster runs through its load pipeline independently and failures
+are quarantined alongside successes; the picker surfaces broken
+clusters as non-selectable rows with the failure reason so the user
+sees what's wrong and can edit the YAML, while every other cluster
+stays usable.
+
+Why: clusters are often many and unrelated (dev, staging, multiple
+production regions). A vault outage that touches only one cluster's
+secrets used to deny access to all of them — and oncall doesn't have
+time to debug YAML during an incident.
+
+Deviation: global config (vault settings, CLI flags) stays hard-fail.
+The vault client cannot dial without a resolved address, and a bad CLI
+flag is explicit user input — degrading either situation would just
+defer the same error into confusing runtime failures.
+
+### CLI inline cluster: separate namespace from YAML
+
+`--brokers` creates an inline cluster for the session. Its name is
+always auto-generated with a `-cli` suffix (random prefix) — never
+taken from `--cluster` or any user-controlled source. `--cluster` is a
+pure selector that names which already-loaded cluster to auto-connect
+to at startup.
+
+Why: when both flags could name the inline cluster, name collisions
+with `clusters.yaml` were possible and the previous "silent override"
+behavior was dangerous — a user typo could replace a fully-configured
+production cluster (TLS, SASL, read-only) with a stripped-down inline
+one without the user noticing. Separating the namespaces removes the
+collision class entirely: inline names are unguessable, YAML names are
+unconstrained, and the two never meet.
+
+Deviation: inline-cluster persistent state (per-(cluster, topic) view
+state, etc.) does not survive between runs — the random part of the
+name changes each launch. Inline is by definition transient; for
+persistent configuration the user puts the cluster in `clusters.yaml`.
+
+### Config-value normalization
+
+Every enum-shaped config value (log level, compression, clipboard
+method, SASL mechanism, cluster color) passes through one shared
+normalization point that trims whitespace and case-folds against a
+canonical allowlist. Downstream parsers receive canonical input only
+and reject anything else strictly. The same normalization is reused by
+CLI flags so YAML and CLI behave identically.
+
+Why: nothing about case sensitivity or whitespace handling should
+depend on where a value happened to enter the system. Having one
+allowlist + one matcher means adding an enum is a single-place change
+and the answer to "is this value accepted?" never depends on the
+caller.
+
+Deviation: severity of an invalid value is per-field, not per-source.
+Cosmetic / non-critical fields (color, log level, compression,
+clipboard method) warn and fall back to a safe default so a YAML typo
+doesn't deny startup. Auth-critical fields (SASL mechanism) hard-fail
+the cluster because a wrong value would surface much later as a
+confusing handshake error. CLI flags always hard-fail — interactive
+input deserves an immediate, explicit error.
+
+### Credentials: storage and exposure warnings
+
+Two complementary defenses around any field that can carry a secret
+(`sasl.password`, `vault.token`, `tls.key`):
+
+**Storage — the `Secret` type.**
+
+Every credential-bearing field is declared as a `Secret` (string alias
+in the `config` package) rather than `string`. `Secret` implements
+`fmt.Stringer` / `fmt.GoStringer` / `slog.LogValuer`, all returning
+the constant `[REDACTED]` — so `%v`, `%+v`, `%#v`, `slog.Any`, and
+embedded-struct formatters print the marker, not the value. The raw
+value is reachable only through an explicit `.Reveal()` call, placed
+at the API boundary (kafka SASL constructor, vault HTTP request, TLS
+key parser). Easy to grep for and obviously deliberate in code review.
+
+YAML marshaling is intentionally NOT redacted: the loader's
+remarshalInto pattern round-trips Secret values through `yaml.Marshal`
++ `Unmarshal`, and a redacted marshal would erase the secret before
+runtime ever sees it. JSON marshaling IS redacted — nothing in the
+loader round-trips config through JSON, so the safer default applies
+(a debug-time `json.MarshalIndent(loaded.Config, ...)` would not leak
+the value).
+
+An empty Secret renders as empty rather than as the redaction marker,
+so an operator reading a log entry can tell "field is unset" apart from
+"field is set, value redacted". The single-bit leak (empty vs set) is
+acceptable; the operator-debugging value is not.
+
+What `Secret` does NOT cover:
+- Wrapped external errors that may embed credentials. If `franz-go` or
+  `vault` HTTP ever start including secret material in `err.Error()`,
+  our `fmt.Errorf("...: %w", err)` would propagate it. Bounded-context
+  error wrapping (see [[feedback_error_prefixing]]) helps here.
+- Explicit `slog.Info("password is " + s.Reveal())` — the call is its
+  own loud warning. Code review catches it.
+- The CLI flag struct (`cli.Flags` / `cli.CLICluster`) holds password /
+  token as plain `string` because pflag binds to `string`. Wrapping into
+  `Secret` happens only when the loader / `cliInlineToCluster` builds
+  a `config.Cluster` / `VaultConfig` from those fields. Do NOT
+  slog or fmt the Flags struct as a whole — pull out non-secret fields
+  by name.
+
+**Exposure warnings.**
+
+*Applies the single-source rule above: every input source that can
+carry a secret runs through the same literal-vs-placeholder check
+(`config.IsLiteralCredential`).*
+
+Any credential-bearing input — `--sasl-password` / `--vault-token` on
+the command line, `sasl.password` / `vault.token` in YAML — produces a
+startup warn-tost when the value is a literal rather than a
+`${env:...}` / `${file:...}` / `${vault:...}` placeholder. The check
+is shared across sources: trim whitespace; non-empty and not starting
+with `${` ⇒ literal ⇒ warn.
+
+Why: literals on the command line leak through `ps`,
+`/proc/<pid>/cmdline`, and shell history; literals in YAML survive in
+backups, git history, and shared filesystems. Both expose the secret
+to anyone with read access to that channel. The warn nudges operators
+toward the placeholder pipeline (see § Placeholder pipeline) — which
+the loader already resolves transparently.
+
+Detection must run BEFORE the env+file phase materializes placeholders.
+Once resolved, a literal and a placeholder-sourced value are
+indistinguishable.
+
+Deviation: inline TLS `cert` / `ca` PEM bodies in YAML are not checked.
+Literal is the only way to embed PEM material in YAML, and `cert` / `ca`
+are themselves public material. `tls.key` IS typed as `Secret` (storage
+defense) but is not checked by the literal-warning (same reason — PEM
+has no placeholder equivalent short of pulling the whole blob through
+vault).
+
+Routing: warnings flow through the existing startup-warnings →
+clusters-screen-toast pipeline so the operator sees them on first
+mount. CLI warnings are additionally mirrored to slog directly because
+auto-skip (`--cluster` selecting a single auto-connect target) bypasses
+the clusters screen entirely and the toast pipeline never fires there.
 
 ## Project commands
 

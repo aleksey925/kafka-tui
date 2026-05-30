@@ -2,7 +2,6 @@ package messages
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -18,7 +17,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
-	"github.com/aleksey925/kafka-tui/internal/tui/lineedit"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -155,14 +154,12 @@ type Model struct {
 	// during the dial window before the session attaches.
 	live bool
 
-	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
-	lifeCancel context.CancelFunc
+	track *lifecycle.Tracker
 
 	seek SeekState
 	// captured edges of the active seek window so `[` / `]` can clamp.
 	fromBoundary map[int32]int64
 	toBoundary   map[int32]int64
-	fetchGen     uint64
 
 	// spinnerFrame advances on LiveTickMsg so the LIVE label always
 	// shows movement on quiet topics.
@@ -216,28 +213,26 @@ func New(opts Options) *Model {
 	}
 	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
-	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	return &Model{
-		svc:        opts.Service,
-		topic:      opts.Topic,
-		cluster:    opts.Cluster,
-		readOnly:   opts.ReadOnly,
-		repo:       opts.ViewState,
-		columns:    cols,
-		pageSize:   pageSize,
-		clipboard:  opts.Clipboard,
-		writer:     opts.FileWriter,
-		pager:      opts.Pager,
-		outputDir:  opts.OutputDir,
-		table:      tbl,
-		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		now:        now,
-		styles:     styles,
-		wrap:       true,
-		seek:       SeekState{Mode: SeekLatest},
-		lifeCtx:    lifeCtx,
-		lifeCancel: lifeCancel,
-		copyMenu:   NewCopyMenu(opts.Clipboard, styles),
+		svc:       opts.Service,
+		topic:     opts.Topic,
+		cluster:   opts.Cluster,
+		readOnly:  opts.ReadOnly,
+		repo:      opts.ViewState,
+		columns:   cols,
+		pageSize:  pageSize,
+		clipboard: opts.Clipboard,
+		writer:    opts.FileWriter,
+		pager:     opts.Pager,
+		outputDir: opts.OutputDir,
+		table:     tbl,
+		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		now:       now,
+		styles:    styles,
+		wrap:      true,
+		seek:      SeekState{Mode: SeekLatest},
+		track:     lifecycle.New(),
+		copyMenu:  NewCopyMenu(opts.Clipboard, styles),
 	}
 }
 
@@ -338,7 +333,7 @@ func (m *Model) SeekState() SeekState { return m.seek }
 
 // FetchGen is exported so tests can forge race-protected messages with
 // the right Gen so the handler accepts them.
-func (m *Model) FetchGen() uint64 { return m.fetchGen }
+func (m *Model) FetchGen() uint64 { return m.track.Gen() }
 
 func (m *Model) PartitionFilter() []int32 {
 	out := make([]int32, len(m.filter))
@@ -413,16 +408,12 @@ func (m *Model) HasOverlay() bool {
 	return m.mode == ModeDetail || m.mode == ModeSeek || m.mode == ModePartitions || m.mode == ModeSmartFilter
 }
 
-// popupChromeRows must be kept in sync with renderPartitionsPopup —
-// the list area on big topics depends on it for scroll bounds.
-const (
-	// chromeRows is the layout overhead the messages screen renders
-	// above the table area: just the single state-header line. The
-	// table's own column header sits inside the value passed to
-	// table.SetHeight and isn't counted here.
-	chromeRows      = 1
-	popupChromeRows = 12
-)
+// chromeRows is the layout overhead the messages screen renders above
+// the table area: just the single state-header line. The table's own
+// column header sits inside the value passed to table.SetHeight and
+// isn't counted here. popupChromeRows lives in messages_partitions.go
+// next to the popup it bounds.
+const chromeRows = 1
 
 func (m *Model) bodyHeight() int {
 	if m.height <= 0 {
@@ -514,163 +505,6 @@ func (m *Model) actGroups() tea.Cmd {
 	return nil
 }
 
-// seekBindings: the menu stage delegates to [components.Menu.Bindings]
-// so the menu owns its own key set; the input stage dispatches esc/enter
-// through this slice.
-func (m *Model) seekBindings() []keymap.Binding {
-	if m.seekPopup != nil && m.seekPopup.stage == stageInput {
-		bs := []keymap.Binding{
-			{Keys: []string{"enter"}, Label: "apply seek", Category: "Seek", Hint: true, Handler: m.actSeekApply},
-			{Keys: []string{"esc"}, Label: "back to strategy menu", Category: "Seek", Hint: true, Handler: m.actSeekBackToMenu},
-		}
-		return append(bs, m.seekPopup.form.Bindings("Form")...)
-	}
-	if m.seekPopup != nil && m.seekPopup.menu != nil {
-		return m.seekPopup.menu.Bindings("Seek")
-	}
-	return nil
-}
-
-func (m *Model) actSeekApply() tea.Cmd {
-	pop := m.seekPopup
-	state, err := m.parseSeekForm(pop.chosen, pop.form)
-	if err != nil {
-		m.toasts.Push(components.ToastError, err.Error())
-		return nil
-	}
-	persist := m.applySeek(state)
-	m.closeSeek()
-	return tea.Batch(persist, m.dispatchSeek())
-}
-
-func (m *Model) actSeekBackToMenu() tea.Cmd {
-	pop := m.seekPopup
-	pop.stage = stageMenu
-	pop.form = nil
-	pop.menu.Reset()
-	return nil
-}
-
-func (m *Model) partitionsBindings() []keymap.Binding {
-	bs := []keymap.Binding{
-		{Keys: []string{"enter"}, Label: "apply partition filter", Category: "Partition filter", Hint: true, Handler: m.actPartApply},
-		{Keys: []string{"esc"}, Label: "back", Category: "Partition filter", Hint: true, Handler: m.actPartCancel},
-		keymap.FocusToggle("switch focus (list ↔ input)", "Partition filter", m.actPartToggleFocus),
-	}
-	// list-pane keys only fire when the list is focused; text-editing
-	// keys for the input pane are universal and aren't surfaced here.
-	if m.partitionsPopup != nil && m.partitionsPopup.focus == focusList {
-		bs = append(bs,
-			keymap.Binding{Keys: []string{"space", " "}, DisplayKeys: []string{"space"}, Label: "toggle partition", Category: "Partition filter", Handler: m.actPartToggle},
-			keymap.Binding{Keys: []string{"a"}, Label: "toggle all", Category: "Partition filter", Handler: m.actPartToggleAll},
-			keymap.Binding{Keys: []string{"k", "up"}, Label: "previous partition", Category: "Partition filter", Handler: m.actPartCursor(-1)},
-			keymap.Binding{Keys: []string{"j", "down"}, Label: "next partition", Category: "Partition filter", Handler: m.actPartCursor(+1)},
-			keymap.Binding{Keys: []string{"home"}, Label: "first partition", Category: "Partition filter", Handler: m.actPartCursorTo(0)},
-			keymap.Binding{Keys: []string{"end"}, Label: "last partition", Category: "Partition filter", Handler: m.actPartCursorTo(-1)},
-		)
-	}
-	return bs
-}
-
-func (m *Model) actPartApply() tea.Cmd {
-	pop := m.partitionsPopup
-	if pop.parseErr != "" {
-		m.toasts.Push(components.ToastError, pop.parseErr)
-		return nil
-	}
-	var parts []int32
-	if pop.partitions != nil {
-		parts = m.selectedPartitions()
-		if len(parts) == len(pop.partitions) {
-			parts = nil
-		}
-	} else {
-		p, err := kafka.ParsePartitionFilter(pop.input)
-		if err != nil {
-			m.toasts.Push(components.ToastError, err.Error())
-			return nil
-		}
-		parts = p
-	}
-	m.filter = parts
-	m.partitionsPopup = nil
-	m.mode = ModeList
-	return tea.Batch(m.persistView(), m.dispatchSeek())
-}
-
-func (m *Model) actPartCancel() tea.Cmd {
-	m.partitionsPopup = nil
-	m.mode = ModeList
-	return nil
-}
-
-func (m *Model) actPartToggleFocus() tea.Cmd {
-	pop := m.partitionsPopup
-	if pop.focus == focusList {
-		pop.focus = focusInput
-	} else {
-		pop.focus = focusList
-	}
-	return nil
-}
-
-func (m *Model) actPartToggle() tea.Cmd {
-	pop := m.partitionsPopup
-	if len(pop.partitions) == 0 {
-		return nil
-	}
-	p := pop.partitions[pop.listCursor]
-	if pop.selected[p] {
-		delete(pop.selected, p)
-	} else {
-		pop.selected[p] = true
-	}
-	m.syncInputFromSelection()
-	return nil
-}
-
-func (m *Model) actPartToggleAll() tea.Cmd {
-	pop := m.partitionsPopup
-	if len(pop.partitions) == 0 {
-		return nil
-	}
-	if len(pop.selected) == len(pop.partitions) {
-		pop.selected = map[int32]bool{}
-	} else {
-		for _, p := range pop.partitions {
-			pop.selected[p] = true
-		}
-	}
-	m.syncInputFromSelection()
-	return nil
-}
-
-func (m *Model) actPartCursor(delta int) func() tea.Cmd {
-	return func() tea.Cmd {
-		pop := m.partitionsPopup
-		if len(pop.partitions) == 0 {
-			return nil
-		}
-		n := len(pop.partitions)
-		pop.listCursor = (pop.listCursor + delta + n) % n
-		return nil
-	}
-}
-
-func (m *Model) actPartCursorTo(idx int) func() tea.Cmd {
-	return func() tea.Cmd {
-		pop := m.partitionsPopup
-		if len(pop.partitions) == 0 {
-			return nil
-		}
-		if idx < 0 {
-			idx = len(pop.partitions) - 1
-		}
-		pop.listCursor = idx
-		return nil
-	}
-}
-
 func (m *Model) smartFilterBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"esc"}, Label: "close", Category: "Smart filter", Hint: true, Handler: m.actCloseSmartFilter},
@@ -719,11 +553,11 @@ func (m *Model) handleAsync(msg tea.Msg) tea.Cmd {
 	case FollowStartedMsg:
 		return m.handleFollowStarted(msg)
 	case LiveTickMsg:
-		if !m.live || msg.Gen != m.fetchGen {
+		if !m.live || !m.track.Validate(msg.Gen) {
 			return nil
 		}
 		m.spinnerFrame++
-		return liveTickCmd(m.fetchGen)
+		return liveTickCmd(m.track.Gen())
 	case FollowChunkMsg:
 		m.handleFollowChunk(msg)
 		if msg.Closed {
@@ -904,7 +738,7 @@ func (m *Model) cursorIndex() (int, bool) {
 }
 
 func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.loading = false
@@ -928,7 +762,7 @@ func (m *Model) handleLoaded(msg MessagesLoadedMsg) {
 }
 
 func (m *Model) handleAppended(msg MessagesAppendedMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.loading = false
@@ -949,7 +783,7 @@ func (m *Model) handleAppended(msg MessagesAppendedMsg) {
 }
 
 func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	if len(msg.Messages) > 0 {
@@ -970,7 +804,7 @@ func (m *Model) handleFollowChunk(msg FollowChunkMsg) {
 const liveBufferCap = 1000
 
 func (m *Model) handleFollowErr(msg FollowErrMsg) {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		return
 	}
 	m.toasts.Push(components.ToastError, "follow: "+msg.Err.Error())
@@ -992,7 +826,7 @@ func startFollowCmd(ctx context.Context, svc Service, topic string, parts []int3
 }
 
 func (m *Model) handleFollowStarted(msg FollowStartedMsg) tea.Cmd {
-	if msg.Gen != m.fetchGen {
+	if !m.track.Validate(msg.Gen) {
 		if msg.Session != nil {
 			msg.Session.Close()
 		}
@@ -1020,7 +854,7 @@ func (m *Model) stopFollow() {
 		m.follow = nil
 	}
 	m.live = false
-	m.fetchGen++
+	m.track.Bump()
 	// every load-context switch goes through stopFollow first, so clearing
 	// here prevents a stale `r` flag (whose response never arrived) from
 	// leaking a misleading "refreshed" toast onto a later dispatchSeek.
@@ -1030,9 +864,7 @@ func (m *Model) stopFollow() {
 
 func (m *Model) Close() {
 	m.stopFollow()
-	if m.lifeCancel != nil {
-		m.lifeCancel()
-	}
+	m.track.Close()
 }
 
 func (m *Model) followPollCmd() tea.Cmd {
@@ -1040,7 +872,7 @@ func (m *Model) followPollCmd() tea.Cmd {
 		return nil
 	}
 	sess := m.follow
-	gen := m.fetchGen
+	gen := m.track.Gen()
 	return func() tea.Msg {
 		select {
 		case msg, ok := <-sess.Messages:
@@ -1089,7 +921,7 @@ func (m *Model) loadEarlier() tea.Cmd {
 	}
 	baseline := lowestOffsets(m.messages)
 	m.loading = true
-	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
+	return loadEarlierCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.track.Gen())
 }
 
 func (m *Model) loadLater() tea.Cmd {
@@ -1110,7 +942,7 @@ func (m *Model) loadLater() tea.Cmd {
 	}
 	baseline := highestOffsets(m.messages)
 	m.loading = true
-	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.fetchGen)
+	return loadLaterCmd(m.svc, m.topic, baseline, m.pageSize, partitionsFromBaseline(baseline), m.track.Gen())
 }
 
 // partitionsFromBaseline restricts paging to partitions the user has
@@ -1124,152 +956,6 @@ func partitionsFromBaseline(baseline map[int32]int64) []int32 {
 	}
 	slices.Sort(out)
 	return out
-}
-
-// ----- seek popup -----
-
-type seekStage int
-
-const (
-	stageMenu seekStage = iota
-	stageInput
-)
-
-type seekPopup struct {
-	stage  seekStage
-	chosen SeekMode
-	menu   *components.Menu
-	form   *components.Form
-}
-
-func (m *Model) openSeek() {
-	cursor := int(m.seek.Mode)
-	items := []components.MenuItem{
-		{Label: "latest"},
-		{Label: "earliest"},
-		{Label: "from offset"},
-		{Label: "to offset"},
-		{Label: "from timestamp"},
-		{Label: "to timestamp"},
-		{Label: "live"},
-	}
-	menu := components.NewMenu(items,
-		components.WithMenuStyles(m.styles),
-		components.WithMenuTitle("seek"),
-		components.WithMenuCursor(cursor),
-	)
-	m.seekPopup = &seekPopup{stage: stageMenu, menu: menu}
-	m.mode = ModeSeek
-}
-
-func (m *Model) handleSeekKey(key tea.KeyPressMsg) tea.Cmd {
-	if m.seekPopup == nil {
-		m.mode = ModeList
-		return nil
-	}
-	if m.seekPopup.stage == stageInput {
-		return m.handleSeekInput(key)
-	}
-	pop := m.seekPopup
-	pop.menu, _ = pop.menu.Update(key)
-	if pop.menu.Canceled() {
-		m.closeSeek()
-		return nil
-	}
-	if idx, _, ok := pop.menu.Selected(); ok {
-		mode := SeekMode(idx)
-		pop.chosen = mode
-		switch mode {
-		case SeekLatest, SeekEarliest, SeekLive:
-			persist := m.applySeek(SeekState{Mode: mode})
-			m.closeSeek()
-			return tea.Batch(persist, m.dispatchSeek())
-		default:
-			pop.stage = stageInput
-			pop.form = m.buildSeekForm(mode)
-		}
-	}
-	return nil
-}
-
-func (m *Model) handleSeekInput(key tea.KeyPressMsg) tea.Cmd {
-	pop := m.seekPopup
-	if cmd, ok := keymap.Dispatch(m.seekBindings(), key); ok {
-		return cmd
-	}
-	pop.form, _ = pop.form.Update(key)
-	return nil
-}
-
-func (m *Model) closeSeek() {
-	m.seekPopup = nil
-	m.mode = ModeList
-}
-
-func (m *Model) buildSeekForm(mode SeekMode) *components.Form {
-	var label, prefill string
-	switch mode {
-	case SeekFromOffset, SeekToOffset:
-		label = "offset (partition:offset or offset)"
-		if msg, ok := m.selected(); ok {
-			prefill = strconv.FormatInt(int64(msg.Partition), 10) + ":" + strconv.FormatInt(msg.Offset, 10)
-		}
-	case SeekFromTimestamp, SeekToTimestamp:
-		label = "timestamp (RFC3339, '1h ago', 'today', …)"
-		if msg, ok := m.selected(); ok && !msg.Timestamp.IsZero() {
-			prefill = msg.Timestamp.UTC().Format(time.RFC3339)
-		}
-	case SeekLatest, SeekEarliest, SeekLive:
-	}
-	return components.NewForm(
-		[]components.Field{{Key: "value", Label: label, Kind: components.FieldText, Value: prefill}},
-		components.WithFormStyles(m.styles),
-	)
-}
-
-func (m *Model) parseSeekForm(mode SeekMode, form *components.Form) (SeekState, error) {
-	fld, _ := form.Field("value")
-	raw := strings.TrimSpace(fld.Value)
-	switch mode {
-	case SeekFromOffset, SeekToOffset:
-		p, off, hasPart, err := parseOffsetExpression(raw)
-		if err != nil {
-			return SeekState{}, err
-		}
-		return SeekState{Mode: mode, Partition: p, Offset: off, HasPart: hasPart}, nil
-	case SeekFromTimestamp, SeekToTimestamp:
-		ts, err := kafka.ParseTimestamp(raw, m.now())
-		if err != nil {
-			return SeekState{}, fmt.Errorf("invalid timestamp: %w", err)
-		}
-		return SeekState{Mode: mode, Timestamp: ts}, nil
-	case SeekLatest, SeekEarliest, SeekLive:
-	}
-	return SeekState{Mode: mode}, nil
-}
-
-// parseOffsetExpression accepts `partition:offset` or `offset`.
-func parseOffsetExpression(s string) (int32, int64, bool, error) {
-	if s == "" {
-		return 0, 0, false, errors.New("invalid offset: expected partition:offset or offset")
-	}
-	if strings.Contains(s, ":") {
-		parts := strings.SplitN(s, ":", 2)
-		p, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 32)
-		if err != nil || p < 0 {
-			return 0, 0, false, fmt.Errorf("invalid offset: bad partition %q", parts[0])
-		}
-		off, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-		if err != nil || off < 0 {
-			return 0, 0, false, fmt.Errorf("invalid offset: bad offset %q", parts[1])
-		}
-		return int32(p), off, true, nil
-	}
-	off, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || off < 0 {
-		return 0, 0, false, errors.New("invalid offset: expected partition:offset or offset")
-	}
-	return 0, off, false, nil
 }
 
 func (m *Model) applySeek(state SeekState) tea.Cmd {
@@ -1299,8 +985,7 @@ func (m *Model) refresh() tea.Cmd {
 // dispatchSeek clears the table so stale records don't linger during the
 // new fetch, then dispatches the command for the active seek state.
 func (m *Model) dispatchSeek() tea.Cmd {
-	m.fetchGen++
-	gen := m.fetchGen
+	ctx, gen := m.track.Dispatch()
 	m.messages = nil
 	m.refreshTable()
 	switch m.seek.Mode {
@@ -1323,7 +1008,7 @@ func (m *Model) dispatchSeek() tea.Cmd {
 		// kafbat-ui / AKHQ / kafka-console-consumer semantics.
 		m.live = true
 		return tea.Batch(
-			startFollowCmd(m.lifeCtx, m.svc, m.topic, m.filter, gen),
+			startFollowCmd(ctx, m.svc, m.topic, m.filter, gen),
 			liveTickCmd(gen),
 		)
 	}
@@ -1473,225 +1158,6 @@ func (m *Model) dispatchToTimestamp(gen uint64) tea.Cmd {
 	}
 }
 
-// ----- partitions popup -----
-
-type partitionsFocus int
-
-const (
-	focusList partitionsFocus = iota
-	focusInput
-)
-
-// partitionsPopup keeps checkbox list and input in sync — toggling a
-// checkbox rewrites the input; valid edits re-tick checkboxes.
-type partitionsPopup struct {
-	loading      bool
-	loadErr      string
-	partitions   []int32
-	selected     map[int32]bool
-	listCursor   int
-	listScroll   int
-	focus        partitionsFocus
-	input        string
-	inputCursor  int
-	parseErr     string
-	allDiscarded bool // parsed ok but referenced unknown partitions
-}
-
-type partitionsLoadedMsg struct {
-	partitions []int32
-	err        error
-}
-
-func loadPartitionsCmd(svc Service, topic string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		wm, err := svc.WatermarksFor(ctx, topic, nil)
-		if err != nil {
-			return partitionsLoadedMsg{err: err}
-		}
-		out := make([]int32, 0, len(wm))
-		for p := range wm {
-			out = append(out, p)
-		}
-		slices.Sort(out)
-		return partitionsLoadedMsg{partitions: out}
-	}
-}
-
-func (m *Model) openPartitions() tea.Cmd {
-	m.partitionsPopup = &partitionsPopup{
-		loading:  true,
-		selected: map[int32]bool{},
-		input:    renderPartitionFilter(m.filter),
-		focus:    focusList,
-	}
-	m.partitionsPopup.inputCursor = runeLen(m.partitionsPopup.input)
-	m.mode = ModePartitions
-	return loadPartitionsCmd(m.svc, m.topic)
-}
-
-func (m *Model) handlePartitionsLoaded(msg partitionsLoadedMsg) {
-	if m.partitionsPopup == nil {
-		return
-	}
-	pop := m.partitionsPopup
-	pop.loading = false
-	if msg.err != nil {
-		pop.loadErr = msg.err.Error()
-		return
-	}
-	pop.partitions = msg.partitions
-	pop.selected = map[int32]bool{}
-	if len(m.filter) == 0 {
-		for _, p := range pop.partitions {
-			pop.selected[p] = true
-		}
-	} else {
-		want := map[int32]bool{}
-		for _, p := range m.filter {
-			want[p] = true
-		}
-		for _, p := range pop.partitions {
-			if want[p] {
-				pop.selected[p] = true
-			}
-		}
-	}
-	pop.input = m.canonicalSelection()
-	pop.inputCursor = runeLen(pop.input)
-}
-
-func (m *Model) handlePartitionsKey(key tea.KeyPressMsg) tea.Cmd {
-	if m.partitionsPopup == nil {
-		m.mode = ModeList
-		return nil
-	}
-	if cmd, ok := keymap.Dispatch(m.partitionsBindings(), key); ok {
-		return cmd
-	}
-	if m.partitionsPopup.focus == focusInput {
-		m.handlePartitionsInputKey(key)
-	}
-	return nil
-}
-
-func (m *Model) handlePartitionsInputKey(key tea.KeyPressMsg) {
-	pop := m.partitionsPopup
-	state, ok := lineedit.Apply(lineedit.State{
-		Runes:  []rune(pop.input),
-		Cursor: pop.inputCursor,
-	}, key)
-	if !ok {
-		return
-	}
-	newBuf := state.String()
-	changed := newBuf != pop.input
-	pop.input = newBuf
-	pop.inputCursor = state.Cursor
-	if changed {
-		m.syncSelectionFromInput()
-	}
-}
-
-// handlePartitionsPaste sanitizes the pasted payload through lineedit and
-// merges it into the popup input. The popup is single-line, so newlines /
-// tabs are flattened to spaces per the project paste contract.
-func (m *Model) handlePartitionsPaste(content string) {
-	pop := m.partitionsPopup
-	state := lineedit.InsertText(lineedit.State{
-		Runes:  []rune(pop.input),
-		Cursor: pop.inputCursor,
-	}, content)
-	newBuf := state.String()
-	changed := newBuf != pop.input
-	pop.input = newBuf
-	pop.inputCursor = state.Cursor
-	if changed {
-		m.syncSelectionFromInput()
-	}
-}
-
-func (m *Model) selectedPartitions() []int32 {
-	pop := m.partitionsPopup
-	out := make([]int32, 0, len(pop.selected))
-	for _, p := range pop.partitions {
-		if pop.selected[p] {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// canonicalSelection: "all ticked" / "none ticked" both emit "" to match
-// the "all partitions" convention.
-func (m *Model) canonicalSelection() string {
-	pop := m.partitionsPopup
-	if len(pop.partitions) == 0 {
-		return ""
-	}
-	picks := m.selectedPartitions()
-	if len(picks) == len(pop.partitions) {
-		return ""
-	}
-	return renderPartitionFilter(picks)
-}
-
-func (m *Model) syncInputFromSelection() {
-	pop := m.partitionsPopup
-	pop.input = m.canonicalSelection()
-	pop.inputCursor = runeLen(pop.input)
-	pop.parseErr = ""
-	pop.allDiscarded = false
-}
-
-// syncSelectionFromInput keeps checkbox state stable on invalid input.
-// References to unknown partitions are a soft warning (allDiscarded), not
-// a block — the kafka layer silently drops them on fetch.
-func (m *Model) syncSelectionFromInput() {
-	pop := m.partitionsPopup
-	if pop.partitions == nil {
-		// metadata not yet loaded — validate syntax only.
-		_, err := kafka.ParsePartitionFilter(pop.input)
-		if err != nil {
-			pop.parseErr = err.Error()
-		} else {
-			pop.parseErr = ""
-		}
-		return
-	}
-	parts, err := kafka.ParsePartitionFilter(pop.input)
-	if err != nil {
-		pop.parseErr = err.Error()
-		return
-	}
-	pop.parseErr = ""
-	pop.allDiscarded = false
-	known := map[int32]bool{}
-	for _, p := range pop.partitions {
-		known[p] = true
-	}
-	pop.selected = map[int32]bool{}
-	if len(parts) == 0 {
-		for _, p := range pop.partitions {
-			pop.selected[p] = true
-		}
-		return
-	}
-	unknownCount := 0
-	for _, p := range parts {
-		if known[p] {
-			pop.selected[p] = true
-		} else {
-			unknownCount++
-		}
-	}
-	if unknownCount > 0 && len(pop.selected) == 0 {
-		pop.allDiscarded = true
-	}
-}
-
 // ----- smart filter stub -----
 
 const smartFilterDescription = `Smart filter — coming soon.
@@ -1718,7 +1184,7 @@ func (m *Model) handleSmartFilterKey(key tea.KeyPressMsg) tea.Cmd {
 func (m *Model) renderSmartFilter() string {
 	title := m.styles.HelpTitle.Render("smart filter")
 	body := m.styles.Command.Render(smartFilterDescription)
-	hint := m.styles.HintLabel.Render("esc close")
+	hint := components.HintLine(m.styles, components.Hint{Key: "esc", Label: "close"})
 	content := title + "\n\n" + body + "\n\n" + hint
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1910,158 +1376,11 @@ func ansiTrunc(s string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func (m *Model) renderSeekPopup() string {
-	if m.seekPopup.stage == stageMenu {
-		return m.seekPopup.menu.View(0)
-	}
-	title := m.styles.HelpTitle.Render("seek · " + m.seekPopup.chosen.String())
-	hint := m.styles.HintLabel.Render("enter ok   esc back")
-	body := title + "\n\n" + m.seekPopup.form.View() + "\n\n" + hint
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(body)
-}
-
 // placePopupInBody anchors the popup to the top of the table area so it
 // sits below the state-header line; the reserved height matches
 // table.SetHeight to keep chrome stable across mode switches.
 func (m *Model) placePopupInBody(popup string) string {
 	return layout.PlaceCenteredTop(m.width, m.bodyHeight(), popup)
-}
-
-func (m *Model) renderPartitionsPopup() string {
-	pop := m.partitionsPopup
-	title := m.styles.HelpTitle.Render("partition filter")
-
-	var listBlock string
-	switch {
-	case pop.loading:
-		listBlock = "    " + m.styles.HintLabel.Render("loading partitions…")
-	case pop.loadErr != "":
-		listBlock = "    " + m.styles.StatusErr.Render("load failed: "+pop.loadErr)
-	case len(pop.partitions) == 0:
-		listBlock = "    " + m.styles.HintLabel.Render("(topic has no partitions)")
-	default:
-		maxRows := m.partitionsListWindow()
-		m.clampPartitionsScroll(maxRows)
-		first := pop.listScroll
-		last := min(first+maxRows, len(pop.partitions))
-		rows := make([]string, 0, last-first+2)
-		if first > 0 {
-			rows = append(rows, "    "+m.styles.HintLabel.Render(fmt.Sprintf("↑ %d more", first)))
-		}
-		for i := first; i < last; i++ {
-			p := pop.partitions[i]
-			marker := "[ ]"
-			if pop.selected[p] {
-				marker = "[×]"
-			}
-			prefix := "  "
-			rowStyle := m.styles.Command
-			if pop.focus == focusList && i == pop.listCursor {
-				prefix = "▸ "
-				rowStyle = m.styles.CommandHL
-			}
-			rows = append(rows, prefix+rowStyle.Render(fmt.Sprintf("%s %d", marker, p)))
-		}
-		if last < len(pop.partitions) {
-			rows = append(rows, "    "+m.styles.HintLabel.Render(fmt.Sprintf("↓ %d more", len(pop.partitions)-last)))
-		}
-		listBlock = strings.Join(rows, "\n")
-	}
-
-	var listLabel string
-	if pop.focus == focusList {
-		listLabel = m.styles.HintKey.Render("▸ partitions")
-	} else {
-		listLabel = m.styles.HintLabel.Render("  partitions")
-	}
-
-	var inputLabel string
-	if pop.focus == focusInput {
-		inputLabel = m.styles.HintKey.Render("▸ filter")
-	} else {
-		inputLabel = m.styles.HintLabel.Render("  filter")
-	}
-	inputBody := m.renderPartitionsInputField()
-	var inputErr string
-	switch {
-	case pop.parseErr != "":
-		inputErr = "    " + m.styles.StatusErr.Render("invalid: "+pop.parseErr)
-	case pop.allDiscarded:
-		inputErr = "    " + m.styles.StatusWarn.Render("none of the listed partitions exist in this topic")
-	}
-
-	hint := m.styles.HintLabel.Render("tab switch   space toggle   a all/none   enter apply   esc back")
-
-	parts := []string{
-		title,
-		"",
-		listLabel,
-		listBlock,
-		"",
-		inputLabel,
-		inputBody,
-	}
-	if inputErr != "" {
-		parts = append(parts, inputErr)
-	}
-	parts = append(parts, "", hint)
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(strings.Join(parts, "\n"))
-}
-
-func (m *Model) partitionsListWindow() int {
-	avail := m.bodyHeight() - popupChromeRows
-	if avail < 3 {
-		return 3
-	}
-	return avail
-}
-
-func (m *Model) clampPartitionsScroll(window int) {
-	pop := m.partitionsPopup
-	if window <= 0 || len(pop.partitions) == 0 {
-		pop.listScroll = 0
-		return
-	}
-	if pop.listCursor < pop.listScroll {
-		pop.listScroll = pop.listCursor
-	}
-	if pop.listCursor >= pop.listScroll+window {
-		pop.listScroll = pop.listCursor - window + 1
-	}
-	maxScroll := max(len(pop.partitions)-window, 0)
-	if pop.listScroll > maxScroll {
-		pop.listScroll = maxScroll
-	}
-	if pop.listScroll < 0 {
-		pop.listScroll = 0
-	}
-}
-
-func (m *Model) renderPartitionsInputField() string {
-	pop := m.partitionsPopup
-	if pop.focus != focusInput {
-		if pop.input == "" {
-			return "    " + m.styles.HintLabel.Render("(empty = all)")
-		}
-		return "    " + m.styles.Command.Render(pop.input)
-	}
-	runes := []rune(pop.input)
-	cur := min(pop.inputCursor, len(runes))
-	before := string(runes[:cur])
-	var underCursor, after string
-	if cur >= len(runes) {
-		underCursor = " "
-	} else {
-		underCursor = string(runes[cur])
-		after = string(runes[cur+1:])
-	}
-	return "    " + m.styles.Command.Render(before) + m.styles.Cursor.Render(underCursor) + m.styles.Command.Render(after)
 }
 
 // FormatTimestamp renders `YYYY-MM-DD HH:MM:SS.mmm` in the local timezone.
@@ -2237,9 +1556,10 @@ func maxInt(a, b int) int {
 
 // ----- Messages -----
 
-// MessagesLoadedMsg replaces the current window. Gen pins the message to
-// the [Model.fetchGen] at dispatch time so handlers drop stale arrivals.
-// SetBoundary flips the handler from "keep existing edges" to "replace".
+// MessagesLoadedMsg replaces the current window. Gen pins the message
+// to the dispatch-time generation so handlers drop stale arrivals via
+// [lifecycle.Tracker.Validate]. SetBoundary flips the handler from
+// "keep existing edges" to "replace".
 type MessagesLoadedMsg struct {
 	Messages     []kafka.Message
 	FromBoundary map[int32]int64

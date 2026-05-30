@@ -132,7 +132,7 @@ func (c *CreateForm) Spec() (kafka.CreateTopicSpec, error) {
 // form is taller than the viewport. Matches the produce-screen pattern.
 func (c *CreateForm) View(_ int) string {
 	header := c.styles.HelpTitle.Render("New topic")
-	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "create"))
+	hint := components.HintLine(c.styles, formHints(c.mode, "create")...)
 	parts := []string{header}
 	if c.err != "" {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))
@@ -141,11 +141,22 @@ func (c *CreateForm) View(_ int) string {
 	return strings.Join(parts, "\n")
 }
 
-func formHintLine(mode FormMode, verb string) string {
+func formHints(mode FormMode, verb string) []components.Hint {
 	if mode == FormInsert {
-		return "type to edit  tab/enter commit & next  shift+tab back  esc to NORMAL"
+		return []components.Hint{
+			{Label: "type to edit"},
+			{Key: "tab/enter", Label: "commit & next"},
+			{Key: "shift+tab", Label: "back"},
+			{Key: "esc", Label: "to NORMAL"},
+		}
 	}
-	return "tab/↓ next  shift+tab/↑ prev  enter edit  ctrl+s " + verb + "  esc cancel"
+	return []components.Hint{
+		{Key: "tab/↓", Label: "next"},
+		{Key: "shift+tab/↑", Label: "prev"},
+		{Key: "enter", Label: "edit"},
+		{Key: "s", Label: verb},
+		{Key: "esc", Label: "cancel"},
+	}
 }
 
 // updateFormModal is the shared NORMAL/INSERT state machine for the
@@ -344,7 +355,7 @@ func (c *CloneForm) Options() kafka.CloneOptions {
 
 func (c *CloneForm) View(_ int) string {
 	header := c.styles.HelpTitle.Render("Clone topic: " + c.source)
-	hint := c.styles.HintLabel.Render(formHintLine(c.mode, "clone"))
+	hint := components.HintLine(c.styles, formHints(c.mode, "clone")...)
 	parts := []string{header}
 	if c.err != "" {
 		parts = append(parts, c.styles.StatusErr.Render(c.err))

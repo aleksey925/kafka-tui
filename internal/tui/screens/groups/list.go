@@ -18,6 +18,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -108,7 +109,8 @@ type Model struct {
 
 	width, height int
 	loading       bool
-	manualRefresh bool
+
+	track *lifecycle.Tracker
 
 	action Action
 	now    func() time.Time
@@ -148,6 +150,7 @@ func New(opts Options) *Model {
 		listRefresher:    components.NewRefresher(listInterval, now),
 		detailRefresher:  components.NewRefresher(detailInterval, now),
 		refreshIntervals: opts.RefreshIntervals,
+		track:            lifecycle.New(),
 		now:              now,
 		styles:           styles,
 	}
@@ -168,7 +171,8 @@ func listColumns() []components.Column {
 // auto-refresh tick — the recurring chain only sustains itself once started.
 func (m *Model) Init() tea.Cmd {
 	m.loading = true
-	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic), m.AutoRefreshTick())
+	gen := m.track.Bump()
+	return tea.Batch(loadGroupsCmd(m.svc, m.filterTopic, gen), m.AutoRefreshTick())
 }
 
 func (m *Model) Action() Action { return m.action }
@@ -347,7 +351,7 @@ func (m *Model) actListRefresh() tea.Cmd {
 	if m.loading {
 		return nil
 	}
-	m.manualRefresh = true
+	m.listRefresher.MarkManual()
 	return m.refreshCmd()
 }
 
@@ -588,16 +592,18 @@ func (m *Model) handleConfirmKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleGroupsLoaded(msg GroupsLoadedMsg) tea.Cmd {
+	if !m.track.Validate(msg.Gen) {
+		return nil
+	}
 	m.loading = false
+	manual := m.listRefresher.ConsumeManual()
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load groups: "+msg.Err.Error())
-		m.manualRefresh = false
 		return nil
 	}
 	m.listRefresher.MarkSuccess()
-	if m.manualRefresh {
+	if manual {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d groups", len(msg.Groups)))
-		m.manualRefresh = false
 	}
 	m.groups = msg.Groups
 	m.pruneLagCache()
@@ -629,6 +635,9 @@ func (m *Model) pruneLagCache() {
 }
 
 func (m *Model) handleLagsLoaded(msg GroupLagsLoadedMsg) {
+	if !m.track.Validate(msg.Gen) {
+		return
+	}
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "lag for "+msg.Group+": "+msg.Err.Error())
 		return
@@ -692,7 +701,8 @@ func (m *Model) DetailRefreshTick() tea.Cmd { return m.detailRefresher.Tick(Deta
 
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	return loadGroupsCmd(m.svc, m.filterTopic)
+	gen := m.track.Bump()
+	return loadGroupsCmd(m.svc, m.filterTopic, gen)
 }
 
 func (m *Model) refreshTable() {
@@ -749,9 +759,10 @@ func (m *Model) FetchLagsForVisible() tea.Cmd {
 	if len(m.groups) == 0 {
 		return nil
 	}
+	gen := m.track.Gen()
 	cmds := make([]tea.Cmd, 0, len(m.groups))
 	for _, g := range m.groups {
-		cmds = append(cmds, loadLagCmd(m.svc, g.Group))
+		cmds = append(cmds, loadLagCmd(m.svc, g.Group, gen))
 	}
 	return tea.Batch(cmds...)
 }
@@ -838,6 +849,9 @@ func (m *Model) persistRefreshInterval(screenID string, d time.Duration) {
 type GroupsLoadedMsg struct {
 	Groups []kafka.GroupListInfo
 	Err    error
+	// Gen pins the result to the dispatch-time generation; the handler
+	// drops mismatches via [lifecycle.Tracker.Validate].
+	Gen uint64
 }
 
 type GroupLagsLoadedMsg struct {
@@ -845,6 +859,8 @@ type GroupLagsLoadedMsg struct {
 	TotalLag    int64
 	MemberCount int
 	Err         error
+	// Gen pins the lag fetch to the list reload that fanned it out.
+	Gen uint64
 }
 
 type GroupDeletedMsg struct {
@@ -856,7 +872,7 @@ type ListRefreshTickMsg struct{}
 
 type DetailRefreshTickMsg struct{}
 
-func loadGroupsCmd(svc Service, filterTopic string) tea.Cmd {
+func loadGroupsCmd(svc Service, filterTopic string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -869,17 +885,17 @@ func loadGroupsCmd(svc Service, filterTopic string) tea.Cmd {
 		} else {
 			groups, err = svc.ListConsumerGroups(ctx)
 		}
-		return GroupsLoadedMsg{Groups: groups, Err: err}
+		return GroupsLoadedMsg{Groups: groups, Err: err, Gen: gen}
 	}
 }
 
-func loadLagCmd(svc Service, group string) tea.Cmd {
+func loadLagCmd(svc Service, group string, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		rows, err := svc.GroupOffsets(ctx, group)
 		if err != nil {
-			return GroupLagsLoadedMsg{Group: group, Err: err}
+			return GroupLagsLoadedMsg{Group: group, Err: err, Gen: gen}
 		}
 		var total int64
 		members := map[string]struct{}{}
@@ -895,6 +911,7 @@ func loadLagCmd(svc Service, group string) tea.Cmd {
 			Group:       group,
 			TotalLag:    total,
 			MemberCount: len(members),
+			Gen:         gen,
 		}
 	}
 }

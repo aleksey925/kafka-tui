@@ -75,6 +75,18 @@ func TestConfigEdit_TextFieldForUnknownKey(t *testing.T) {
 	assert.Equal(t, components.FieldText, field.Kind)
 }
 
+// saveAndConfirm presses `s` to open the save confirm and answers `y`.
+// Returns the Cmd from the confirm answer (the AlterTopicConfig dispatch
+// on success, nil if the modal didn't open). Use [confirmYes] when the
+// confirm is already open.
+func saveAndConfirm(m *topics.ConfigEditModel) tea.Cmd {
+	_ = m.Update(keyPress("s"))
+	if !m.ConfirmOpen() {
+		return nil
+	}
+	return m.Update(keyPress("y"))
+}
+
 func TestConfigEdit_SaveCallsServiceAndYieldsBack(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.NewConfigEditModel(topics.ConfigEditOptions{
@@ -93,7 +105,7 @@ func TestConfigEdit_SaveCallsServiceAndYieldsBack(t *testing.T) {
 	_ = m.Update(keyPress("esc"))
 	require.Equal(t, topics.FormNormal, m.Mode())
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	driveEdit(t, m, saveAndConfirm(m))
 
 	a := m.ConsumeAction()
 	assert.True(t, a.Saved)
@@ -117,8 +129,9 @@ func TestConfigEdit_IntegerValidation(t *testing.T) {
 		CurrentValue: "abc",
 	})
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	_ = m.Update(keyPress("s"))
 
+	assert.False(t, m.ConfirmOpen(), "validation error must abort before opening the modal")
 	assert.Empty(t, svc.Altered(), "broker call must be skipped on validation failure")
 	assert.False(t, m.ConsumeAction().Saved)
 	assert.Contains(t, m.View(), "must be an integer")
@@ -133,7 +146,7 @@ func TestConfigEdit_SelectValidation(t *testing.T) {
 		CurrentValue: "lz4",
 	})
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	driveEdit(t, m, saveAndConfirm(m))
 	assert.True(t, m.ConsumeAction().Saved)
 
 	calls := svc.Altered()
@@ -152,7 +165,7 @@ func TestConfigEdit_BrokerErrorSurfaced(t *testing.T) {
 		CurrentValue: "lz4",
 	})
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	driveEdit(t, m, saveAndConfirm(m))
 
 	a := m.ConsumeAction()
 	assert.False(t, a.Saved)
@@ -173,8 +186,8 @@ func TestConfigEdit_FormFrozenWhileSaving(t *testing.T) {
 	})
 
 	// segmented field — left/right would normally cycle; pressing them
-	// after Ctrl+S must be no-ops.
-	_ = m.Update(keyPress("ctrl+s"))
+	// while the RPC is in flight must be no-ops.
+	_ = saveAndConfirm(m)
 	require.True(t, m.Saving())
 	before := m.Form().FocusedField().Value
 
@@ -194,7 +207,7 @@ func TestConfigEdit_EscBlockedWhileSaving(t *testing.T) {
 
 	// kick off a save but don't run the resulting cmd — the screen is
 	// now in `saving=true` with the broker call hypothetically pending.
-	cmd := m.Update(keyPress("ctrl+s"))
+	cmd := saveAndConfirm(m)
 	require.NotNil(t, cmd, "save must enqueue an RPC")
 	require.True(t, m.Saving())
 
@@ -233,7 +246,7 @@ func TestConfigEdit_EmptyValueAcceptedForFreeFormString(t *testing.T) {
 		CurrentValue: "",
 	})
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	driveEdit(t, m, saveAndConfirm(m))
 
 	calls := svc.Altered()
 	require.Len(t, calls, 1)
@@ -249,7 +262,66 @@ func TestConfigEdit_IntegerRejectsEmpty(t *testing.T) {
 		CurrentValue: "",
 	})
 
-	driveEdit(t, m, m.Update(keyPress("ctrl+s")))
+	_ = m.Update(keyPress("s"))
+	assert.False(t, m.ConfirmOpen(), "validation error must abort before opening the modal")
 	assert.Empty(t, svc.Altered(), "numeric configs must still reject empty input")
 	assert.Contains(t, m.View(), "must be an integer")
+}
+
+func TestConfigEdit_PasteIsDroppedWhileConfirmOpen(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.NewConfigEditModel(topics.ConfigEditOptions{
+		Service:      svc,
+		Topic:        "alpha",
+		Key:          "leader.replication.throttled.replicas",
+		CurrentValue: "before",
+	})
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.ConfirmOpen())
+
+	// paste-while-modal-open used to overwrite the value the user was
+	// being asked to confirm; the broker would have applied the leaked
+	// content instead of the displayed one.
+	_ = m.Update(tea.PasteMsg{Content: "leak"})
+
+	got := m.Form().FocusedField()
+	assert.Equal(t, "before", got.Value, "paste must not mutate the value while the confirm owns input")
+	assert.True(t, m.ConfirmOpen())
+}
+
+func TestConfigEdit_ConfirmNoDismissesWithoutSaving(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.NewConfigEditModel(topics.ConfigEditOptions{
+		Service:      svc,
+		Topic:        "alpha",
+		Key:          "compression.type",
+		CurrentValue: "lz4",
+	})
+
+	_ = m.Update(keyPress("s"))
+	require.True(t, m.ConfirmOpen())
+
+	_ = m.Update(keyPress("n"))
+	assert.False(t, m.ConfirmOpen(), "n must dismiss the confirm")
+	assert.Empty(t, svc.Altered(), "n must not dispatch the RPC")
+	assert.False(t, m.Saving())
+}
+
+func TestConfigEdit_SInInsertIsLiteral(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.NewConfigEditModel(topics.ConfigEditOptions{
+		Service:      svc,
+		Topic:        "alpha",
+		Key:          "leader.replication.throttled.replicas",
+		CurrentValue: "",
+	})
+	_ = m.Update(keyPress("enter")) // INSERT on the value text field
+	require.Equal(t, topics.FormInsert, m.Mode())
+
+	_ = m.Update(keyPressRune('s'))
+
+	assert.False(t, m.ConfirmOpen(), "s in INSERT must be typed, not open the save confirm")
+	got := m.Form().FocusedField()
+	assert.Equal(t, "s", got.Value)
 }

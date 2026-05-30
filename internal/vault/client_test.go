@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -301,6 +302,40 @@ func TestLookup__sendsTokenAndExpectedURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/v1/kv/data/myapp/db", seenURL)
 	assert.Equal(t, "secret-token", seenToken)
+}
+
+func TestLookup__concurrentMissCollapsesToOneCall(t *testing.T) {
+	// arrange — slow server so all goroutines race on the same in-flight
+	// request before any of them finishes.
+	hits := atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		_, _ = io.WriteString(w, `{"data":{"data":{"k":"v"}}}`)
+	}))
+	defer srv.Close()
+	c := mustClient(t, srv.URL, "tok")
+
+	// act — fan out N concurrent lookups for the same path.
+	const n = 10
+	var wg sync.WaitGroup
+	results := make([]string, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = c.Lookup("secret/db", "k")
+		}(i)
+	}
+	wg.Wait()
+
+	// assert — singleflight collapsed every miss into one HTTP call.
+	for i := range n {
+		require.NoError(t, errs[i])
+		assert.Equal(t, "v", results[i])
+	}
+	assert.Equal(t, int32(1), hits.Load(), "singleflight must collapse concurrent misses")
 }
 
 func TestLookup__cachesByPath(t *testing.T) {

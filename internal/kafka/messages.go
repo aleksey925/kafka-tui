@@ -208,7 +208,7 @@ func (c *Client) FetchAtOffset(ctx context.Context, topic string, partition int3
 	}
 	pw, ok := wm.Partitions[partition]
 	if !ok {
-		return nil, fmt.Errorf("kafka: partition %d not found in %q", partition, topic)
+		return nil, fmt.Errorf("kafka: partition %d not found", partition)
 	}
 	offset = max(offset, pw.Low)
 	end := min(offset+int64(count), pw.High)
@@ -504,7 +504,7 @@ func (c *Client) Follow(ctx context.Context, topic string, partitions []int32) (
 	}
 	parts := selectPartitions(wm, partitions)
 	if len(parts) == 0 {
-		return nil, fmt.Errorf("kafka: follow: no partitions for %q", topic)
+		return nil, errors.New("kafka: follow: no partitions")
 	}
 	consume := map[int32]kgo.Offset{}
 	for p, w := range parts {

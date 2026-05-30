@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/config"
+	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
@@ -28,6 +30,11 @@ const (
 	StatusChecking
 	StatusOK
 	StatusFailed
+	// StatusInvalid marks a cluster whose YAML failed to load (unresolved
+	// placeholder, vault lookup error, TLS conflict, etc.). The row stays
+	// in the picker so the user sees what's missing, but no Ping/Connect
+	// is attempted — both surface the load reason instead.
+	StatusInvalid
 )
 
 func (s ConnectionStatus) Icon() string {
@@ -38,6 +45,8 @@ func (s ConnectionStatus) Icon() string {
 		return "✓"
 	case StatusFailed:
 		return "✗"
+	case StatusInvalid:
+		return "!"
 	default:
 		return "?"
 	}
@@ -51,6 +60,8 @@ func (s ConnectionStatus) Label() string {
 		return "✓ ok"
 	case StatusFailed:
 		return "✗ failed"
+	case StatusInvalid:
+		return "! invalid"
 	default:
 		return "? unknown"
 	}
@@ -112,8 +123,19 @@ type Action struct {
 
 // Options configure a [Model].
 type Options struct {
-	Clusters                []config.Cluster
-	CLIName                 string
+	Clusters []config.Cluster
+	// InvalidClusters are clusters whose YAML failed to load. They show up
+	// in the picker with StatusInvalid and a load-time error toast on
+	// select, but are never dialed.
+	InvalidClusters []config.InvalidCluster
+	// CLIName marks the inline cluster from --brokers (for the "(cli)"
+	// badge in the picker). Auto-select uses AutoSelectCluster, not this.
+	CLIName string
+	// AutoSelectCluster names the cluster to auto-connect to at startup.
+	// SkipTarget honors it when the name matches a valid cluster;
+	// otherwise it falls through to the single-cluster shortcut or shows
+	// the picker.
+	AutoSelectCluster       string
 	GlobalPath, ProjectPath string
 	Pinger                  Pinger
 	Editor                  Editor
@@ -130,10 +152,25 @@ type editTarget struct {
 
 type Model struct {
 	clusters []config.Cluster
-	cliName  string
+	// invalidNames tracks which rows in the table came from
+	// InvalidClusters, so connect/test can short-circuit without re-walking
+	// the original slice and the row renderer can pull the load reason
+	// from errors[name]. Set membership is the only thing that matters.
+	invalidNames map[string]struct{}
+	cliName      string
+	// autoSelect carries the --cluster / inline-fallback target. The
+	// host (app.Init) calls SkipTarget once at startup; on miss it
+	// writes pendingStartupToast and the screen's own Init drains it.
+	autoSelect          string
+	pendingStartupToast string
 
 	statuses map[string]ConnectionStatus
 	errors   map[string]string
+	// pingGen per cluster bumps on every ping dispatch. Late results from a
+	// superseded ping (user re-pings the same cluster mid-flight) are
+	// dropped — critical for the connect intent, where applying a stale
+	// "OK" would auto-connect to the wrong cluster after a re-press.
+	pingGen map[string]uint64
 
 	table  *components.Table
 	toasts *components.Toasts
@@ -143,8 +180,7 @@ type Model struct {
 	pingTimeout time.Duration
 
 	editChoices []editTarget
-	editing     bool
-	editIdx     int
+	editMenu    *components.Menu
 
 	action     Action
 	stagedInit bool
@@ -157,8 +193,12 @@ type Model struct {
 	refresher components.Refresher
 
 	startupWarn []string
-	now         func() time.Time
-	styles      theme.Styles
+	// lastWarnings remembers the soft-fallback warnings already surfaced
+	// (initially the startupWarn batch). SetClusters diffs against it so
+	// the same persistent warning isn't re-toasted on every watcher tick.
+	lastWarnings []string
+	now          func() time.Time
+	styles       theme.Styles
 }
 
 // New builds a Model from Options.
@@ -180,10 +220,29 @@ func New(opts Options) *Model {
 		timeout = 5 * time.Second
 	}
 
-	clusters := append([]config.Cluster(nil), opts.Clusters...)
-	statuses := make(map[string]ConnectionStatus, len(clusters))
-	for _, c := range clusters {
-		statuses[c.Name] = StatusUnknown
+	// Merge valid + invalid into one ordered list; invalid keeps its
+	// position from clusters.yaml so the user sees rows in their file
+	// order, not segregated by status.
+	merged := make([]config.Cluster, 0, len(opts.Clusters)+len(opts.InvalidClusters))
+	merged = append(merged, opts.Clusters...)
+	for _, ic := range opts.InvalidClusters {
+		merged = append(merged, ic.Cluster)
+	}
+	invalidNames := make(map[string]struct{}, len(opts.InvalidClusters))
+	errors := make(map[string]string, len(opts.InvalidClusters))
+	for _, ic := range opts.InvalidClusters {
+		invalidNames[ic.Cluster.Name] = struct{}{}
+		if ic.Reason != nil {
+			errors[ic.Cluster.Name] = ic.Reason.Error()
+		}
+	}
+	statuses := make(map[string]ConnectionStatus, len(merged))
+	for _, c := range merged {
+		if _, bad := invalidNames[c.Name]; bad {
+			statuses[c.Name] = StatusInvalid
+		} else {
+			statuses[c.Name] = StatusUnknown
+		}
 	}
 
 	choices := make([]editTarget, 0, 2)
@@ -201,20 +260,24 @@ func New(opts Options) *Model {
 	// right after entry instead of waiting for the first watcher snapshot.
 	refresher.MarkSuccess()
 	m := &Model{
-		clusters:    clusters,
-		cliName:     opts.CLIName,
-		statuses:    statuses,
-		errors:      map[string]string{},
-		table:       tbl,
-		toasts:      components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		pinger:      opts.Pinger,
-		editor:      editor,
-		pingTimeout: timeout,
-		editChoices: choices,
-		refresher:   refresher,
-		startupWarn: append([]string(nil), opts.StartupWarnings...),
-		now:         now,
-		styles:      styles,
+		clusters:     merged,
+		invalidNames: invalidNames,
+		cliName:      opts.CLIName,
+		autoSelect:   opts.AutoSelectCluster,
+		statuses:     statuses,
+		errors:       errors,
+		pingGen:      make(map[string]uint64, len(merged)),
+		table:        tbl,
+		toasts:       components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		pinger:       opts.Pinger,
+		editor:       editor,
+		pingTimeout:  timeout,
+		editChoices:  choices,
+		refresher:    refresher,
+		startupWarn:  append([]string(nil), opts.StartupWarnings...),
+		lastWarnings: append([]string(nil), opts.StartupWarnings...),
+		now:          now,
+		styles:       styles,
 	}
 	m.refreshTable()
 	return m
@@ -226,19 +289,39 @@ func columnDefs() []components.Column {
 		{Title: " ", Width: 1},
 		{Title: "Name", Width: 24, Sortable: true},
 		{Title: "Brokers", Width: 32, Sortable: true},
-		{Title: "Flags", Width: 12, Sortable: false},
+		// Flags widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
+		{Title: "Flags", Width: 16, Sortable: false},
 		{Title: "Status", Width: 14, Sortable: false},
 	}
 }
 
-// SkipTarget reports the cluster name to bypass the screen for: a CLI inline
-// cluster (priority) or the only configured cluster.
+// SkipTarget reports the cluster the host should auto-connect to,
+// bypassing the picker. Priority: explicit autoSelect (from --cluster,
+// or from --brokers inline as a fallback) → the only cluster in the
+// list. Invalid or unknown autoSelect targets do NOT auto-skip; the
+// user lands on the picker.
+//
+// Side effect: on an autoSelect miss the reason is stashed in
+// pendingStartupToast for the screen's Init to surface as a toast —
+// callers don't need to handle the miss explicitly.
 func (m *Model) SkipTarget() (string, bool) {
-	if m.cliName != "" {
-		return m.cliName, true
+	if m.autoSelect != "" {
+		if _, bad := m.invalidNames[m.autoSelect]; bad {
+			m.pendingStartupToast = "cluster " + m.autoSelect + " is invalid; see picker"
+			return "", false
+		}
+		if _, exists := m.statuses[m.autoSelect]; !exists {
+			m.pendingStartupToast = "cluster " + m.autoSelect + " not found"
+			return "", false
+		}
+		return m.autoSelect, true
 	}
 	if len(m.clusters) == 1 {
-		return m.clusters[0].Name, true
+		only := m.clusters[0].Name
+		if _, bad := m.invalidNames[only]; bad {
+			return "", false
+		}
+		return only, true
 	}
 	return "", false
 }
@@ -248,6 +331,17 @@ func (m *Model) Init() tea.Cmd {
 		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
 	}
 	m.startupWarn = nil
+	if m.pendingStartupToast != "" {
+		m.toasts.PushWithLifetime(components.ToastWarning, m.pendingStartupToast, 5*time.Second)
+		m.pendingStartupToast = ""
+	}
+	if n := len(m.invalidNames); n > 0 {
+		m.toasts.PushWithLifetime(
+			components.ToastWarning,
+			fmt.Sprintf("%d cluster(s) failed to load — see status column for reason", n),
+			5*time.Second,
+		)
+	}
 	return nil
 }
 
@@ -264,26 +358,61 @@ func (m *Model) ConsumeAction() Action {
 func (m *Model) Status(name string) ConnectionStatus { return m.statuses[name] }
 
 // SetClusters replaces the cluster list (host calls this after a reload).
-// Statuses are preserved by name; missing clusters drop out; new ones get
-// StatusUnknown. The cursor stays on the same cluster name when possible.
-func (m *Model) SetClusters(list []config.Cluster, cliName string) {
-	m.clusters = append([]config.Cluster(nil), list...)
-	m.cliName = cliName
-	m.refresher.MarkSuccess()
-	keep := make(map[string]ConnectionStatus, len(list))
-	keepErr := make(map[string]string, len(list))
-	for _, c := range list {
-		if s, ok := m.statuses[c.Name]; ok {
-			keep[c.Name] = s
-		} else {
-			keep[c.Name] = StatusUnknown
+// Valid statuses (ok / failed / unknown) are preserved by name; clusters
+// that became invalid in this reload move to StatusInvalid with the new
+// reason; missing clusters drop out; the cursor stays on the same name
+// when possible. Soft-fallback warnings new to this reload are toasted;
+// persistent ones from prior reloads are not re-toasted.
+func (m *Model) SetClusters(list []config.Cluster, invalid []config.InvalidCluster, warnings []string, cliName string) {
+	merged := make([]config.Cluster, 0, len(list)+len(invalid))
+	merged = append(merged, list...)
+	for _, ic := range invalid {
+		merged = append(merged, ic.Cluster)
+	}
+	invalidNames := make(map[string]struct{}, len(invalid))
+	keepErr := make(map[string]string, len(merged))
+	for _, ic := range invalid {
+		invalidNames[ic.Cluster.Name] = struct{}{}
+		if ic.Reason != nil {
+			keepErr[ic.Cluster.Name] = ic.Reason.Error()
 		}
+	}
+	keep := make(map[string]ConnectionStatus, len(merged))
+	for _, c := range merged {
+		if _, bad := invalidNames[c.Name]; bad {
+			keep[c.Name] = StatusInvalid
+			continue
+		}
+		prev, seen := m.statuses[c.Name]
+		if !seen || prev == StatusInvalid {
+			// freshly valid (or never seen) — start at unknown so the
+			// stale load reason from a prior reload doesn't linger
+			// after the user fixed the YAML.
+			keep[c.Name] = StatusUnknown
+			continue
+		}
+		keep[c.Name] = prev
 		if e, ok := m.errors[c.Name]; ok {
 			keepErr[c.Name] = e
 		}
 	}
+	newlyInvalid := newlyInvalidNames(m.invalidNames, invalidNames)
+	newWarnings := newWarningsSince(m.lastWarnings, warnings)
+	// invalidate every pending ping after a reload: a stale PingResult that
+	// arrives now could otherwise resurrect a removed cluster (cluster
+	// dropped from YAML), overwrite a freshly-invalid status with a phantom
+	// "OK" (valid→invalid transition keeps the name in keep, so per-name
+	// deletion wouldn't fire), or fire an Intent=connect for a cluster
+	// whose underlying config just changed. A fresh ping post-reload always
+	// re-bumps the counter from zero.
+	m.pingGen = make(map[string]uint64, len(keep))
+	m.clusters = merged
+	m.invalidNames = invalidNames
+	m.cliName = cliName
 	m.statuses = keep
 	m.errors = keepErr
+	m.lastWarnings = append([]string(nil), warnings...)
+	m.refresher.MarkSuccess()
 	prevID := ""
 	if row, ok := m.table.SelectedRow(); ok {
 		prevID = row.ID
@@ -292,6 +421,57 @@ func (m *Model) SetClusters(list []config.Cluster, cliName string) {
 	if prevID != "" {
 		m.table.GoToID(prevID)
 	}
+	for _, w := range newWarnings {
+		m.toasts.PushWithLifetime(components.ToastWarning, w, 5*time.Second)
+	}
+	if len(newlyInvalid) > 0 {
+		m.toasts.PushWithLifetime(
+			components.ToastWarning,
+			fmt.Sprintf("%d cluster(s) now invalid: %s",
+				len(newlyInvalid), strings.Join(newlyInvalid, ", ")),
+			5*time.Second,
+		)
+	}
+}
+
+// newWarningsSince returns warnings present in next but not in prev. The
+// same persistent warning across reloads is filtered out — re-toasting
+// "clipboard.method: invalid value 'xclip'" every fsnotify tick would
+// just be noise.
+func newWarningsSince(prev, next []string) []string {
+	if len(next) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(prev))
+	for _, w := range prev {
+		seen[w] = struct{}{}
+	}
+	out := make([]string, 0, len(next))
+	for _, w := range next {
+		if _, was := seen[w]; was {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// newlyInvalidNames returns the sorted list of names that are invalid in
+// next but were not invalid in prev — i.e. clusters that broke since the
+// last load. Surfacing only the delta keeps re-toasting noiseless when an
+// already-broken cluster persists across reloads.
+func newlyInvalidNames(prev, next map[string]struct{}) []string {
+	if len(next) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(next))
+	for name := range next {
+		if _, was := prev[name]; !was {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Model) Toasts() *components.Toasts { return m.toasts }
@@ -313,7 +493,7 @@ func (m *Model) SetSearch(query string) { m.table.SetSearch(query) }
 
 func (m *Model) ActiveFilter() string { return m.table.Search() }
 
-func (m *Model) HasOverlay() bool { return m.editing }
+func (m *Model) HasOverlay() bool { return m.editMenu != nil }
 
 func (m *Model) SetSize(w, h int) {
 	m.width, m.height = w, h
@@ -334,7 +514,7 @@ func (m *Model) HelpSections() []help.Section {
 }
 
 func (m *Model) activeBindings() []keymap.Binding {
-	if m.editing {
+	if m.editMenu != nil {
 		return m.editChooserBindings()
 	}
 	return m.listBindings()
@@ -377,7 +557,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
-	if m.editing {
+	if m.editMenu != nil {
 		return m.handleEditChooserKey(key)
 	}
 	if m.toasts != nil {
@@ -397,40 +577,25 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *Model) handleEditChooserKey(key tea.KeyPressMsg) tea.Cmd {
-	cmd, _ := keymap.Dispatch(m.editChooserBindings(), key)
-	return cmd
+	menu, _ := m.editMenu.Update(key)
+	m.editMenu = menu
+	if menu.Canceled() {
+		m.editMenu = nil
+		return nil
+	}
+	idx, _, ok := menu.Selected()
+	if !ok {
+		return nil
+	}
+	m.editMenu = nil
+	return m.runEditor(m.editChoices[idx].Path)
 }
 
 func (m *Model) editChooserBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"esc", "q"}, Label: "back", Category: "Edit chooser", Hint: true, Handler: m.actChooserCancel},
-		{Keys: []string{"j", "down"}, Label: "next target", Category: "Edit chooser", Handler: m.actChooserMove(+1)},
-		{Keys: []string{"k", "up"}, Label: "previous target", Category: "Edit chooser", Handler: m.actChooserMove(-1)},
-		{Keys: []string{"enter"}, Label: "open in $EDITOR", Category: "Edit chooser", Hint: true, Handler: m.actChooserPick},
-	}
-}
-
-func (m *Model) actChooserCancel() tea.Cmd { m.editing = false; return nil }
-
-func (m *Model) actChooserMove(delta int) func() tea.Cmd {
-	return func() tea.Cmd {
-		if len(m.editChoices) == 0 {
-			return nil
-		}
-		n := len(m.editChoices)
-		m.editIdx = (m.editIdx + delta + n) % n
+	if m.editMenu == nil {
 		return nil
 	}
-}
-
-func (m *Model) actChooserPick() tea.Cmd {
-	if len(m.editChoices) == 0 {
-		m.editing = false
-		return nil
-	}
-	path := m.editChoices[m.editIdx].Path
-	m.editing = false
-	return m.runEditor(path)
+	return m.editMenu.Bindings("Edit chooser")
 }
 
 func (m *Model) openEditChooser() tea.Cmd {
@@ -441,8 +606,14 @@ func (m *Model) openEditChooser() tea.Cmd {
 	if len(m.editChoices) == 1 {
 		return m.runEditor(m.editChoices[0].Path)
 	}
-	m.editing = true
-	m.editIdx = 0
+	items := make([]components.MenuItem, 0, len(m.editChoices))
+	for _, c := range m.editChoices {
+		items = append(items, components.MenuItem{Label: c.Label, Hint: c.Path})
+	}
+	m.editMenu = components.NewMenu(items,
+		components.WithMenuTitle("Edit clusters.yaml"),
+		components.WithMenuStyles(m.styles),
+	)
 	return nil
 }
 
@@ -452,6 +623,9 @@ func (m *Model) connectCurrent() tea.Cmd {
 		return nil
 	}
 	name := row.ID
+	if m.flashInvalidReason(name) {
+		return nil
+	}
 	c := m.findCluster(name)
 	if c == nil {
 		return nil
@@ -463,8 +637,9 @@ func (m *Model) connectCurrent() tea.Cmd {
 		return nil
 	}
 	m.statuses[name] = StatusChecking
+	m.pingGen[name]++
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentConnect)
+	return pingCmd(m.pinger, *c, m.pingTimeout, intentConnect, m.pingGen[name])
 }
 
 func (m *Model) testCurrent() tea.Cmd {
@@ -473,13 +648,17 @@ func (m *Model) testCurrent() tea.Cmd {
 		return nil
 	}
 	name := row.ID
+	if m.flashInvalidReason(name) {
+		return nil
+	}
 	c := m.findCluster(name)
 	if c == nil || m.pinger == nil {
 		return nil
 	}
 	m.statuses[name] = StatusChecking
+	m.pingGen[name]++
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentTest)
+	return pingCmd(m.pinger, *c, m.pingTimeout, intentTest, m.pingGen[name])
 }
 
 func (m *Model) testAll() tea.Cmd {
@@ -488,14 +667,35 @@ func (m *Model) testAll() tea.Cmd {
 	}
 	cmds := make([]tea.Cmd, 0, len(m.clusters))
 	for _, c := range m.clusters {
+		if _, bad := m.invalidNames[c.Name]; bad {
+			// skip silently — the invalid row already carries its reason
+			// and re-toasting one warning per invalid cluster on every
+			// "T" would just be noise.
+			continue
+		}
 		m.statuses[c.Name] = StatusChecking
-		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest))
+		m.pingGen[c.Name]++
+		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest, m.pingGen[c.Name]))
 	}
 	m.refreshTable()
 	if len(cmds) == 0 {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+// flashInvalidReason returns true (and pushes a toast) when the named
+// cluster failed to load. Connect/test handlers short-circuit on it.
+func (m *Model) flashInvalidReason(name string) bool {
+	if _, bad := m.invalidNames[name]; !bad {
+		return false
+	}
+	msg := "cluster " + name + ": invalid configuration"
+	if reason, ok := m.errors[name]; ok && reason != "" {
+		msg = "cluster " + name + ": " + reason
+	}
+	m.toasts.Push(components.ToastError, msg)
+	return true
 }
 
 func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
@@ -510,6 +710,9 @@ func (m *Model) findCluster(name string) *config.Cluster {
 }
 
 func (m *Model) handlePingResult(msg PingResultMsg) {
+	if msg.Gen != m.pingGen[msg.Name] {
+		return
+	}
 	if msg.Err != nil {
 		m.statuses[msg.Name] = StatusFailed
 		m.errors[msg.Name] = msg.Err.Error()
@@ -561,6 +764,12 @@ func (m *Model) rowValues(c config.Cluster) []string {
 	if c.Name == m.cliName {
 		flags = append(flags, "(cli)")
 	}
+	if kafka.IsInsecureTLS(c) {
+		// [NO-TLS-VERIFY] mirrors the [RO] convention (capitalized,
+		// braces-wrapped) and names the exact thing that's off — matches
+		// the YAML field skip_verify and the --tls-skip-verify flag.
+		flags = append(flags, m.styles.StatusWarn.Render("[NO-TLS-VERIFY]"))
+	}
 	return []string{
 		colorDot,
 		name,
@@ -571,14 +780,15 @@ func (m *Model) rowValues(c config.Cluster) []string {
 }
 
 func (m *Model) View() string {
-	parts := []string{m.table.View()}
-	if m.editing {
-		parts = append(parts, m.renderEditChooser())
+	if m.editMenu != nil {
+		body := m.table.View()
+		popup := lipgloss.Place(m.width, lipgloss.Height(body), lipgloss.Center, lipgloss.Center, m.editMenu.View(0))
+		return popup
 	}
-	return strings.Join(parts, "\n")
+	return m.table.View()
 }
 
-func (m *Model) EditingChooser() bool { return m.editing }
+func (m *Model) EditingChooser() bool { return m.editMenu != nil }
 
 func (m *Model) EditChoices() []string {
 	out := make([]string, 0, len(m.editChoices))
@@ -588,25 +798,11 @@ func (m *Model) EditChoices() []string {
 	return out
 }
 
-func (m *Model) EditCursor() int { return m.editIdx }
-
-func (m *Model) renderEditChooser() string {
-	lines := []string{m.styles.HelpTitle.Render("Edit clusters.yaml")}
-	for i, c := range m.editChoices {
-		marker := "( ) "
-		style := m.styles.Command
-		if i == m.editIdx {
-			marker = "(•) "
-			style = m.styles.CommandHL
-		}
-		lines = append(lines, "  "+style.Render(marker+c.Label+"  "+c.Path))
+func (m *Model) EditCursor() int {
+	if m.editMenu == nil {
+		return 0
 	}
-	lines = append(lines, "", m.styles.HintLabel.Render("enter select  esc cancel"))
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Render(strings.Join(lines, "\n"))
-	return box
+	return m.editMenu.Cursor()
 }
 
 // ----- Messages -----
@@ -622,6 +818,9 @@ type PingResultMsg struct {
 	Name   string
 	Err    error
 	Intent pingIntent
+	// Gen pins the result to the [Model.pingGen] for Name at dispatch time
+	// so handlers drop stale arrivals from a re-issued ping.
+	Gen uint64
 }
 
 type EditCompletedMsg struct {
@@ -629,11 +828,11 @@ type EditCompletedMsg struct {
 	Err  error
 }
 
-func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingIntent) tea.Cmd {
+func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingIntent, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		err := p.Ping(ctx, c)
-		return PingResultMsg{Name: c.Name, Err: err, Intent: intent}
+		return PingResultMsg{Name: c.Name, Err: err, Intent: intent, Gen: gen}
 	}
 }

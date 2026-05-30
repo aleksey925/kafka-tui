@@ -86,23 +86,26 @@ func Init(opts Options) (*Logger, error) {
 		return nil, err
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	handler := NewHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 	logger := slog.New(handler)
 
 	return &Logger{Logger: logger, Writer: w, ResolvedAt: resolved}, nil
 }
 
-// ParseLevel maps a textual level into slog.Level. Empty → DefaultLevel.
+// ParseLevel maps a canonical level string into slog.Level. Empty →
+// DefaultLevel. Input is expected to already be normalized (lowercase,
+// trimmed) by config.PostProcessConfig — this parser is strict and only
+// matches the canonical set.
 func ParseLevel(s string) (slog.Level, error) {
 	if s == "" {
 		s = DefaultLevel
 	}
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	switch s {
 	case "debug":
 		return slog.LevelDebug, nil
 	case "info":
 		return slog.LevelInfo, nil
-	case "warn", "warning":
+	case "warn":
 		return slog.LevelWarn, nil
 	case "error":
 		return slog.LevelError, nil

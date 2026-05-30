@@ -8,8 +8,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -68,7 +68,7 @@ func DetectProtocol(c config.Cluster) Protocol {
 // opening any connections.
 func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protocol, error) {
 	if len(c.Brokers) == 0 {
-		return nil, "", fmt.Errorf("kafka: cluster %q has no brokers", c.Name)
+		return nil, "", errors.New("kafka: no brokers")
 	}
 
 	clientID := dopts.ClientID
@@ -84,7 +84,7 @@ func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protoco
 	if c.TLS != nil {
 		tlsCfg, err := buildTLSConfig(c.TLS)
 		if err != nil {
-			return nil, "", fmt.Errorf("kafka: cluster %q tls: %w", c.Name, err)
+			return nil, "", fmt.Errorf("kafka: tls: %w", err)
 		}
 		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
 	}
@@ -92,7 +92,7 @@ func BuildClientOptions(c config.Cluster, dopts DialOptions) ([]kgo.Opt, Protoco
 	if c.SASL != nil {
 		mech, err := buildSASLMechanism(c.SASL)
 		if err != nil {
-			return nil, "", fmt.Errorf("kafka: cluster %q sasl: %w", c.Name, err)
+			return nil, "", fmt.Errorf("kafka: sasl: %w", err)
 		}
 		opts = append(opts, kgo.SASL(mech))
 	}
@@ -125,7 +125,7 @@ func buildTLSConfig(t *config.TLSConfig) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	keyBytes, err := readMaterial("key", t.Key, t.KeyFile)
+	keyBytes, err := readMaterial("key", t.Key.Reveal(), t.KeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -159,22 +159,26 @@ func readMaterial(label, inline, path string) ([]byte, error) {
 	return data, nil
 }
 
+// buildSASLMechanism builds a franz-go SASL mechanism from already-normalized
+// config. The mechanism string is upper-cased and validated at load
+// time inside the per-cluster pipeline, so a bogus value never reaches
+// this function — the cluster is quarantined in Loaded.InvalidClusters
+// first.
 func buildSASLMechanism(s *config.SASLConfig) (sasl.Mechanism, error) {
-	mech := strings.ToUpper(strings.TrimSpace(s.Mechanism))
-	if mech == "" {
+	if s.Mechanism == "" {
 		return nil, errors.New("mechanism is empty")
 	}
 	if s.Username == "" {
 		return nil, errors.New("username is empty")
 	}
-
-	switch mech {
+	pass := s.Password.Reveal()
+	switch s.Mechanism {
 	case saslMechanismPlain:
-		return plain.Auth{User: s.Username, Pass: s.Password}.AsMechanism(), nil
+		return plain.Auth{User: s.Username, Pass: pass}.AsMechanism(), nil
 	case saslMechanismScram256:
-		return scram.Auth{User: s.Username, Pass: s.Password}.AsSha256Mechanism(), nil
+		return scram.Auth{User: s.Username, Pass: pass}.AsSha256Mechanism(), nil
 	case saslMechanismScram512:
-		return scram.Auth{User: s.Username, Pass: s.Password}.AsSha512Mechanism(), nil
+		return scram.Auth{User: s.Username, Pass: pass}.AsSha512Mechanism(), nil
 	default:
 		return nil, fmt.Errorf("unsupported mechanism %q (allowed: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)", s.Mechanism)
 	}
@@ -187,11 +191,26 @@ func Dial(c config.Cluster, dopts DialOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if IsInsecureTLS(c) {
+		// log every top-level dial (not the per-action transient consumers
+		// in messages.go / produce.go / topics.go — those reuse the same
+		// cluster config and would just spam). The badge in the picker /
+		// header is the visual counterpart; this is the audit trail.
+		slog.Warn("kafka: tls.skip_verify enabled — connection is not MitM-resistant",
+			slog.String("cluster", c.Name))
+	}
 	kc, err := kgo.NewClient(opts...)
 	if err != nil {
-		return nil, fmt.Errorf("kafka: cluster %q: new client: %w", c.Name, err)
+		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}
 	return newClient(kc, c, proto), nil
+}
+
+// IsInsecureTLS reports whether the cluster opts out of TLS server
+// verification. Shared with the UI so picker / header surface a badge
+// without re-deriving the rule.
+func IsInsecureTLS(c config.Cluster) bool {
+	return c.TLS != nil && c.TLS.SkipVerify
 }
 
 // Ping issues a bounded broker-metadata request to verify connectivity.
@@ -202,7 +221,7 @@ func (c *Client) Ping(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if _, err := c.adm.BrokerMetadata(ctx); err != nil {
-		return fmt.Errorf("kafka: ping cluster %q: %w", c.cluster.Name, err)
+		return fmt.Errorf("kafka: ping: %w", err)
 	}
 	return nil
 }

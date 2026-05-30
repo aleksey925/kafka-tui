@@ -6,11 +6,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/config"
+	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/logging"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
 )
 
-func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool) {
+func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI, insecureTLS bool) {
 	m.activeClu = name
 	m.clusterClr = color
 	m.clusterRO = readOnly
@@ -20,8 +22,10 @@ func (m *Model) updateHeaderForActive(name, color string, readOnly, fromCLI bool
 		ClusterColor: color,
 		ReadOnly:     readOnly,
 		FromCLI:      fromCLI,
+		InsecureTLS:  insecureTLS,
 		Context:      m.activeClusterContext(name),
 	}
+	logging.SetCluster(name)
 }
 
 // activeClusterContext derives the configuration-source label for the
@@ -62,7 +66,20 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 		m.client.Close()
 	}
 	m.client = client
-	m.updateHeaderForActive(clu.Name, clu.Color, clu.ReadOnly || (m.boot != nil && m.boot.ReadOnly), name == m.boot.CLIName)
+	// closeActive must run BEFORE clear so the old screen's snapshot
+	// (which closeActive captures into sessionState) is wiped along with
+	// everything else. Reversing the order on `:cluster <name>` would
+	// re-pollute the map after the clear, and the new cluster's topics
+	// screen would inherit the stale state via restoreState.
+	m.closeActive()
+	clear(m.sessionState)
+	m.updateHeaderForActive(
+		clu.Name,
+		clu.Color,
+		clu.ReadOnly || (m.boot != nil && m.boot.ReadOnly),
+		name == m.boot.CLIName,
+		kafka.IsInsecureTLS(*clu),
+	)
 	return m.replaceScreen(ScreenTopics, "")
 }
 

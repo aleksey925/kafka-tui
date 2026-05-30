@@ -1,6 +1,8 @@
 package components_test
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -149,4 +151,32 @@ func TestWithToastStyles_AppliesPalette(t *testing.T) {
 	q := components.NewToasts(components.WithToastStyles(theme.DefaultStyles()))
 	q.Push(components.ToastInfo, "x")
 	assert.NotEmpty(t, q.View())
+}
+
+func TestToasts_WarnAndErrorMirrorToSlog(t *testing.T) {
+	// capture slog output for this test only, then restore the test-wide
+	// discard logger.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	q := components.NewToasts()
+	q.Push(components.ToastSuccess, "saved")
+	q.Push(components.ToastInfo, "info")
+	q.Push(components.ToastWarning, "look out")
+	q.Push(components.ToastError, "boom")
+
+	out := buf.String()
+	// success / info must NOT be mirrored — the flash bar keeps them, the log
+	// would just be cluttered with routine successes.
+	assert.NotContains(t, out, "saved")
+	assert.NotContains(t, out, `text=info`)
+
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, `msg=toast`)
+	assert.Contains(t, out, `text="look out"`)
+
+	assert.Contains(t, out, "level=ERROR")
+	assert.Contains(t, out, `text=boom`)
 }

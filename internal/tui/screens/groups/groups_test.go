@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aleksey925/kafka-tui/internal/kafka"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
 )
 
@@ -139,6 +140,42 @@ func TestEnter_OpensDetail(t *testing.T) {
 	d := m.Detail()
 	require.NotNil(t, d)
 	assert.Equal(t, "g1", d.Group())
+}
+
+func TestDetail_StaleLoadForPreviousGroupIsDropped(t *testing.T) {
+	// arrange — open detail for g1, then close and open detail for g2.
+	// A late DetailLoadedMsg for g1 must not bleed into g2's view.
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1"}, {Group: "g2"}}
+	svc.descriptions = map[string]kafka.GroupDescription{
+		"g1": {Group: "g1", State: "Stable", ProtocolType: "consumer"},
+		"g2": {Group: "g2", State: "Empty"},
+	}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	// drain g1's Init cmd so its DetailLoadedMsg lands in the toast queue
+	// and not in flight when we open g2 — the test forges a stale g1
+	// message explicitly below, separate from what Init would produce.
+	drive(t, m, m.Update(keyPress("enter")))
+	_ = m.Update(keyPress("esc"))
+	_ = m.Update(keyPress("j"))
+	drive(t, m, m.Update(keyPress("enter")))
+	d := m.Detail()
+	require.NotNil(t, d)
+	require.Equal(t, "g2", d.Group())
+	require.Equal(t, "Empty", d.Description().State)
+
+	// act — forge a late g1 result whose Gen matches d's live counter, so
+	// only the Identity mismatch can save us.
+	m.Update(groups.DetailLoadedMsg{
+		Tag:         lifecycle.NewTag(d.LoadGen(), "g1"),
+		Description: kafka.GroupDescription{Group: "g1", State: "Stable", ProtocolType: "consumer"},
+	})
+
+	// assert — g2's state must not have been overwritten with g1's data.
+	assert.Equal(t, "Empty", d.Description().State)
+	assert.Equal(t, "g2", d.Description().Group)
 }
 
 func TestEsc_RaisesBackOnList(t *testing.T) {

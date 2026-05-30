@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/kafka"
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
@@ -64,6 +65,7 @@ type Action struct {
 type Options struct {
 	Service  Service
 	Topic    string
+	Cluster  string
 	ReadOnly bool
 	Pager    PagerOpener
 	// PrefillFromMessage activates resend mode (partition is reset to auto).
@@ -73,18 +75,20 @@ type Options struct {
 }
 
 type Model struct {
-	svc   Service
-	topic string
+	svc     Service
+	topic   string
+	cluster string
 
 	readOnly bool
 	pager    PagerOpener
 
-	form       *components.Form
-	toasts     *components.Toasts
-	err        string
-	sending    bool
-	fullscreen bool
-	mode       Mode
+	form        *components.Form
+	toasts      *components.Toasts
+	sendConfirm *components.SendConfirm
+	err         string
+	sending     bool
+	fullscreen  bool
+	mode        Mode
 
 	// partition type-to-jump: digits accumulate in partitionTypeBuf to
 	// select the matching option live; partitionTypeGen invalidates
@@ -138,6 +142,7 @@ func New(opts Options) *Model {
 	m := &Model{
 		svc:      opts.Service,
 		topic:    opts.Topic,
+		cluster:  opts.Cluster,
 		readOnly: opts.ReadOnly,
 		pager:    opts.Pager,
 		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
@@ -266,6 +271,10 @@ func (m *Model) Sending() bool { return m.sending }
 // (:, /, ?). INSERT restores raw-input for literal text input.
 func (m *Model) WantsRawInput() bool { return m.mode == ModeInsert }
 
+// SendConfirmOpen reports whether the send confirm modal is currently
+// mounted. Exposed for tests.
+func (m *Model) SendConfirmOpen() bool { return m.sendConfirm != nil }
+
 // HasOverlay is always true so the host's q/esc fallback yields to the
 // form (a stray `q` in NORMAL must not pop the screen mid-edit). The
 // form's own esc handler raises action.Back to close cleanly.
@@ -283,35 +292,28 @@ func (m *Model) HelpSections() []help.Section {
 	return help.SectionsFromBindings(m.bindings())
 }
 
-// bindings concatenates globals with NORMAL-mode keys for help/hints.
-// The dispatcher consumes the two slices separately because globals fire
-// in both modes while normal-mode keys must not steal editing chars in
-// INSERT.
+// bindings returns the keymap surfaced to help/hints. While the send
+// confirm modal is open, only its keys are advertised so the bar matches
+// what actually fires.
 func (m *Model) bindings() []keymap.Binding {
-	return append(m.globalBindings(), m.normalBindings()...)
-}
-
-// globalBindings fire in both NORMAL and INSERT — kept minimal so that letters
-// remain available for text input. Send lives here so the user can dispatch
-// without leaving INSERT; the heavy ctrl+s combo is the safety net against
-// accidental sends.
-func (m *Model) globalBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "send (close form)", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(true) }},
-		{Keys: []string{"ctrl+shift+s"}, Label: "send & keep open", Category: "Produce", Hint: true, Handler: func() tea.Cmd { return m.send(false) }},
+	if m.sendConfirm != nil {
+		return m.sendConfirm.Bindings("Send")
 	}
+	return m.normalBindings()
 }
 
 // normalBindings are NOT consulted in INSERT so tab/enter/esc retain
-// their text-editing meaning. Letter shortcuts (e) live here because in
-// INSERT they are literal text; ctrl+u lives here too because in INSERT it
-// is the readline kill-to-line-start handled by the lineedit-backed form.
+// their text-editing meaning. Letter shortcuts (e, s) live here because
+// in INSERT they are literal text; ctrl+u lives here too because in
+// INSERT it is the readline kill-to-line-start handled by the
+// lineedit-backed form.
 func (m *Model) normalBindings() []keymap.Binding {
 	return []keymap.Binding{
 		{Keys: []string{"+", "_", "shift++", "shift+-"}, DisplayKeys: []string{"+", "_"}, Label: "toggle fullscreen", Category: "Form", Hint: true, Handler: m.actToggleFullscreen},
 		{Keys: []string{"tab", "down", "j"}, Label: "next field", Category: "Form", Hint: true, Handler: m.actFocusNext},
 		{Keys: []string{"shift+tab", "up", "k"}, Label: "previous field", Category: "Form", Hint: true, Handler: m.actFocusPrev},
 		{Keys: []string{"ctrl+u"}, Label: "clear form", Category: "Form", Hint: true, Handler: m.actClear},
+		{Keys: []string{"s"}, Label: "send", Category: "Produce", Hint: true, Handler: m.actOpenSendConfirm},
 		{Keys: []string{"e"}, Label: "open record in $EDITOR", Category: "Produce", Hint: true, Handler: m.actEditor},
 		{Keys: []string{"enter"}, Label: "edit focused field", Category: "Form", Hint: true, HandlerMsg: m.enterInsertOnFocused},
 		{Keys: []string{"esc"}, Label: "cancel edit / close form", Category: "Form", Hint: true, HandlerMsg: m.handleEscNormal},
@@ -336,6 +338,28 @@ func (m *Model) actFocusPrev() tea.Cmd {
 }
 
 func (m *Model) actEditor() tea.Cmd { return m.openEditor() }
+
+// actOpenSendConfirm gates the produce: read-only clusters short-circuit
+// with a toast, an invalid spec surfaces inline so the user fixes it
+// before being asked to confirm, and a send already in flight blocks
+// re-entry. Only after these guards do we mount the modal that lets the
+// user choose between send-and-close and send-and-keep.
+func (m *Model) actOpenSendConfirm() tea.Cmd {
+	if m.readOnly {
+		m.toasts.Push(components.ToastWarning, "cluster is read-only — produce blocked")
+		return nil
+	}
+	if m.sending {
+		return nil
+	}
+	if _, err := m.spec(); err != nil {
+		m.err = err.Error()
+		return nil
+	}
+	m.err = ""
+	m.sendConfirm = components.NewSendConfirm(m.cluster, m.topic, components.WithSendConfirmStyles(m.styles))
+	return nil
+}
 
 // actClear yields to an open segmented popup — clearing the form under it
 // would silently wipe both the popup choice and every other field the user
@@ -396,7 +420,14 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 // switching from NORMAL to INSERT so the user lands in the field they just
 // pasted into. Non-text fields (segmented) silently drop the paste — its
 // content has no meaning for an option picker.
+//
+// While the send confirm modal is up the form is uneditable: the modal
+// owns input, and a paste leaking through would silently corrupt the
+// record the user is about to confirm.
 func (m *Model) handlePaste(msg tea.PasteMsg) {
+	if m.sendConfirm != nil {
+		return
+	}
 	kind := m.form.FocusedField().Kind
 	if kind != components.FieldText && kind != components.FieldTextarea && kind != components.FieldList {
 		return
@@ -409,6 +440,9 @@ func (m *Model) handlePaste(msg tea.PasteMsg) {
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
+	if m.sendConfirm != nil {
+		return m.handleSendConfirmKey(key)
+	}
 	if m.toasts != nil {
 		_, _ = m.toasts.Update(key)
 	}
@@ -419,17 +453,31 @@ func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 	}
-	if cmd, ok := m.handleGlobalShortcut(key); ok {
-		return cmd
-	}
 	if m.mode == ModeInsert {
 		return m.handleInsert(key)
 	}
 	return m.handleNormal(key)
 }
 
-func (m *Model) handleGlobalShortcut(key tea.KeyPressMsg) (tea.Cmd, bool) {
-	return keymap.Dispatch(m.globalBindings(), key)
+// handleSendConfirmKey routes one keypress to the open send confirm
+// modal; y/k commit the produce (close form / keep open), n or esc
+// dismiss the modal without sending.
+func (m *Model) handleSendConfirmKey(key tea.KeyPressMsg) tea.Cmd {
+	c, _ := m.sendConfirm.Update(key)
+	m.sendConfirm = c
+	switch c.Result() {
+	case components.SendConfirmPending:
+		return nil
+	case components.SendConfirmYesClose:
+		m.sendConfirm = nil
+		return m.send(true)
+	case components.SendConfirmYesKeep:
+		m.sendConfirm = nil
+		return m.send(false)
+	case components.SendConfirmNo:
+		m.sendConfirm = nil
+	}
+	return nil
 }
 
 // handleNormal: when a segmented popup is open, nav keys (enter, arrows,
@@ -717,7 +765,16 @@ func (m *Model) spec() (kafka.ProduceSpec, error) {
 	if err != nil {
 		return kafka.ProduceSpec{}, err
 	}
-	codec, err := kafka.ParseCompression(get(fieldCompression))
+	rawCompression := get(fieldCompression)
+	normCompression := rawCompression
+	if rawCompression != "" {
+		norm, ok := config.NormalizeEnum(rawCompression, config.AllowedCompressions)
+		if !ok {
+			return kafka.ProduceSpec{}, fmt.Errorf("compression: unknown value %q", rawCompression)
+		}
+		normCompression = norm
+	}
+	codec, err := kafka.ParseCompression(normCompression)
 	if err != nil {
 		return kafka.ProduceSpec{}, fmt.Errorf("compression: %w", err)
 	}
@@ -824,16 +881,10 @@ func (m *Model) handleEditorResult(msg EditorEditedMsg) {
 }
 
 func (m *Model) View() string {
-	var hintText string
-	switch {
-	case m.mode == ModeInsert:
-		hintText = "type to edit  tab next  enter commit/newline  esc back to NORMAL  readline: ctrl+a/e ctrl+u/k ctrl+w  on headers: ctrl+n add row  ctrl+x remove row"
-	case m.fullscreen:
-		hintText = "tab/shift+tab cycle field  enter edit  +/_ exit fullscreen  ctrl+s send  ctrl+shift+s send & keep  ctrl+u clear  e $EDITOR  esc back to split"
-	default:
-		hintText = "tab/shift+tab navigate  enter edit  +/_ fullscreen  ctrl+s send  ctrl+shift+s send & keep  ctrl+u clear form  e $EDITOR  esc cancel"
+	if m.sendConfirm != nil {
+		return m.sendConfirm.View(m.width, m.height)
 	}
-	hint := m.styles.HintLabel.Render(hintText)
+	hint := components.HintLine(m.styles, m.hintEntries()...)
 
 	chromeAbove := 0
 	if m.err != "" {
@@ -884,6 +935,45 @@ var fieldLabel = map[string]string{
 	fieldValue:       "Value",
 }
 
+func (m *Model) hintEntries() []components.Hint {
+	switch {
+	case m.mode == ModeInsert:
+		return []components.Hint{
+			{Label: "type to edit"},
+			{Key: "tab", Label: "next"},
+			{Key: "enter", Label: "commit/newline"},
+			{Key: "esc", Label: "back to NORMAL"},
+			{Label: "readline:"},
+			{Key: "ctrl+a/e"},
+			{Key: "ctrl+u/k"},
+			{Key: "ctrl+w"},
+			{Label: "on headers:"},
+			{Key: "ctrl+n", Label: "add row"},
+			{Key: "ctrl+x", Label: "remove row"},
+		}
+	case m.fullscreen:
+		return []components.Hint{
+			{Key: "tab/shift+tab", Label: "cycle field"},
+			{Key: "enter", Label: "edit"},
+			{Key: "+/_", Label: "exit fullscreen"},
+			{Key: "s", Label: "send"},
+			{Key: "ctrl+u", Label: "clear"},
+			{Key: "e", Label: "$EDITOR"},
+			{Key: "esc", Label: "back to split"},
+		}
+	default:
+		return []components.Hint{
+			{Key: "tab/shift+tab", Label: "navigate"},
+			{Key: "enter", Label: "edit"},
+			{Key: "+/_", Label: "fullscreen"},
+			{Key: "s", Label: "send"},
+			{Key: "ctrl+u", Label: "clear form"},
+			{Key: "e", Label: "$EDITOR"},
+			{Key: "esc", Label: "cancel"},
+		}
+	}
+}
+
 func (m *Model) renderFullscreen() string {
 	active := m.form.FocusedField().Key
 	return m.renderTabs() + "\n\n" + m.form.RenderField(active)
@@ -905,8 +995,8 @@ func (m *Model) renderTabs() string {
 
 // ----- Messages -----
 
-// ProduceResultMsg.Close is true for ctrl+s (send & close), false for
-// ctrl+shift+s (send & keep open).
+// ProduceResultMsg.Close is true for the "send & close" confirm answer
+// (y), false for "send & keep form open" (k).
 type ProduceResultMsg struct {
 	Spec   kafka.ProduceSpec
 	Result kafka.ProduceResult

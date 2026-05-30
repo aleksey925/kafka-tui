@@ -16,6 +16,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -68,8 +69,7 @@ type ConfigsModel struct {
 	width, height int
 	manualRefresh bool
 
-	lifeCtx    context.Context //nolint:containedctx // tied to screen lifecycle
-	lifeCancel context.CancelFunc
+	track *lifecycle.Tracker
 
 	action ConfigsAction
 	now    func() time.Time
@@ -95,29 +95,27 @@ func NewConfigsModel(opts ConfigsOptions) *ConfigsModel {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	vp := components.NewViewport()
 	// rows are formatted columns — wrap would break alignment, so we
 	// stay in truncate mode and expose h/l for horizontal panning.
 	vp.SetWrap(false)
 	vp.SetCursorStyle(styles.TableCursor)
 	return &ConfigsModel{
-		svc:        opts.Service,
-		topic:      opts.Topic,
-		readOnly:   opts.ReadOnly,
-		focusKey:   opts.FocusKey,
-		toasts:     components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
-		viewport:   vp,
-		now:        now,
-		styles:     styles,
-		lifeCtx:    lifeCtx,
-		lifeCancel: lifeCancel,
+		svc:      opts.Service,
+		topic:    opts.Topic,
+		readOnly: opts.ReadOnly,
+		focusKey: opts.FocusKey,
+		toasts:   components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
+		viewport: vp,
+		now:      now,
+		styles:   styles,
+		track:    lifecycle.New(),
 	}
 }
 
 func (m *ConfigsModel) Init() tea.Cmd {
 	m.loading = true
-	return loadConfigsCmd(m.lifeCtx, m.svc, m.topic)
+	return loadConfigsCmd(m.track.Context(), m.svc, m.topic)
 }
 
 // Close cancels any in-flight load goroutine so a slow
@@ -125,9 +123,7 @@ func (m *ConfigsModel) Init() tea.Cmd {
 // screen (or a freshly constructed ConfigsModel for another topic) after
 // the host has popped this instance.
 func (m *ConfigsModel) Close() {
-	if m.lifeCancel != nil {
-		m.lifeCancel()
-	}
+	m.track.Close()
 }
 
 func (m *ConfigsModel) Topic() string { return m.topic }
@@ -260,7 +256,7 @@ func (m *ConfigsModel) actToggleHelp() tea.Cmd {
 func (m *ConfigsModel) actRefresh() tea.Cmd {
 	m.loading = true
 	m.manualRefresh = true
-	return loadConfigsCmd(m.lifeCtx, m.svc, m.topic)
+	return loadConfigsCmd(m.track.Context(), m.svc, m.topic)
 }
 
 func (m *ConfigsModel) moveCursor(delta int) {
@@ -455,7 +451,13 @@ func (m *ConfigsModel) View() string {
 	if m.helpOpen {
 		// help popup is anchored over the list area so it doesn't
 		// disappear off-screen when the cursor is far down the list.
-		body = m.placePopupOver(body, m.renderHelp())
+		if popup := m.renderHelp(); popup != "" && m.width > 0 {
+			avail := m.listHeight()
+			if avail <= 0 {
+				avail = lipgloss.Height(body)
+			}
+			body = layout.PlaceCenteredTop(m.width, avail, popup)
+		}
 	}
 	parts = append(parts, body)
 
@@ -558,26 +560,6 @@ func (m *ConfigsModel) syncToViewport() {
 	}
 }
 
-// placePopupOver anchors popup at the top of body's area, centered
-// horizontally, so the help box always sits in a predictable spot
-// regardless of how much was scrolled. The body string is replaced —
-// classic single-buffer terminals can't paint a real overlay and the
-// list isn't useful while the popup is open.
-func (m *ConfigsModel) placePopupOver(body, popup string) string {
-	if popup == "" || m.width <= 0 {
-		return body
-	}
-	avail := m.listHeight()
-	if avail <= 0 {
-		avail = lipgloss.Height(body)
-	}
-	centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, popup)
-	if avail <= 0 {
-		return centered
-	}
-	return lipgloss.PlaceVertical(avail, lipgloss.Top, centered)
-}
-
 func (m *ConfigsModel) renderHelp() string {
 	r, ok := m.selectedRow()
 	if !ok {
@@ -662,12 +644,12 @@ type ConfigsLoadedMsg struct {
 	Err     error
 }
 
-func loadConfigsCmd(lifeCtx context.Context, svc Service, topic string) tea.Cmd {
+func loadConfigsCmd(parentCtx context.Context, svc Service, topic string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(lifeCtx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 		defer cancel()
 		cfgs, err := svc.DescribeAllTopicConfigs(ctx, topic)
-		if lifeCtx.Err() != nil {
+		if parentCtx.Err() != nil {
 			return nil
 		}
 		if err != nil {

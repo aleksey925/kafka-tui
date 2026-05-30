@@ -43,7 +43,7 @@ type ClipboardConfig struct {
 
 type VaultConfig struct {
 	Address string `yaml:"address"`
-	Token   string `yaml:"token"`
+	Token   Secret `yaml:"token"`
 }
 
 func Defaults() Config {

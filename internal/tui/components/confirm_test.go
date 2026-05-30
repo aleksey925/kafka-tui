@@ -39,6 +39,15 @@ func TestConfirm_OtherKeysIgnored(t *testing.T) {
 	assert.Equal(t, components.ConfirmPending, c.Result())
 }
 
+// Enter must NOT commit — that's the anti-accident contract. A reflexive
+// enter on the modal is a common muscle-memory mistake; only an explicit
+// `y` confirms (see "Confirm for destructive actions" in CLAUDE.md).
+func TestConfirm_EnterIsIgnored(t *testing.T) {
+	c := components.NewConfirm("title", "msg")
+	c, _ = c.Update(keyPressMsg("enter"))
+	assert.Equal(t, components.ConfirmPending, c.Result())
+}
+
 func TestConfirm_Reset(t *testing.T) {
 	c := components.NewConfirm("title", "msg")
 	c, _ = c.Update(keyPressMsg("y"))

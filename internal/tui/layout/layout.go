@@ -39,6 +39,10 @@ type HeaderInfo struct {
 	ClusterColor string
 	ReadOnly     bool
 	FromCLI      bool
+	// InsecureTLS is true when the active cluster has tls.skip_verify on —
+	// rendered as a warn-colored tag next to Mode so the operator can't
+	// miss that server certs aren't validated for this session.
+	InsecureTLS bool
 	// Context names the configuration source: "cli" when launched with
 	// --brokers, otherwise the source of clusters.yaml ("global" / "project").
 	Context string
@@ -86,7 +90,11 @@ func Header(s theme.Styles, info HeaderInfo, status StatusInfo, hints []KeyHint,
 		return compactHeader(s, info)
 	}
 	rightW := 22
-	leftW := 30
+	// leftW reserves room for the longest legitimate Mode-row content
+	// ("read-write · no-tls-verify" — 37 visible cols with the key
+	// padding and gutter). no-tls-verify is itself a security signal
+	// the operator must not see truncated.
+	leftW := 40
 	if width < 80 {
 		leftW = max(20, width/3)
 		rightW = max(16, width/4)
@@ -108,6 +116,9 @@ func compactHeader(s theme.Styles, info HeaderInfo) string {
 	if info.ReadOnly {
 		parts = append(parts, s.ReadOnly.Render("[RO]"))
 	}
+	if info.InsecureTLS {
+		parts = append(parts, s.StatusWarn.Render("[NO-TLS-VERIFY]"))
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -122,6 +133,13 @@ func renderClusterInfo(s theme.Styles, info HeaderInfo, status StatusInfo, width
 	mode := "read-write"
 	if info.ReadOnly {
 		mode = s.ReadOnly.Render("read-only")
+	}
+	if info.InsecureTLS {
+		// concatenated onto Mode rather than added as a 6th row because
+		// HeaderRows is a fixed geometry constant; the warn-style suffix
+		// stays visible after truncation thanks to TruncateText being
+		// ANSI-aware.
+		mode += " · " + s.StatusWarn.Render("no-tls-verify")
 	}
 	context := info.Context
 	if context == "" {

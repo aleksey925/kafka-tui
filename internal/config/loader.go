@@ -65,10 +65,9 @@ func ClusterContext(sources Sources, name string) string {
 }
 
 type LoaderOptions struct {
-	HomeDir        string
-	StartDir       string
-	ConfigPath     string
-	CLIClusterName string
+	HomeDir    string
+	StartDir   string
+	ConfigPath string
 
 	// VaultBuilder, when non-nil, is invoked from the lazy vault resolver
 	// after the env+file phase. Returning (nil, nil) means "no vault
@@ -90,10 +89,28 @@ type LoaderOptions struct {
 }
 
 type Loaded struct {
-	Config   Config
+	Config Config
+	// Clusters contains only clusters whose configuration was loaded
+	// successfully. Existing consumers (UI selection, dial) operate on
+	// these unchanged.
 	Clusters []Cluster
-	Sources  Sources
-	Warnings []string
+	// InvalidClusters carries clusters whose config failed to load
+	// (vault lookup failure, unresolved placeholder, TLS conflict, etc.)
+	// One broken cluster must not abort startup — surfacing it here lets
+	// the clusters screen render it as a non-selectable row with the
+	// reason, while the rest of the app stays usable.
+	InvalidClusters []InvalidCluster
+	Sources         Sources
+	Warnings        []string
+}
+
+// InvalidCluster pairs a partially-resolved cluster with the reason its
+// load failed. The Cluster field carries whatever was materialized before
+// the failure (typically the name + brokers + raw "${...}" strings on
+// fields that didn't resolve) so the UI has something to display.
+type InvalidCluster struct {
+	Cluster Cluster
+	Reason  error
 }
 
 // Load reads and merges configuration from all applicable layers.
@@ -152,37 +169,90 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 		clusters = cf.Clusters
 	}
 
-	if resolveErr := resolvePlaceholders(&cfg, clusters, opts.ResolveTargets, opts.VaultBuilder); resolveErr != nil {
-		return nil, resolveErr
+	// must run before resolveGlobals / loadClusters — see CLAUDE.md §
+	// Credential exposure warnings.
+	credWarnings := checkYAMLCredentialExposure(cfg.Vault, clusters)
+
+	envFile := EnvFileResolvers()
+	vaultPhase, err := resolveGlobals(&cfg, opts.ResolveTargets, envFile, opts.VaultBuilder)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, c := range clusters {
-		if validateErr := validateClusterTLS(c); validateErr != nil {
-			return nil, validateErr
-		}
-	}
-
-	var warnings []string
-	if opts.CLIClusterName != "" {
-		for i, c := range clusters {
-			if c.Name == opts.CLIClusterName {
-				warnings = append(warnings, fmt.Sprintf(
-					"cluster %q from clusters.yaml is overridden by --brokers and excluded from this session",
-					opts.CLIClusterName,
-				))
-				clusters = append(clusters[:i], clusters[i+1:]...)
-				delete(sources.Clusters, opts.CLIClusterName)
-				break
-			}
-		}
-	}
+	valid, invalid := loadClusters(clusters, envFile, vaultPhase)
+	warnings := postProcessConfig(&cfg)
+	warnings = append(warnings, postProcessClustersSoft(valid)...)
+	warnings = append(warnings, credWarnings...)
 
 	return &Loaded{
-		Config:   cfg,
-		Clusters: clusters,
-		Sources:  sources,
-		Warnings: warnings,
+		Config:          cfg,
+		Clusters:        valid,
+		InvalidClusters: invalid,
+		Sources:         sources,
+		Warnings:        warnings,
 	}, nil
+}
+
+// resolveGlobals runs env+file → vault → assert over cfg and CLI-supplied
+// targets. Failures here are fatal because cfg drives global app state and
+// CLI flags model explicit user intent — degrading would just defer the
+// same error into confusing runtime failures. Returns the vault phase
+// (with a lazy client built from the resolved cfg.Vault) for per-cluster
+// reuse.
+func resolveGlobals(cfg *Config, extras []any, envFile Resolvers, vb func(VaultConfig) (VaultResolver, error)) (Resolvers, error) {
+	// env+file must run before the lazy vault client is built —
+	// cfg.Vault.{Address,Token} themselves may carry ${env:...} /
+	// ${file:...} placeholders that the client needs resolved to dial.
+	if err := envFile.ResolveStruct(cfg); err != nil {
+		return Resolvers{}, err
+	}
+	for _, t := range extras {
+		if err := envFile.ResolveStruct(t); err != nil {
+			return Resolvers{}, err
+		}
+	}
+
+	// nil-Vault Resolvers passes through ${vault:...} placeholders; the
+	// final assertNoPlaceholders then catches any leftovers as a hard
+	// error here, or quarantines the offending cluster downstream.
+	var vaultPhase Resolvers
+	if vb != nil {
+		vaultPhase = VaultOnlyResolvers(&lazyVaultResolver{vc: cfg.Vault, build: vb})
+	}
+	if err := vaultPhase.ResolveStruct(cfg); err != nil {
+		return Resolvers{}, err
+	}
+	for _, t := range extras {
+		if err := vaultPhase.ResolveStruct(t); err != nil {
+			return Resolvers{}, err
+		}
+	}
+
+	if err := assertNoPlaceholders(cfg); err != nil {
+		return Resolvers{}, err
+	}
+	for _, t := range extras {
+		if err := assertNoPlaceholders(t); err != nil {
+			return Resolvers{}, err
+		}
+	}
+	return vaultPhase, nil
+}
+
+// loadClusters runs each cluster through the same placeholder/validate
+// pipeline independently. A failure quarantines only that cluster — the
+// rest still load, so one bad config does not deny access to the rest.
+func loadClusters(clusters []Cluster, envFile, vaultPhase Resolvers) (valid []Cluster, invalid []InvalidCluster) {
+	valid = make([]Cluster, 0, len(clusters))
+	invalid = make([]InvalidCluster, 0)
+	for _, c := range clusters {
+		if err := loadCluster(&c, envFile, vaultPhase); err != nil {
+			invalid = append(invalid, InvalidCluster{Cluster: c, Reason: err})
+			continue
+		}
+		valid = append(valid, c)
+	}
+	return valid, invalid
 }
 
 type fileSlot struct {
@@ -299,71 +369,6 @@ func readYAMLFileIfExists(path string) ([]byte, error) {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
 	return data, nil
-}
-
-// resolvePlaceholders runs the placeholder pipeline (env+file → vault →
-// assert) over cfg, clusters, and any extra targets. Phase order is
-// load-bearing; see CLAUDE.md § Placeholder pipeline.
-func resolvePlaceholders(
-	cfg *Config,
-	clusters []Cluster,
-	extras []any,
-	buildVault func(VaultConfig) (VaultResolver, error),
-) error {
-	envFile := EnvFileResolvers()
-	if err := envFile.ResolveStruct(cfg); err != nil {
-		return err
-	}
-	if err := envFile.ResolveStruct(clusters); err != nil {
-		return err
-	}
-	for _, t := range extras {
-		if err := envFile.ResolveStruct(t); err != nil {
-			return err
-		}
-	}
-	if err := resolveVaultPhase(cfg, clusters, extras, buildVault); err != nil {
-		return err
-	}
-	if err := assertNoPlaceholders(cfg); err != nil {
-		return err
-	}
-	if err := assertNoPlaceholders(clusters); err != nil {
-		return err
-	}
-	for _, t := range extras {
-		if err := assertNoPlaceholders(t); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func resolveVaultPhase(
-	cfg *Config,
-	clusters []Cluster,
-	extras []any,
-	buildVault func(VaultConfig) (VaultResolver, error),
-) error {
-	if buildVault == nil {
-		return nil
-	}
-	// lazy: builder fires only on the first ${vault:...} encounter
-	// (CLAUDE.md § Placeholder pipeline).
-	lazy := &lazyVaultResolver{vc: cfg.Vault, build: buildVault}
-	vaultPhase := VaultOnlyResolvers(lazy)
-	if err := vaultPhase.ResolveStruct(cfg); err != nil {
-		return err
-	}
-	if err := vaultPhase.ResolveStruct(clusters); err != nil {
-		return err
-	}
-	for _, t := range extras {
-		if err := vaultPhase.ResolveStruct(t); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 type lazyVaultResolver struct {

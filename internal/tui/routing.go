@@ -244,9 +244,20 @@ func (m *Model) popOrReplaceToHome() tea.Cmd {
 }
 
 // closeActive releases background resources held by the active screen
-// and clears the pointer.
+// and clears the pointer. The screen's Stateful snapshot is captured
+// first so the next instance can restore it via [Model.instantiate] →
+// [screenRestore]. When the screen has nothing to round-trip (empty
+// filter, no Stateful) any previously-saved entry is deleted — without
+// this the next pop would resurrect a query the user explicitly cleared.
 func (m *Model) closeActive() {
 	if m.active != nil {
+		if id := m.router.Active(); id != "" {
+			if blob, ok := screenSnapshot(m.active); ok {
+				m.sessionState[id] = blob
+			} else {
+				delete(m.sessionState, id)
+			}
+		}
 		closeScreen(m.active)
 		m.active = nil
 	}

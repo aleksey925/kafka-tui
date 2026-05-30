@@ -904,6 +904,175 @@ func TestRoute_TopicsToMessagesAndBack(t *testing.T) {
 	assert.Contains(t, out, "Topics", "popping must restore topics screen")
 }
 
+// TestRoute_TopicsFilterSurvivesMessagesRoundTrip pins the user-facing
+// contract: a `/` filter applied on the topics screen must remain applied
+// after the user drills into a message and pops back. Without the
+// lastFilters round-trip (closeActive saves, instantiate restores) the
+// new topics instance lands unfiltered and the user has to re-type.
+func TestRoute_TopicsFilterSurvivesMessagesRoundTrip(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+	mustCreateTopic(t, cluster, "events")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool {
+		out := m.Render()
+		return strings.Contains(out, "orders") && strings.Contains(out, "events")
+	})
+
+	// apply filter "ord" — narrows to a single row.
+	feed(m, "/", 'o', 'r', 'd')
+	_, _ = m.Update(keyPress("enter"))
+	require.Contains(t, m.Render(), "Topics [1/2] </ord>")
+
+	// push the messages screen via enter on the filtered row.
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Messages")
+
+	// pop back to topics; filter must still be applied once the refresh
+	// from the re-instantiated screen lands its data.
+	_, cmd = m.Update(keyPress("q"))
+	drainCmd(t, m, cmd)
+	settleUntil(t, m, func() bool {
+		return strings.Contains(m.Render(), "Topics [1/2] </ord>")
+	})
+	out := m.Render()
+	assert.Contains(t, out, "Topics [1/2] </ord>", "filter must survive push/pop")
+	assert.NotContains(t, out, "events", "non-matching rows must remain hidden")
+}
+
+// TestRoute_ClearedFilterStaysClearedAcrossRoundTrip pins the inverse of
+// the survive-round-trip contract: an explicit clear (ctrl+u) must not
+// be undone by a stale sessionState entry from an earlier save. The
+// asymmetric "skip writes on empty filter" logic in screenSnapshot
+// would otherwise leave the previously-saved query in the map, and the
+// next pop would resurrect it.
+func TestRoute_ClearedFilterStaysClearedAcrossRoundTrip(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+	mustCreateTopic(t, cluster, "events")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool {
+		out := m.Render()
+		return strings.Contains(out, "orders") && strings.Contains(out, "events")
+	})
+
+	// apply filter "ord", push messages, pop back — filter is now stored
+	// in sessionState[ScreenTopics].
+	feed(m, "/", 'o', 'r', 'd')
+	_, _ = m.Update(keyPress("enter"))
+	require.Contains(t, m.Render(), "Topics [1/2] </ord>")
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Messages")
+	_, cmd = m.Update(keyPress("q"))
+	drainCmd(t, m, cmd)
+	settleUntil(t, m, func() bool {
+		return strings.Contains(m.Render(), "Topics [1/2] </ord>")
+	})
+
+	// user explicitly clears the filter with ctrl+u (k9s "wipe but stay").
+	_, _ = m.Update(keyPress("ctrl+u"))
+	require.Contains(t, m.Render(), "Topics [2]", "ctrl+u must clear the filter inline")
+
+	// push the messages screen again and pop back. The expectation is the
+	// cleared state survives; without delete-on-empty in closeActive the
+	// previously-saved "ord" would resurrect here.
+	_, cmd = m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Messages")
+	_, cmd = m.Update(keyPress("q"))
+	drainCmd(t, m, cmd)
+	settleUntil(t, m, func() bool {
+		out := m.Render()
+		return strings.Contains(out, "orders") && strings.Contains(out, "events")
+	})
+
+	out := m.Render()
+	assert.Contains(t, out, "Topics [2]", "filter must remain cleared after round-trip")
+	assert.NotContains(t, out, "</ord>", "no stale filter must resurrect")
+	assert.Contains(t, out, "events", "non-matching rows visible again")
+}
+
+// TestConnect_DialClearsFilters pins the cluster-boundary rule: each
+// cluster is its own session, so a filter saved against the previous
+// cluster's topic set must NOT bleed into the next cluster — otherwise
+// the user lands on what looks like an empty list when nothing in the
+// new cluster matches the stale query.
+func TestConnect_DialClearsFilters(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+	mustCreateTopic(t, cluster, "events")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool {
+		out := m.Render()
+		return strings.Contains(out, "orders") && strings.Contains(out, "events")
+	})
+
+	// filter topics to a single match.
+	feed(m, "/", 'o', 'r', 'd')
+	_, _ = m.Update(keyPress("enter"))
+	require.Contains(t, m.Render(), "Topics [1/2] </ord>")
+
+	// jump back to the clusters list and re-connect — connectCluster's
+	// clear(lastFilters) wipes the stale filter so the re-instantiated
+	// topics screen renders unfiltered.
+	feed(m, ":", 'c', 'l', 'u', 's', 't', 'e', 'r', 's')
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+	require.Contains(t, m.Render(), "Clusters")
+
+	connectActive(t, m)
+	settleUntil(t, m, func() bool {
+		return strings.Contains(m.Render(), "Topics [2]")
+	})
+	out := m.Render()
+	assert.Contains(t, out, "Topics [2]", "filter must reset on cluster (re)connect")
+	assert.Contains(t, out, "events", "all rows visible again")
+}
+
+// TestConnect_DirectClusterCommandClearsFilters covers the `:cluster <name>`
+// shortcut path. That path bypasses the clusters screen entirely — the
+// active topics screen is still mounted when connectCluster runs — so any
+// filter applied to it would otherwise leak into the new cluster's topics
+// list when closeActive saved it AFTER clear(lastFilters) ran.
+func TestConnect_DirectClusterCommandClearsFilters(t *testing.T) {
+	cluster := startKfake(t)
+	mustCreateTopic(t, cluster, "orders")
+	mustCreateTopic(t, cluster, "events")
+
+	m := newConnectedHost(t, cluster)
+	connectActive(t, m)
+	settleUntil(t, m, func() bool {
+		out := m.Render()
+		return strings.Contains(out, "orders") && strings.Contains(out, "events")
+	})
+
+	feed(m, "/", 'o', 'r', 'd')
+	_, _ = m.Update(keyPress("enter"))
+	require.Contains(t, m.Render(), "Topics [1/2] </ord>")
+
+	// `:cluster kfake` reconnects directly — never visits the clusters
+	// screen. The filter "ord" must be wiped before the new topics screen
+	// mounts.
+	feed(m, ":", 'c', 'l', 'u', 's', 't', 'e', 'r', ' ', 'k', 'f', 'a', 'k', 'e')
+	_, cmd := m.Update(keyPress("enter"))
+	drainCmd(t, m, cmd)
+
+	settleUntil(t, m, func() bool {
+		return strings.Contains(m.Render(), "Topics [2]")
+	})
+	out := m.Render()
+	assert.Contains(t, out, "Topics [2]", "filter must reset on direct :cluster <name>")
+	assert.Contains(t, out, "events", "all rows visible again")
+}
+
 // TestRoute_MessagesToGroupsAndBack drives the messages→groups action via
 // the `g` hotkey, exercising routeMessagesAction.Groups, newGroups, and
 // the groups screen (filtered by topic). q pops back to messages.
@@ -1177,10 +1346,12 @@ func TestRoute_ProduceSuccessForwardsToastToTopics(t *testing.T) {
 	drainCmd(t, m, cmd)
 	require.Contains(t, strings.ToLower(m.Render()), "produce")
 
-	// ctrl+s in NORMAL mode sends and closes — async produce result drains
-	// through the host, the screen pops, and the success toast must land on
-	// the topics screen's queue.
-	_, cmd = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	// `s` opens the send confirm; `y` commits and closes — async produce
+	// result drains through the host, the screen pops, and the success
+	// toast must land on the topics screen's queue.
+	_, cmd = m.Update(keyPressRune('s'))
+	drainCmd(t, m, cmd)
+	_, cmd = m.Update(keyPressRune('y'))
 	drainCmd(t, m, cmd)
 
 	out := m.Render()

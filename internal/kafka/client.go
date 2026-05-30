@@ -1,10 +1,29 @@
 package kafka
 
 import (
+	"errors"
+	"sync"
+
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/aleksey925/kafka-tui/internal/config"
+)
+
+// ErrReadOnly is returned by every mutating method when the underlying cluster
+// is marked read_only. UI screens also short-circuit destructive actions
+// before mounting modals, but this is the load-bearing guard: a CLI path or
+// future direct call still cannot mutate a read-only cluster.
+var ErrReadOnly = errors.New("kafka: cluster is read-only")
+
+// ErrTopicNotFound and ErrGroupNotFound are returned by methods that look
+// up an entity by name when the broker says the entity isn't there. They
+// are sentinels — callers MAY use errors.Is to render a more specific
+// message ("topic deleted between refreshes") instead of the generic
+// error text. Current UI surfaces the wrapped text as-is.
+var (
+	ErrTopicNotFound = errors.New("kafka: topic not found")
+	ErrGroupNotFound = errors.New("kafka: group not found")
 )
 
 // Client wraps a franz-go client and its kadm admin counterpart.
@@ -13,6 +32,9 @@ type Client struct {
 	adm      *kadm.Client
 	cluster  config.Cluster
 	protocol Protocol
+
+	denialsMu sync.Mutex
+	denials   map[Denial]struct{}
 }
 
 func newClient(kc *kgo.Client, cluster config.Cluster, proto Protocol) *Client {
@@ -32,6 +54,18 @@ func (c *Client) Kgo() *kgo.Client { return c.kc }
 
 func (c *Client) Admin() *kadm.Client { return c.adm }
 
+// ReadOnly reports whether the underlying cluster is marked read_only.
+func (c *Client) ReadOnly() bool { return c.cluster.ReadOnly }
+
+// ensureWritable returns ErrReadOnly when the cluster is read_only. Every
+// mutating method must call this before issuing the request.
+func (c *Client) ensureWritable() error {
+	if c.cluster.ReadOnly {
+		return ErrReadOnly
+	}
+	return nil
+}
+
 // Close shuts down the underlying clients. Safe to call multiple times.
 func (c *Client) Close() {
 	if c == nil || c.kc == nil {
@@ -40,4 +74,28 @@ func (c *Client) Close() {
 	c.kc.Close()
 	c.kc = nil
 	c.adm = nil
+}
+
+// RegisterDenials adds each denial to the session-scoped cache and
+// returns the subset that wasn't present yet — see § Per-topic batch
+// failures in CLAUDE.md for why the cache lives here and not on the
+// screen.
+func (c *Client) RegisterDenials(ds []Denial) []Denial {
+	if len(ds) == 0 {
+		return nil
+	}
+	c.denialsMu.Lock()
+	defer c.denialsMu.Unlock()
+	if c.denials == nil {
+		c.denials = make(map[Denial]struct{})
+	}
+	fresh := make([]Denial, 0, len(ds))
+	for _, d := range ds {
+		if _, seen := c.denials[d]; seen {
+			continue
+		}
+		c.denials[d] = struct{}{}
+		fresh = append(fresh, d)
+	}
+	return fresh
 }

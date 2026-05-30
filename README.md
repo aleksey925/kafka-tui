@@ -132,8 +132,19 @@ kafka-tui
 
 Annotated `config.yaml` and `clusters.yaml` samples live in [`examples/`](examples/).
 
-> When `--brokers` is given and a cluster of the same name also exists in `clusters.yaml`, the CLI
-> cluster wins for the session and a warning toast notes the collision.
+The `--brokers` and `--cluster` flags have distinct, non-overlapping jobs:
+
+- `--brokers host:9092,...` defines an **inline cluster** for this session. It always gets an
+  auto-generated name with a `-cli` suffix (e.g. `bduzdc7w-cli`), shown in the picker.
+  Inline-cluster view state (seek position, partition filter) does not persist across runs
+  because the random part of the name changes — for persistent configuration, use `clusters.yaml`.
+- `--cluster <name>` selects which loaded cluster to **auto-connect to** at startup, instead of
+  showing the picker. The name must match an entry from `clusters.yaml` (or the inline cluster's
+  generated name, which you usually won't know in advance). An unknown or invalid name lands on
+  the picker with a warning toast — not a hard failure.
+
+The two flags can be combined: `kafka-tui --brokers x:9092 --cluster prod` creates an inline cluster
+_and_ auto-connects to YAML's `prod`; the inline cluster sits in the picker for later use.
 
 ### Configuration
 
@@ -163,14 +174,14 @@ samples covering all fields below live in [`examples/`](examples/).
 
 | Section     | Field                      | Description                                                                                                                       |
 | ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`.                                                                                   |
+| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                    |
 |             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                               |
 |             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                             |
 | `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`.             |
 | `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                                          |
 | `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                                           |
 | `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
-| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), or `osc52`.                                      |
+| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), `osc52`, or `off`.                               |
 | `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                 |
 |             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)). |
 
@@ -189,7 +200,7 @@ Lists (`columns`) replace wholesale across layers; everything else is merged sca
 
 TLS is auto-detected: presence of `tls:` (even empty) enables it; SASL without `tls` means
 `SASL_PLAINTEXT`. Specifying both inline content (`cert: |`) and a `*_file` path for the same key
-is rejected at startup.
+marks the cluster invalid in the picker.
 
 ### Placeholders
 
@@ -207,6 +218,32 @@ Any string field may contain one or more placeholders. Resolution runs in two ph
 Vault address resolution: `--vault-addr CLI → vault.address in config`.
 
 Vault token resolution: `--vault-token CLI → vault.token in config → $VAULT_TOKEN → ~/.vault-token`.
+
+### Secrets on the command line
+
+`--sasl-password` and `--vault-token` accept the same `${env:...}` / `${file:...}` /
+`${vault:...}` placeholders as YAML fields — and you should always use them. A literal value
+typed on the command line ends up in `ps`, `/proc/<pid>/cmdline`, and your shell history,
+where any other user on the host can read it. The app prints a warning toast when it
+detects a literal credential, but the leak has already happened by then.
+
+Prefer one of:
+
+```bash
+# environment variable (works well with direnv / mise / etc)
+kafka-tui --brokers prod:9092 --sasl-mechanism SCRAM-SHA-512 \
+  --sasl-username svc --sasl-password '${env:KAFKA_PASS}'
+
+# file (works well with mode 0600 secrets)
+kafka-tui --vault-token '${file:/run/secrets/vault_token}' ...
+
+# vault (chained: --vault-token resolves the placeholder, then SASL pulls from vault)
+kafka-tui --brokers prod:9092 --sasl-mechanism PLAIN \
+  --sasl-username svc --sasl-password '${vault:secret/kafka/prod#password}'
+```
+
+CLI-supplied placeholders are resolved once at startup (YAML reloads pick up rotated
+secrets; CLI values do not).
 
 ## Development
 

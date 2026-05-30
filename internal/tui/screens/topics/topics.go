@@ -4,6 +4,8 @@ package topics
 import (
 	"context"
 	"fmt"
+	"maps"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/tui/help"
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/layout"
+	"github.com/aleksey925/kafka-tui/internal/tui/lifecycle"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
 
@@ -42,9 +45,14 @@ type Service interface {
 	AlterTopicConfig(ctx context.Context, topic, key, value string) error
 
 	// Batch fetchers — one RPC per category regardless of topic count.
-	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.TopicWatermarks, error)
-	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]int64, error)
-	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string][]kafka.TopicConfig, error)
+	TopicWatermarksBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[kafka.TopicWatermarks], error)
+	TopicSizesBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[int64], error)
+	DescribeTopicConfigsBatch(ctx context.Context, topics ...string) (map[string]kafka.BatchResult[[]kafka.TopicConfig], error)
+
+	// RegisterDenials returns the subset of per-topic ACL denials not
+	// yet observed by the session-scoped dedup cache (one aggregated
+	// warn-toast per RPC group).
+	RegisterDenials(ds []kafka.Denial) []kafka.Denial
 }
 
 // Action describes the screen's pending intent for the host (router).
@@ -90,16 +98,17 @@ type Model struct {
 	hiddenIntern int
 	showInternal bool
 
-	watermarks map[string]kafka.TopicWatermarks
-	sizes      map[string]int64
-	configs    map[string][]kafka.TopicConfig
+	watermarks map[string]kafka.BatchResult[kafka.TopicWatermarks]
+	sizes      map[string]kafka.BatchResult[int64]
+	configs    map[string]kafka.BatchResult[[]kafka.TopicConfig]
 
 	shownWarnings map[string]struct{}
 
-	table   *components.Table
-	toasts  *components.Toasts
-	confirm *components.Confirm
-	pending pendingOp
+	table        *components.Table
+	toasts       *components.Toasts
+	confirm      *components.Confirm
+	cloneConfirm *components.Confirm
+	pending      pendingOp
 
 	mode     Mode
 	create   *CreateForm
@@ -107,19 +116,23 @@ type Model struct {
 	progress kafka.CloneProgress
 	cloneCh  <-chan kafka.CloneProgress
 	cloneCxl context.CancelFunc
+	// cloneSrc / cloneDst capture the names for the in-flight clone so
+	// the final success / error toast can identify which clone finished —
+	// m.clone is reset to nil before the result lands and CloneProgressMsg
+	// no longer carries them in its error path.
+	cloneSrc string
+	cloneDst string
 
 	width, height int
 	loading       bool
 	refresher     components.Refresher
-	manualRefresh bool
 
 	refreshIntervals components.RefreshIntervalRepository
 	refreshPicker    *components.RefreshPicker
 
 	action Action
 
-	lifeCtx    context.Context
-	lifeCancel context.CancelFunc
+	track *lifecycle.Tracker
 
 	now    func() time.Time
 	styles theme.Styles
@@ -149,16 +162,14 @@ func New(opts Options) *Model {
 
 	interval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenID, defaultRefreshInterval)
 
-	lifeCtx, lifeCancel := context.WithCancel(context.Background())
-
 	return &Model{
 		svc:              opts.Service,
 		readOnly:         opts.ReadOnly,
 		columns:          cols,
 		focusTopic:       opts.FocusTopic,
-		watermarks:       map[string]kafka.TopicWatermarks{},
-		sizes:            map[string]int64{},
-		configs:          map[string][]kafka.TopicConfig{},
+		watermarks:       map[string]kafka.BatchResult[kafka.TopicWatermarks]{},
+		sizes:            map[string]kafka.BatchResult[int64]{},
+		configs:          map[string]kafka.BatchResult[[]kafka.TopicConfig]{},
 		shownWarnings:    map[string]struct{}{},
 		table:            tbl,
 		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
@@ -166,8 +177,7 @@ func New(opts Options) *Model {
 		styles:           styles,
 		refresher:        components.NewRefresher(interval, now),
 		refreshIntervals: opts.RefreshIntervals,
-		lifeCtx:          lifeCtx,
-		lifeCancel:       lifeCancel,
+		track:            lifecycle.New(),
 	}
 }
 
@@ -259,6 +269,7 @@ func (m *Model) ActiveFilter() string { return m.table.Search() }
 // form's NORMAL/INSERT dispatcher instead of popping the screen.
 func (m *Model) HasOverlay() bool {
 	return m.confirm != nil ||
+		m.cloneConfirm != nil ||
 		m.refreshPicker != nil ||
 		m.mode == ModeCloning ||
 		m.mode == ModeCreate ||
@@ -468,7 +479,7 @@ func (m *Model) actRefresh() tea.Cmd {
 	if m.loading {
 		return nil
 	}
-	m.manualRefresh = true
+	m.refresher.MarkManual()
 	return m.refreshCmd()
 }
 
@@ -487,14 +498,6 @@ func (m *Model) actNewTopic() tea.Cmd {
 		return m.blockedReadOnly("create")
 	}
 	m.openCreateForm()
-	return nil
-}
-
-func (m *Model) actCloneTopic() tea.Cmd {
-	if m.readOnly {
-		return m.blockedReadOnly("clone")
-	}
-	m.openCloneForm()
 	return nil
 }
 
@@ -534,37 +537,19 @@ func (m *Model) openCreateForm() {
 	m.mode = ModeCreate
 }
 
-func (m *Model) openCloneForm() {
-	row, ok := m.table.SelectedRow()
-	if !ok {
-		m.toasts.Push(components.ToastWarning, "no topic selected")
-		return
-	}
-	m.clone = NewCloneForm(row.ID, m.styles)
-	m.mode = ModeClone
-}
-
 func (m *Model) handleCreateKey(key tea.KeyPressMsg) tea.Cmd {
-	if cmd, ok := keymap.Dispatch(m.createBindings(), key); ok {
-		return cmd
+	// `s` is the submit shortcut in NORMAL but a literal letter in
+	// INSERT or with a segmented popup open — only fire the screen
+	// bindings when the user isn't typing.
+	inEdit := m.create.Mode() == FormInsert || m.create.Form().PopupActive()
+	if !inEdit || key.String() == "esc" {
+		if cmd, ok := keymap.Dispatch(m.createBindings(), key); ok {
+			return cmd
+		}
 	}
 	c, _ := m.create.Update(key)
 	m.create = c
 	return nil
-}
-
-func (m *Model) handleCloneKey(key tea.KeyPressMsg) tea.Cmd {
-	if cmd, ok := keymap.Dispatch(m.cloneBindings(), key); ok {
-		return cmd
-	}
-	c, _ := m.clone.Update(key)
-	m.clone = c
-	return nil
-}
-
-func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
-	cmd, _ := keymap.Dispatch(m.cloningBindings(), key)
-	return cmd
 }
 
 // createBindings owns the create-topic form. esc has dual semantics: in
@@ -572,21 +557,8 @@ func (m *Model) handleCloningKey(key tea.KeyPressMsg) tea.Cmd {
 // popup); in plain NORMAL it closes the overlay.
 func (m *Model) createBindings() []keymap.Binding {
 	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
+		{Keys: []string{"s"}, Label: "submit (create topic)", Category: "Create topic", Hint: true, Handler: m.actCreateSubmit},
 		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Create topic", Hint: true, HandlerMsg: m.actCreateEsc},
-	}
-}
-
-func (m *Model) cloneBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"ctrl+s"}, Label: "submit (clone topic)", Category: "Clone topic", Hint: true, Handler: m.actCloneSubmit},
-		{Keys: []string{"esc"}, Label: "cancel / leave INSERT / close popup", Category: "Clone topic", Hint: true, HandlerMsg: m.actCloneEsc},
-	}
-}
-
-func (m *Model) cloningBindings() []keymap.Binding {
-	return []keymap.Binding{
-		{Keys: []string{"esc"}, Label: "leave (clone keeps running in background)", Category: "Cloning", Hint: true, Handler: m.actCloningLeave},
 	}
 }
 
@@ -613,71 +585,11 @@ func (m *Model) actCreateEsc(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) actCloneSubmit() tea.Cmd {
-	src, dst, err := m.clone.Submit()
-	if err != nil {
-		m.clone.SetError(err.Error())
-		return nil
-	}
-	m.mode = ModeCloning
-	m.progress = kafka.CloneProgress{}
-	m.toasts.Push(components.ToastInfo, "cloning "+src+" → "+dst+"…")
-	return cloneStartCmd(m.svc, src, dst, m.clone.Options())
-}
-
-func (m *Model) actCloneEsc(key tea.KeyPressMsg) tea.Cmd {
-	if m.clone.Mode() == FormInsert || m.clone.Form().PopupActive() {
-		c, _ := m.clone.Update(key)
-		m.clone = c
-		return nil
-	}
-	m.clone = nil
-	m.mode = ModeList
-	return nil
-}
-
-func (m *Model) actCloningLeave() tea.Cmd {
-	m.mode = ModeList
-	return nil
-}
-
-func (m *Model) handleCloneProgress(msg CloneProgressMsg) tea.Cmd {
-	m.progress = msg.Progress
-	if msg.Progress.Done {
-		m.mode = ModeList
-		m.clone = nil
-		ch := m.cloneCh
-		m.cloneCh = nil
-		if m.cloneCxl != nil {
-			m.cloneCxl()
-			m.cloneCxl = nil
-		}
-		if msg.Progress.Err != nil {
-			m.toasts.Push(components.ToastError, "clone failed: "+msg.Progress.Err.Error())
-		} else {
-			m.toasts.Push(components.ToastSuccess, fmt.Sprintf("clone done — %d records", msg.Progress.Copied))
-		}
-		// drain any remaining items so the producer goroutine isn't blocked
-		// waiting on a closed-but-buffered channel.
-		if ch != nil {
-			go drainChannel(ch)
-		}
-		return nil
-	}
-	if m.cloneCh != nil {
-		return clonePollCmd(m.cloneCh)
-	}
-	return nil
-}
-
 // Close releases background resources — the host calls it before swapping
 // screens so an in-flight clone goroutine doesn't keep its kgo.Client
 // pinned until the outer context times out. Safe when nothing is in flight.
 func (m *Model) Close() {
-	if m.lifeCancel != nil {
-		m.lifeCancel()
-		m.lifeCancel = nil
-	}
+	m.track.Close()
 	if m.cloneCxl != nil {
 		m.cloneCxl()
 		m.cloneCxl = nil
@@ -717,27 +629,23 @@ func (m *Model) PendingTopic() string {
 func (m *Model) ConfirmOpen() bool { return m.confirm != nil }
 
 func (m *Model) handleLoaded(msg TopicsLoadedMsg) {
+	if !m.track.Validate(msg.Gen) {
+		return
+	}
 	m.loading = false
+	manual := m.refresher.ConsumeManual()
 	if msg.Err != nil {
 		m.toasts.Push(components.ToastError, "load topics: "+msg.Err.Error())
-		m.manualRefresh = false
 		return
 	}
 	m.refresher.MarkSuccess()
-	if m.manualRefresh {
+	if manual {
 		m.toasts.Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d topics", len(msg.Topics)))
-		m.manualRefresh = false
 	}
 	m.allTopics = msg.Topics
-	for _, w := range msg.Watermarks {
-		m.watermarks[w.Topic] = w.Watermarks
-	}
-	for _, s := range msg.Sizes {
-		m.sizes[s.Topic] = s.Size
-	}
-	for _, c := range msg.Configs {
-		m.configs[c.Topic] = c.Configs
-	}
+	maps.Copy(m.watermarks, msg.Watermarks)
+	maps.Copy(m.sizes, msg.Sizes)
+	maps.Copy(m.configs, msg.Configs)
 	for _, w := range msg.Warnings {
 		if _, seen := m.shownWarnings[w]; seen {
 			continue
@@ -803,13 +711,19 @@ func (m *Model) cellFor(col string, t kafka.TopicSummary) string {
 	case "replicas":
 		return strconv.Itoa(t.Replicas)
 	case "messages":
-		if w, ok := m.watermarks[t.Name]; ok {
-			return formatThousands(w.MessageCount)
+		if r, ok := m.watermarks[t.Name]; ok {
+			if marker, denied := denialMarker(r.Err); denied {
+				return marker
+			}
+			return formatThousands(r.Value.MessageCount)
 		}
 		return "—"
 	case "size":
-		if s, ok := m.sizes[t.Name]; ok {
-			return formatBytes(s)
+		if r, ok := m.sizes[t.Name]; ok {
+			if marker, denied := denialMarker(r.Err); denied {
+				return marker
+			}
+			return formatBytes(r.Value)
 		}
 		return "—"
 	case "cleanup_policy":
@@ -837,6 +751,9 @@ func (m *Model) View() string {
 	case ModeCreate:
 		return m.create.View(m.width)
 	case ModeClone:
+		if m.cloneConfirm != nil {
+			return m.cloneConfirm.View(m.width, m.height)
+		}
 		return m.clone.View(m.width)
 	case ModeCloning:
 		return m.renderCloningOverlay()
@@ -848,20 +765,10 @@ func (m *Model) View() string {
 	return m.table.View()
 }
 
-func (m *Model) renderCloningOverlay() string {
-	header := m.styles.HelpTitle.Render("Cloning…")
-	body := fmt.Sprintf(
-		"copied %s / %s records",
-		formatThousands(m.progress.Copied),
-		formatThousands(m.progress.Total),
-	)
-	hint := m.styles.HintLabel.Render("esc — return to list (clone continues in background)")
-	return strings.Join([]string{header, m.styles.Command.Render(body), "", hint}, "\n")
-}
-
 func (m *Model) refreshCmd() tea.Cmd {
 	m.loading = true
-	return loadCmd(m.svc, m.lifeCtx)
+	ctx, gen := m.track.Dispatch()
+	return loadCmd(m.svc, ctx, gen)
 }
 
 // AutoRefreshTick emits a tick for the configured refresh interval. Hosts
@@ -886,28 +793,16 @@ func (m *Model) LastRefresh() time.Time { return m.refresher.LastRefresh() }
 // TopicsLoadedMsg is dispatched after a refresh completes.
 type TopicsLoadedMsg struct {
 	Topics     []kafka.TopicSummary
-	Watermarks []TopicWatermarkResult
-	Sizes      []TopicSizeResult
-	Configs    []TopicConfigResult
-	// Warnings carries summaries of whole-category batch-RPC failures.
-	// Per-topic errors inside an otherwise-successful batch are dropped.
+	Watermarks map[string]kafka.BatchResult[kafka.TopicWatermarks]
+	Sizes      map[string]kafka.BatchResult[int64]
+	Configs    map[string]kafka.BatchResult[[]kafka.TopicConfig]
+	// Warnings carries whole-category batch-RPC failures plus the
+	// freshly-observed per-topic ACL denials returned by the dedup cache.
 	Warnings []string
 	Err      error
-}
-
-type TopicWatermarkResult struct {
-	Topic      string
-	Watermarks kafka.TopicWatermarks
-}
-
-type TopicSizeResult struct {
-	Topic string
-	Size  int64
-}
-
-type TopicConfigResult struct {
-	Topic   string
-	Configs []kafka.TopicConfig
+	// Gen pins the result to the dispatch-time generation; the handler
+	// drops mismatches via [lifecycle.Tracker.Validate].
+	Gen uint64
 }
 
 // TopicMutatedMsg reports the result of a create / delete / clone op.
@@ -917,17 +812,14 @@ type TopicMutatedMsg struct {
 	Err   error
 }
 
-type CloneProgressMsg struct {
-	Progress kafka.CloneProgress
-}
-
 type RefreshTickMsg struct{}
 
 // loadCmd refreshes the topics list along with per-topic watermarks, sizes,
 // and configs. The three batches run concurrently so wall-clock load time
-// is bound by the slowest single RPC, not by topic count. A whole-category
-// failure is surfaced as one warning toast.
-func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
+// is bound by the slowest single RPC, not by topic count. Whole-category
+// failures and per-topic ACL denials are aggregated into one warning toast
+// each via the session-scoped dedup cache.
+func loadCmd(svc Service, parentCtx context.Context, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
@@ -936,7 +828,7 @@ func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 			return nil
 		}
 		if err != nil {
-			return TopicsLoadedMsg{Err: err}
+			return TopicsLoadedMsg{Err: err, Gen: gen}
 		}
 		names := make([]string, len(topics))
 		for i, t := range topics {
@@ -944,9 +836,9 @@ func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 		}
 
 		var (
-			wmMap                map[string]kafka.TopicWatermarks
-			sizeMap              map[string]int64
-			cfgMap               map[string][]kafka.TopicConfig
+			wmMap                map[string]kafka.BatchResult[kafka.TopicWatermarks]
+			sizeMap              map[string]kafka.BatchResult[int64]
+			cfgMap               map[string]kafka.BatchResult[[]kafka.TopicConfig]
 			wmErr, szErr, cfgErr error
 			wg                   sync.WaitGroup
 		)
@@ -969,57 +861,25 @@ func loadCmd(svc Service, parentCtx context.Context) tea.Cmd {
 			return nil
 		}
 
+		warnings := batchFetchWarnings(
+			batchFetchStat{name: "watermarks", err: wmErr},
+			batchFetchStat{name: "size", err: szErr},
+			batchFetchStat{name: "configs", err: cfgErr},
+		)
+		denials := kafka.CollectDenials(kafka.RPCKindWatermarks, wmMap)
+		denials = append(denials, kafka.CollectDenials(kafka.RPCKindSize, sizeMap)...)
+		denials = append(denials, kafka.CollectDenials(kafka.RPCKindConfigs, cfgMap)...)
+		warnings = append(warnings, formatDenialWarnings(svc.RegisterDenials(denials))...)
+
 		return TopicsLoadedMsg{
 			Topics:     topics,
-			Watermarks: flattenWatermarks(wmMap, topics),
-			Sizes:      flattenSizes(sizeMap, topics),
-			Configs:    flattenConfigs(cfgMap, topics),
-			Warnings: batchFetchWarnings(
-				batchFetchStat{name: "watermarks", err: wmErr},
-				batchFetchStat{name: "size", err: szErr},
-				batchFetchStat{name: "configs", err: cfgErr},
-			),
+			Watermarks: wmMap,
+			Sizes:      sizeMap,
+			Configs:    cfgMap,
+			Warnings:   warnings,
+			Gen:        gen,
 		}
 	}
-}
-
-func flattenWatermarks(m map[string]kafka.TopicWatermarks, topics []kafka.TopicSummary) []TopicWatermarkResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicWatermarkResult, 0, len(m))
-	for _, t := range topics {
-		if w, ok := m[t.Name]; ok {
-			out = append(out, TopicWatermarkResult{Topic: t.Name, Watermarks: w})
-		}
-	}
-	return out
-}
-
-func flattenSizes(m map[string]int64, topics []kafka.TopicSummary) []TopicSizeResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicSizeResult, 0, len(m))
-	for _, t := range topics {
-		if s, ok := m[t.Name]; ok {
-			out = append(out, TopicSizeResult{Topic: t.Name, Size: s})
-		}
-	}
-	return out
-}
-
-func flattenConfigs(m map[string][]kafka.TopicConfig, topics []kafka.TopicSummary) []TopicConfigResult {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]TopicConfigResult, 0, len(m))
-	for _, t := range topics {
-		if c, ok := m[t.Name]; ok {
-			out = append(out, TopicConfigResult{Topic: t.Name, Configs: c})
-		}
-	}
-	return out
 }
 
 type batchFetchStat struct {
@@ -1037,6 +897,42 @@ func batchFetchWarnings(stats ...batchFetchStat) []string {
 	return out
 }
 
+// formatDenialWarnings groups freshly-observed denials by RPC and
+// produces one warn-toast string per group. CollectDenials filters to
+// ACL only, so the label is hardcoded — add a kind dimension here if a
+// future ErrKind starts flowing through.
+func formatDenialWarnings(fresh []kafka.Denial) []string {
+	if len(fresh) == 0 {
+		return nil
+	}
+	grouped := make(map[kafka.RPCKind][]string)
+	for _, d := range fresh {
+		grouped[d.RPC] = append(grouped[d.RPC], d.Topic)
+	}
+	out := make([]string, 0, len(grouped))
+	for rpc, topics := range grouped {
+		sort.Strings(topics)
+		shown := topics
+		var suffix string
+		if len(topics) > maxDenialTopicsShown {
+			shown = topics[:maxDenialTopicsShown]
+			suffix = fmt.Sprintf(", +%d more", len(topics)-maxDenialTopicsShown)
+		}
+		noun := "topic"
+		if len(topics) != 1 {
+			noun = "topics"
+		}
+		out = append(out, fmt.Sprintf(
+			"%s: %d %s denied (ACL): %s%s",
+			rpc, len(topics), noun, strings.Join(shown, ", "), suffix,
+		))
+	}
+	sort.Strings(out)
+	return out
+}
+
+const maxDenialTopicsShown = 5
+
 func deleteCmd(svc Service, topic string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1052,46 +948,6 @@ func createCmd(svc Service, spec kafka.CreateTopicSpec) tea.Cmd {
 		defer cancel()
 		err := svc.CreateTopic(ctx, spec)
 		return TopicMutatedMsg{Op: "create", Topic: spec.Name, Err: err}
-	}
-}
-
-// cloneStartedMsg hands the freshly-opened progress channel back to the
-// model so it can drive a chain of clonePollCmds.
-type cloneStartedMsg struct {
-	ch     <-chan kafka.CloneProgress
-	cancel context.CancelFunc
-}
-
-func cloneStartCmd(svc Service, src, dst string, opts kafka.CloneOptions) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		ch, err := svc.CloneTopic(ctx, src, dst, opts)
-		if err != nil {
-			cancel()
-			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true, Err: err}}
-		}
-		return cloneStartedMsg{ch: ch, cancel: cancel}
-	}
-}
-
-// clonePollCmd reads one progress message from ch. When the channel closes
-// before a Done flag arrived, it synthesizes one so the screen always
-// transitions back to ModeList.
-func clonePollCmd(ch <-chan kafka.CloneProgress) tea.Cmd {
-	return func() tea.Msg {
-		p, ok := <-ch
-		if !ok {
-			return CloneProgressMsg{Progress: kafka.CloneProgress{Done: true}}
-		}
-		return CloneProgressMsg{Progress: p}
-	}
-}
-
-// drainChannel releases the clone goroutine when the user transitions away
-// before the channel is fully drained.
-func drainChannel(ch <-chan kafka.CloneProgress) {
-	for range ch {
-		_ = struct{}{}
 	}
 }
 
@@ -1128,13 +984,29 @@ func columnSpec(key string) components.Column {
 	}
 }
 
-func findConfig(cfgs []kafka.TopicConfig, key string) string {
-	for _, c := range cfgs {
+func findConfig(r kafka.BatchResult[[]kafka.TopicConfig], key string) string {
+	if marker, denied := denialMarker(r.Err); denied {
+		return marker
+	}
+	for _, c := range r.Value {
 		if c.Key == key {
 			return c.Value
 		}
 	}
 	return "—"
+}
+
+// denialMarker returns ⊘ for ACL-class errors, — otherwise. The second
+// return is false when err is nil so the caller falls through to the
+// value rendering.
+func denialMarker(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if kafka.ClassifyError(err) == kafka.ErrKindACL {
+		return "⊘", true
+	}
+	return "—", true
 }
 
 func formatThousands(n int64) string {

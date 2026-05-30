@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/aleksey925/kafka-tui/internal/config"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/clusters"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/configsrc"
 	"github.com/aleksey925/kafka-tui/internal/tui/screens/groups"
@@ -37,6 +38,7 @@ func (m *Model) instantiate(id ScreenID) {
 		m.navTopic = m.lastTopic
 	}
 	defer m.clearNavSeeds()
+	defer m.restoreState(id)
 	switch id {
 	case ScreenClusters:
 		m.active = m.newClusters()
@@ -81,18 +83,39 @@ func (m *Model) clearNavSeeds() {
 	m.navConfigValue = ""
 }
 
+// restoreState re-applies the Stateful snapshot captured by closeActive
+// on the previous instance of this screen. No-op when the screen failed
+// to construct, when no state was saved, or when the screen doesn't
+// implement Stateful.
+func (m *Model) restoreState(id ScreenID) {
+	if m.active == nil {
+		return
+	}
+	blob, ok := m.sessionState[id]
+	if !ok {
+		return
+	}
+	screenRestore(m.active, blob)
+}
+
 func (m *Model) newClusters() *clusters.Model {
 	b := m.boot
+	var invalid []config.InvalidCluster
+	if b.Loaded != nil {
+		invalid = b.Loaded.InvalidClusters
+	}
 	return clusters.New(clusters.Options{
-		Clusters:        b.Clusters,
-		CLIName:         b.CLIName,
-		GlobalPath:      b.GlobalPath,
-		ProjectPath:     b.ProjectPath,
-		Pinger:          b.Pinger,
-		Editor:          b.Editor,
-		StartupWarnings: b.StartupWarnings,
-		Now:             m.now,
-		Styles:          m.styles,
+		Clusters:          b.Clusters,
+		InvalidClusters:   invalid,
+		CLIName:           b.CLIName,
+		AutoSelectCluster: b.AutoSelectCluster,
+		GlobalPath:        b.GlobalPath,
+		ProjectPath:       b.ProjectPath,
+		Pinger:            b.Pinger,
+		Editor:            b.Editor,
+		StartupWarnings:   b.StartupWarnings,
+		Now:               m.now,
+		Styles:            m.styles,
 	})
 }
 
@@ -150,6 +173,7 @@ func (m *Model) newProduce() *produce.Model {
 	return produce.New(produce.Options{
 		Service:            m.client,
 		Topic:              m.navTopic,
+		Cluster:            m.activeClu,
 		ReadOnly:           m.clusterRO,
 		Pager:              m.boot.Pager,
 		PrefillFromMessage: m.navPrefill,

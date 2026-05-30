@@ -6,8 +6,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
+
+// modalContentWidth is the inner width shared by every confirm modal so
+// hints fit on a single row and titles can be centered against a known
+// canvas. The value comfortably fits the longest hint line in the app
+// ("y send  k send & keep  esc cancel") with breathing room on both
+// sides.
+const modalContentWidth = 44
 
 // ConfirmResult is what Confirm.Update returns when the user answers.
 type ConfirmResult int
@@ -53,6 +61,16 @@ func (c *Confirm) Result() ConfirmResult { return c.result }
 
 func (c *Confirm) Reset() { c.result = ConfirmPending }
 
+// Bindings advertises the confirm's keymap for help / hints while it's
+// open. yesLabel describes what the y answer commits to (e.g. "save",
+// "clone"); the no/esc rows are always "cancel".
+func (c *Confirm) Bindings(category, yesLabel string) []keymap.Binding {
+	return []keymap.Binding{
+		{Keys: []string{c.YesKey}, Label: yesLabel, Category: category, Hint: true},
+		{Keys: []string{c.NoKey, "esc"}, Label: "cancel", Category: category, Hint: true},
+	}
+}
+
 func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -71,17 +89,19 @@ func (c *Confirm) Update(msg tea.Msg) (*Confirm, tea.Cmd) {
 // are the body-area dimensions to center within; pass 0 for either axis
 // to skip placement on that axis.
 func (c *Confirm) View(width, height int) string {
-	hint := c.styles.HintKey.Render(c.YesKey) + c.styles.HintLabel.Render(" yes  ") +
-		c.styles.HintKey.Render(c.NoKey) + c.styles.HintLabel.Render(" no")
+	hint := HintLine(c.styles,
+		Hint{Key: c.YesKey, Label: "yes"},
+		Hint{Key: c.NoKey, Label: "no"},
+	)
 
 	body := []string{}
 	if c.Title != "" {
-		body = append(body, c.styles.HelpTitle.Render(c.Title))
+		body = append(body, lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, c.styles.HelpTitle.Render(c.Title)))
 	}
 	if c.Message != "" {
-		body = append(body, c.styles.Command.Render(c.Message))
+		body = append(body, "", c.styles.Command.Render(c.Message))
 	}
-	body = append(body, "", hint)
+	body = append(body, "", lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, hint))
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
