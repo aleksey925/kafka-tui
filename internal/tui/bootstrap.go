@@ -77,7 +77,6 @@ type Bootstrap struct {
 	RefreshIntervals components.RefreshIntervalRepository
 	Pager            produce.PagerOpener
 	StartupWarnings  []string
-	ReadOnly         bool
 	Now              func() time.Time
 	// ConfigReloader re-reads config files from disk. nil disables manual reload.
 	ConfigReloader func() (*config.Loaded, error)

@@ -473,7 +473,6 @@ func TestModel_RenderHeaderIncludesClusterAndStatus(t *testing.T) {
 	m := tui.New(tui.Options{
 		Cluster:      "prod-east",
 		ClusterColor: theme.ClusterRed,
-		ReadOnly:     true,
 		FromCLI:      true,
 		Initial:      tui.ScreenTopics,
 		Width:        100,
@@ -491,7 +490,6 @@ func TestModel_RenderHeaderIncludesClusterAndStatus(t *testing.T) {
 	assert.Contains(t, out, "prod-east")
 	// new k9s-style header surfaces these as labeled rows; literal tags
 	// like "[RO]" / "(cli)" no longer appear in the chrome.
-	assert.Contains(t, out, "read-only")
 	assert.Contains(t, out, "cli")
 	assert.Contains(t, out, "auto 5s")
 	// the elapsed marker drops " ago" — the "·" separator already conveys

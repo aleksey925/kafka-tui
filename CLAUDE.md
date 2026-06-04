@@ -472,7 +472,7 @@ rather than aborting the process. Structural CLI errors — an unknown
 `--sasl-mechanism`, a malformed `--tls-*` combination — still hard-fail
 at parse per § Config-value normalization; the per-cluster quarantine
 covers resolution failures, not invalid interactive input. A broken
-auto-connect target (whether selected by `--cluster` or the inline
+auto-connect target (whether selected by `connect <name>` or the inline
 cluster) falls back to the picker with the failure surfaced, never an
 abort — fatality is decided by "is there a usable fallback", not by
 where the value came from. Since the picker always renders the broken
@@ -492,21 +492,33 @@ address, and a bad global flag is explicit user input with no cluster
 to fall back to; degrading either would just defer the same error into
 confusing runtime failures.
 
-### CLI inline cluster: separate namespace from YAML
+### CLI: connect subcommand and inline-cluster namespace
 
-`--brokers` creates an inline cluster for the session. Its name is
-always auto-generated with a `-cli` suffix (random prefix) — never
-taken from `--cluster` or any user-controlled source. `--cluster` is a
-pure selector that names which already-loaded cluster to auto-connect
-to at startup.
+The CLI is split into two namespaces so a flag's scope is self-evident
+from where it lives. Process/session flags sit on the root command
+(config path, log level, vault overrides, version/logs); the flags that
+*define a connection* sit on the `connect` subcommand. `kafka-tui` with
+no subcommand opens the cluster picker.
 
-Why: when both flags could name the inline cluster, name collisions
-with `clusters.yaml` were possible and the previous "silent override"
-behavior was dangerous — a user typo could replace a fully-configured
-production cluster (TLS, SASL, read-only) with a stripped-down inline
-one without the user noticing. Separating the namespaces removes the
-collision class entirely: inline names are unguessable, YAML names are
-unconstrained, and the two never meet.
+`connect` reaches a cluster two mutually-exclusive ways:
+
+- `connect <name>` — a positional selector naming an already-loaded
+  `clusters.yaml` cluster to auto-connect to.
+- `connect --brokers …` (plus `--tls*` / `--sasl-*` / `--color` /
+  `--read-only`) — an ad-hoc inline cluster for the session. Its name is
+  always auto-generated with a `-cli` suffix (random prefix), never taken
+  from the positional or any user-controlled source. `--read-only` here
+  marks only this ad-hoc cluster; there is no session-wide read-only —
+  per-cluster `read_only` in `clusters.yaml` covers named clusters.
+
+Why: the connection flags were once flat (`--cluster` selector vs
+`--brokers` inline + bare `--tls`/`--sasl`/`--color`/`--read-only`),
+which read like global options and invited double-reading — and a name
+that could feed both invited collisions with `clusters.yaml`, where a
+typo could silently replace a fully-configured production cluster (TLS,
+SASL, read-only) with a stripped-down inline one. Under `connect` the
+selector and the ad-hoc definition are structurally exclusive and the
+inline name is unguessable, so the two namespaces never meet.
 
 Deviation: inline-cluster persistent state (per-(cluster, topic) view
 state, etc.) does not survive between runs — the random part of the
@@ -613,8 +625,9 @@ vault).
 Routing: warnings flow through the existing startup-warnings →
 clusters-screen-toast pipeline so the operator sees them on first
 mount. CLI warnings are additionally mirrored to slog directly because
-auto-skip (`--cluster` selecting a single auto-connect target) bypasses
-the clusters screen entirely and the toast pipeline never fires there.
+auto-skip (`connect <name>` selecting a single auto-connect target)
+bypasses the clusters screen entirely and the toast pipeline never fires
+there.
 
 ## Project commands
 

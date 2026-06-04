@@ -76,7 +76,7 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	m.updateHeaderForActive(
 		clu.Name,
 		clu.Color,
-		clu.ReadOnly || (m.boot != nil && m.boot.ReadOnly),
+		clu.ReadOnly,
 		name == m.boot.CLIName,
 		kafka.IsInsecureTLS(*clu),
 	)

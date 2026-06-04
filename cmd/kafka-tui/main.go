@@ -167,7 +167,6 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
 		StartupWarnings:   startupWarnings,
-		ReadOnly:          flags.Inline.ReadOnly,
 		ConfigReloader: func() (*config.Loaded, error) {
 			fresh, err := config.Load(loaderOpts)
 			if err != nil {
@@ -181,7 +180,6 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 	model := tui.New(tui.Options{
 		Cluster:      flags.ClusterName,
 		ClusterColor: flags.Inline.Color,
-		ReadOnly:     flags.Inline.ReadOnly,
 		FromCLI:      flags.Inline.HasInlineCluster(),
 		Initial:      tui.ScreenClusters,
 		Build:        version.NewBuildInfo(ver),

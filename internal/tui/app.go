@@ -29,7 +29,6 @@ const (
 type Options struct {
 	Cluster      string
 	ClusterColor string
-	ReadOnly     bool
 	FromCLI      bool
 
 	Initial ScreenID
@@ -132,7 +131,6 @@ func New(opts Options) *Model {
 		header: layout.HeaderInfo{
 			Cluster:      opts.Cluster,
 			ClusterColor: opts.ClusterColor,
-			ReadOnly:     opts.ReadOnly,
 			FromCLI:      opts.FromCLI,
 		},
 		status: layout.StatusInfo{
@@ -150,7 +148,6 @@ func New(opts Options) *Model {
 		boot:       opts.Bootstrap,
 		activeClu:  opts.Cluster,
 		clusterClr: opts.ClusterColor,
-		clusterRO:  opts.ReadOnly,
 		fromCLI:    opts.FromCLI,
 	}
 	if opts.Initial != "" {
