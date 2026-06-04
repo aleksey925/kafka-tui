@@ -63,7 +63,10 @@ type Flags struct {
 	ConfigPath string
 
 	ClusterName string
-	Inline      CLICluster
+	// Inline is resolved through the loader's per-cluster pipeline, not the
+	// global placeholder phase, so a bad ${vault:...} in --sasl-password
+	// quarantines the inline cluster instead of aborting startup.
+	Inline CLICluster `placeholder:"-"`
 
 	// LogLevel, when non-empty, overrides cfg.Logging.Level from YAML.
 	// Accepts the same values as logging.ParseLevel (debug|info|warn|error).

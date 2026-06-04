@@ -12,26 +12,14 @@ import (
 	"github.com/aleksey925/kafka-tui/internal/config"
 )
 
-func TestBuildClusterList_NoInline(t *testing.T) {
-	loaded := []config.Cluster{{Name: "alpha"}, {Name: "beta"}}
-
-	got, cliName := buildClusterList(loaded, cli.CLICluster{})
-
-	assert.Equal(t, loaded, got)
-	assert.Empty(t, cliName)
+func TestInlineClusterName_NoInline(t *testing.T) {
+	assert.Empty(t, inlineClusterName(cli.CLICluster{}))
 }
 
-func TestBuildClusterList_PrependsInline(t *testing.T) {
-	loaded := []config.Cluster{{Name: "alpha"}}
-	inline := cli.CLICluster{Name: "cli", Brokers: []string{"a:9092"}}
+func TestInlineClusterName_ReturnsName(t *testing.T) {
+	inline := cli.CLICluster{Name: "x-cli", Brokers: []string{"a:9092"}}
 
-	got, cliName := buildClusterList(loaded, inline)
-
-	assert.Equal(t, []config.Cluster{
-		{Name: "cli", Brokers: []string{"a:9092"}},
-		{Name: "alpha"},
-	}, got)
-	assert.Equal(t, "cli", cliName)
+	assert.Equal(t, "x-cli", inlineClusterName(inline))
 }
 
 func TestCliInlineToCluster_Plain(t *testing.T) {

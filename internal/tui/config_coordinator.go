@@ -55,18 +55,13 @@ func (m *Model) handleConfigSnapshot(snap config.Snapshot) {
 		return
 	}
 	list := snap.Loaded.Clusters
-	cli := ""
-	if m.boot.BuildClusterList != nil {
-		list, cli = m.boot.BuildClusterList(snap.Loaded.Clusters)
-	}
-	clustersChanged := !reflect.DeepEqual(m.boot.Clusters, list) || m.boot.CLIName != cli
+	clustersChanged := !reflect.DeepEqual(m.boot.Clusters, list)
 	m.boot.Loaded = snap.Loaded
 	m.boot.Clusters = list
-	m.boot.CLIName = cli
 	m.refreshHeaderContext()
 	cs, onClusters := m.active.(*clusters.Model)
 	if onClusters {
-		cs.SetClusters(list, snap.Loaded.InvalidClusters, snap.Loaded.Warnings, cli)
+		cs.SetClusters(list, snap.Loaded.InvalidClusters, snap.Loaded.Warnings, m.boot.CLIName)
 		if clustersChanged {
 			cs.Toasts().Push(components.ToastSuccess, fmt.Sprintf("clusters refreshed · %d", len(list)))
 		} else {
@@ -113,17 +108,16 @@ func (m *Model) reloadClusters(s *clusters.Model) {
 		s.Toasts().Push(components.ToastWarning, "reload not configured")
 		return
 	}
-	loaded, list, cli, err := m.boot.ConfigReloader()
+	loaded, err := m.boot.ConfigReloader()
 	if err != nil {
 		s.Toasts().Push(components.ToastError, "refresh: "+err.Error())
 		return
 	}
 	m.boot.Loaded = loaded
-	m.boot.Clusters = list
-	m.boot.CLIName = cli
+	m.boot.Clusters = loaded.Clusters
 	m.refreshHeaderContext()
-	s.SetClusters(list, loaded.InvalidClusters, loaded.Warnings, cli)
-	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d clusters", len(list)))
+	s.SetClusters(loaded.Clusters, loaded.InvalidClusters, loaded.Warnings, m.boot.CLIName)
+	s.Toasts().Push(components.ToastSuccess, fmt.Sprintf("refreshed · %d clusters", len(loaded.Clusters)))
 }
 
 // refreshHeaderContext re-derives [layout.HeaderInfo.Context] from the

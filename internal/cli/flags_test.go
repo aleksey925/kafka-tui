@@ -414,12 +414,11 @@ func TestParse__logLevel__isNormalized(t *testing.T) {
 }
 
 func TestParse__saslMechanism__isNormalized(t *testing.T) {
-	// Inline clusters skip the per-cluster pipeline (loadCluster +
-	// normalizeClusterHard run only over YAML-loaded clusters). The CLI
-	// validator must therefore upper-case the mechanism itself, otherwise
-	// `--sasl-mechanism plain` would silently reach the strict
-	// buildSASLMechanism and fail at dial time — violating the "CLI
-	// always hard-fails at parse" rule from CLAUDE.md.
+	// The inline cluster now runs through the loader's per-cluster pipeline,
+	// where a bad enum would only quarantine it. CLI input must instead
+	// hard-fail at parse (CLAUDE.md § Config-value normalization), so the
+	// validator case-folds the mechanism here and rejects unknown values
+	// immediately rather than deferring to a quarantined load.
 	cases := []struct{ input, want string }{
 		{"plain", "PLAIN"},
 		{"PLAIN", "PLAIN"},

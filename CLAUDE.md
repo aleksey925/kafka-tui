@@ -423,6 +423,15 @@ the same `${vault:...}` referenced from a CLI flag does not. This is by
 design — CLI flags model "process invocation context" and shouldn't drift
 mid-process.
 
+Exception: the CLI inline cluster (`--brokers` + its `--sasl-*` / `--tls-*`
+flags) is treated as a cluster, not as process-invocation context — it is
+re-resolved on every reload like a YAML cluster. So an inline `${vault:...}`
+that failed because the vault config was wrong recovers once the operator
+fixes that config in YAML and a reload fires, instead of staying broken
+until restart. The CLI **vault config itself** (`--vault-addr` /
+`--vault-token`) stays frozen — it cannot be edited mid-process, so freezing
+it loses nothing.
+
 ### Optional subsystems and graceful degradation
 
 Non-essential subsystems — persistence stores (history, view state,
@@ -456,15 +465,32 @@ clusters as non-selectable rows with the failure reason so the user
 sees what's wrong and can edit the YAML, while every other cluster
 stays usable.
 
+This includes the CLI inline cluster (`--brokers`): it is just another
+cluster source and quarantines when its secret cannot be resolved (vault
+outage, missing `${env:...}` / `${file:...}`, leftover placeholder)
+rather than aborting the process. Structural CLI errors — an unknown
+`--sasl-mechanism`, a malformed `--tls-*` combination — still hard-fail
+at parse per § Config-value normalization; the per-cluster quarantine
+covers resolution failures, not invalid interactive input. A broken
+auto-connect target (whether selected by `--cluster` or the inline
+cluster) falls back to the picker with the failure surfaced, never an
+abort — fatality is decided by "is there a usable fallback", not by
+where the value came from. Since the picker always renders the broken
+cluster as its own row, the landing screen is never empty.
+
 Why: clusters are often many and unrelated (dev, staging, multiple
 production regions). A vault outage that touches only one cluster's
 secrets used to deny access to all of them — and oncall doesn't have
-time to debug YAML during an incident.
+time to debug YAML during an incident. A literal `${vault:...}` in a
+`--sasl-password` used to take the whole process down with it; routing
+the inline cluster through the same per-cluster path removes that.
 
-Deviation: global config (vault settings, CLI flags) stays hard-fail.
-The vault client cannot dial without a resolved address, and a bad CLI
-flag is explicit user input — degrading either situation would just
-defer the same error into confusing runtime failures.
+Deviation: global config — vault settings (including the CLI
+`--vault-addr` / `--vault-token`) and other non-cluster CLI flags —
+stays hard-fail. The vault client cannot dial without a resolved
+address, and a bad global flag is explicit user input with no cluster
+to fall back to; degrading either would just defer the same error into
+confusing runtime failures.
 
 ### CLI inline cluster: separate namespace from YAML
 

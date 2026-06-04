@@ -471,9 +471,6 @@ func TestConfigSnapshot_UpdatesBootAndToastsOnClusters(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
@@ -1145,8 +1142,8 @@ func TestReloadClusters_PushesFreshList(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
-			return freshLoaded, freshLoaded.Clusters, "", nil
+		ConfigReloader: func() (*config.Loaded, error) {
+			return freshLoaded, nil
 		},
 	}
 	m := tui.New(tui.Options{
@@ -1189,8 +1186,8 @@ func TestReloadClusters_ErrorSurfacesToast(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
-			return nil, nil, "", errors.New("yaml: bad indent")
+		ConfigReloader: func() (*config.Loaded, error) {
+			return nil, errors.New("yaml: bad indent")
 		},
 	}
 	m := tui.New(tui.Options{
@@ -1221,9 +1218,6 @@ func TestConfigSnapshot_ActiveClusterChangedWarns(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
@@ -1260,9 +1254,6 @@ func TestConfigSnapshot_ParseErrorSurfacesToast(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),

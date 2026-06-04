@@ -80,11 +80,8 @@ type Bootstrap struct {
 	ReadOnly         bool
 	Now              func() time.Time
 	// ConfigReloader re-reads config files from disk. nil disables manual reload.
-	ConfigReloader func() (*config.Loaded, []config.Cluster, string, error)
+	ConfigReloader func() (*config.Loaded, error)
 	// ConfigSnapshots is the channel emitted by [config.Watcher]. nil
 	// disables auto-reload.
 	ConfigSnapshots <-chan config.Snapshot
-	// BuildClusterList re-applies the CLI inline cluster on top of a
-	// freshly-loaded list.
-	BuildClusterList func([]config.Cluster) ([]config.Cluster, string)
 }

@@ -663,3 +663,179 @@ func TestIsLiteralCredential(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveStruct_SkipsPlaceholderDashField(t *testing.T) {
+	// arrange — a field tagged placeholder:"-" is resolved on a different
+	// path (the CLI inline cluster pipeline) and must be left untouched by
+	// the global walk.
+	type inner struct{ Password string }
+	type outer struct {
+		Addr    string
+		Skipped inner `placeholder:"-"`
+	}
+	t.Setenv("KT_SKIP_TEST_ADDR", "resolved")
+	target := &outer{
+		Addr:    "${env:KT_SKIP_TEST_ADDR}",
+		Skipped: inner{Password: "${env:KT_SKIP_TEST_ADDR}"},
+	}
+
+	// act
+	err := config.EnvFileResolvers().ResolveStruct(target)
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", target.Addr)
+	assert.Equal(t, "${env:KT_SKIP_TEST_ADDR}", target.Skipped.Password)
+}
+
+func TestLoad_InlineCluster_VaultFailureQuarantinesInsteadOfAborting(t *testing.T) {
+	// arrange — the CLI inline cluster references a secret the vault server
+	// cannot return. It must be quarantined like any cluster, not abort
+	// startup.
+	inline := &config.Cluster{
+		Name:    "x-cli",
+		Brokers: []string{"b:9092"},
+		SASL:    &config.SASLConfig{Mechanism: "PLAIN", Username: "u", Password: "${vault:kv/db#pw}"},
+	}
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  t.TempDir(),
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			return &stubVault{err: errors.New("vault: connection refused")}, nil
+		},
+		InlineCluster: inline,
+	})
+
+	// assert
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Clusters)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "x-cli", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "connection refused")
+}
+
+func TestLoad_InlineCluster_UnresolvedEnvQuarantinesInsteadOfAborting(t *testing.T) {
+	// arrange — the inline secret references an unset env var. The env+file
+	// failure must quarantine the inline cluster on the same per-cluster
+	// path as a vault failure, not abort startup.
+	unsetEnv(t, "KT_INLINE_MISSING_VAR")
+	inline := &config.Cluster{
+		Name:    "x-cli",
+		Brokers: []string{"b:9092"},
+		SASL:    &config.SASLConfig{Mechanism: "PLAIN", Username: "u", Password: "${env:KT_INLINE_MISSING_VAR}"},
+	}
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:       t.TempDir(),
+		StartDir:      t.TempDir(),
+		InlineCluster: inline,
+	})
+
+	// assert
+	require.NoError(t, err)
+	assert.Empty(t, loaded.Clusters)
+	require.Len(t, loaded.InvalidClusters, 1)
+	assert.Equal(t, "x-cli", loaded.InvalidClusters[0].Cluster.Name)
+	assert.Contains(t, loaded.InvalidClusters[0].Reason.Error(), "KT_INLINE_MISSING_VAR")
+}
+
+func TestLoad_InlineCluster_ValidVaultResolves(t *testing.T) {
+	// arrange
+	inline := &config.Cluster{
+		Name:    "x-cli",
+		Brokers: []string{"b:9092"},
+		SASL:    &config.SASLConfig{Mechanism: "PLAIN", Username: "u", Password: "${vault:kv/db#pw}"},
+	}
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  t.TempDir(),
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			return &stubVault{values: map[string]string{"kv/db#pw": "p4ss"}}, nil
+		},
+		InlineCluster: inline,
+	})
+
+	// assert
+	require.NoError(t, err)
+	assert.Empty(t, loaded.InvalidClusters)
+	require.Len(t, loaded.Clusters, 1)
+	require.NotNil(t, loaded.Clusters[0].SASL)
+	assert.Equal(t, "p4ss", loaded.Clusters[0].SASL.Password.Reveal())
+}
+
+func TestLoad_InlineCluster_ReResolvedOnReload(t *testing.T) {
+	// arrange — first load hits a dead vault and quarantines the inline
+	// cluster; the source spec must keep its placeholder so a later reload
+	// (after the operator fixes vault) re-resolves it.
+	inline := &config.Cluster{
+		Name:    "x-cli",
+		Brokers: []string{"b:9092"},
+		SASL:    &config.SASLConfig{Mechanism: "PLAIN", Username: "u", Password: "${vault:kv/db#pw}"},
+	}
+	opts := config.LoaderOptions{
+		HomeDir:       t.TempDir(),
+		StartDir:      t.TempDir(),
+		InlineCluster: inline,
+	}
+
+	// act — reload 1: vault down
+	opts.VaultBuilder = func(config.VaultConfig) (config.VaultResolver, error) {
+		return &stubVault{err: errors.New("vault: connection refused")}, nil
+	}
+	first, err := config.Load(opts)
+
+	// assert — quarantined, source spec untouched
+	require.NoError(t, err)
+	require.Len(t, first.InvalidClusters, 1)
+	assert.Equal(t, "${vault:kv/db#pw}", inline.SASL.Password.Reveal(),
+		"source spec must keep its placeholder so reload can re-resolve it")
+
+	// act — reload 2: vault recovered
+	opts.VaultBuilder = func(config.VaultConfig) (config.VaultResolver, error) {
+		return &stubVault{values: map[string]string{"kv/db#pw": "p4ss"}}, nil
+	}
+	second, err := config.Load(opts)
+
+	// assert — now valid
+	require.NoError(t, err)
+	assert.Empty(t, second.InvalidClusters)
+	require.Len(t, second.Clusters, 1)
+	require.NotNil(t, second.Clusters[0].SASL)
+	assert.Equal(t, "p4ss", second.Clusters[0].SASL.Password.Reveal())
+}
+
+func TestLoad_ResolveTargets_SkipTaggedFieldNotAsserted(t *testing.T) {
+	// arrange — mirrors *cli.Flags: the inline sub-struct is tagged
+	// placeholder:"-", so its ${vault:...} is resolved on the per-cluster
+	// path, not the global phase. The final completeness guard must skip it
+	// rather than treating the leftover placeholder as a fatal error.
+	type inlineFlags struct{ Password string }
+	type flagsLike struct {
+		VaultAddr string
+		Inline    inlineFlags `placeholder:"-"`
+	}
+	target := &flagsLike{
+		VaultAddr: "https://vault.example.com",
+		Inline:    inlineFlags{Password: "${vault:kv/db#pw}"},
+	}
+
+	// act
+	loaded, err := config.Load(config.LoaderOptions{
+		HomeDir:  t.TempDir(),
+		StartDir: t.TempDir(),
+		VaultBuilder: func(config.VaultConfig) (config.VaultResolver, error) {
+			return &stubVault{}, nil
+		},
+		ResolveTargets: []any{target},
+	})
+
+	// assert — no abort; the tagged placeholder is left untouched
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "${vault:kv/db#pw}", target.Inline.Password)
+}
