@@ -45,6 +45,37 @@ func NewClusterPinger(d Dialer, timeout time.Duration) clusters.Pinger {
 	})
 }
 
+// Connector establishes a verified connection to a cluster: it dials and
+// confirms the broker is reachable (Ping), returning a live client only on
+// success. Unlike [Pinger], which probes and discards, the Connector hands
+// back the live client to use.
+type Connector interface {
+	Connect(c config.Cluster) (*kafka.Client, error)
+}
+
+// ConnectorFunc adapts a function into a [Connector].
+type ConnectorFunc func(c config.Cluster) (*kafka.Client, error)
+
+func (f ConnectorFunc) Connect(c config.Cluster) (*kafka.Client, error) { return f(c) }
+
+// NewKafkaConnector returns a [Connector] that dials, then pings to verify
+// the broker is reachable. On a ping failure the half-open client is closed
+// so a broker that constructs a client but can't be reached never leaks a
+// connection. The timeout applies to the ping.
+func NewKafkaConnector(d Dialer, timeout time.Duration) Connector {
+	return ConnectorFunc(func(c config.Cluster) (*kafka.Client, error) {
+		client, err := d.Dial(c)
+		if err != nil {
+			return nil, fmt.Errorf("dial: %w", err)
+		}
+		if err := client.Ping(context.Background(), timeout); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("ping: %w", err)
+		}
+		return client, nil
+	})
+}
+
 // Bootstrap collects all wiring required to host real screens. When nil,
 // the host falls back to a placeholder body — used by tests that don't
 // exercise screen rendering.
@@ -62,7 +93,7 @@ type Bootstrap struct {
 	AutoSelectCluster       string
 	GlobalPath, ProjectPath string
 	LogPath                 string
-	Dialer                  Dialer
+	Connector               Connector
 	Pinger                  clusters.Pinger
 	// Editor defaults to [clusters.DefaultEditor] when nil.
 	Editor clusters.Editor

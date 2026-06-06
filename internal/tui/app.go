@@ -79,6 +79,12 @@ type Model struct {
 	clusterRO  bool
 	fromCLI    bool
 
+	// connectGen bumps on every connectCluster dispatch and is stamped on
+	// the connectResultMsg, so a result that arrives after a newer connect
+	// (or after the user navigated away) is dropped instead of swapping the
+	// client out from under the active session.
+	connectGen uint64
+
 	active Screen
 
 	// nav seeds — populated when a screen requests navigation, consumed when
@@ -169,13 +175,14 @@ func DefaultKeyHints() []layout.KeyHint {
 
 // Init implements tea.Model. When the clusters screen reports a
 // [clusters.Model.SkipTarget] (single cluster or --brokers supplied), the
-// host connects to it immediately and starts on the topics screen instead.
+// host kicks off an async connect to it while the picker stays mounted. The
+// topics screen is reached only once connectivity is verified
+// (see [Model.handleConnectResult]); a broker that can't be reached leaves
+// the user on the picker with the failure, never on an empty topics screen.
 func (m *Model) Init() tea.Cmd {
 	if cs, ok := m.active.(*clusters.Model); ok {
 		if name, skip := cs.SkipTarget(); skip {
-			if connectCmd := m.connectCluster(name); connectCmd != nil {
-				return teaBatch(connectCmd, m.watchConfigSnapshots())
-			}
+			return teaBatch(m.activeInit(), m.connectCluster(name), m.watchConfigSnapshots())
 		}
 	}
 	return teaBatch(m.activeInit(), m.watchConfigSnapshots())
@@ -259,6 +266,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case configSnapshotMsg:
 		m.handleConfigSnapshot(msg.snapshot)
 		return m, teaBatch(m.watchConfigSnapshots(), m.promoteFlash())
+	case connectResultMsg:
+		cmd := m.handleConnectResult(msg)
+		return m, teaBatch(cmd, m.promoteFlash())
 	}
 	// async screen messages (topic-loaded, fetch-result, …) reach the active
 	// screen here; route any resulting Action and re-promote the flash.

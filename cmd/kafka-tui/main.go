@@ -159,7 +159,7 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 		GlobalPath:        globalPath,
 		ProjectPath:       projectPath,
 		LogPath:           logger.ResolvedAt,
-		Dialer:            dialer,
+		Connector:         tui.NewKafkaConnector(dialer, 5*time.Second),
 		Pinger:            tui.NewClusterPinger(dialer, 5*time.Second),
 		Editor:            clusters.DefaultEditor(),
 		MessagesViewState: messagesViewState(store, logger.Logger),

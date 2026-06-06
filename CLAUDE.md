@@ -36,7 +36,9 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
 toasts), **Tab navigation** (one paired contract for forward/backward),
-**Inline hint footer** (one renderer for every `<key> <label>` hint surface).
+**Inline hint footer** (one renderer for every `<key> <label>` hint surface),
+**Cluster connect** (one connectivity gate every connect path verifies
+before mounting a cluster-bound screen).
 
 ### Text input
 
@@ -454,6 +456,31 @@ How to apply: when adding a new dependency to a screen, the nil case is
 part of the design, not an afterthought. If the subsystem cannot be
 optional (brokers, auth), that's an explicit deviation worth flagging in
 review.
+
+### Connecting to a cluster: verify before mounting
+
+*Applies the single-source rule above: one connectivity gate every connect
+path routes through.*
+
+Reaching a cluster — startup auto-connect, the picker, or `:cluster <name>` —
+always confirms the broker actually answers before any cluster-bound screen
+mounts. A constructed-but-unreachable connection never lands the user on an
+empty topics view: a failed connect surfaces the picker with the reason on
+the cluster's row, regardless of where the connect was triggered from.
+
+Why: the Kafka client connects lazily, so "a client was constructed" is not
+"the broker answered" — gating on construction alone shows an empty topics
+screen for a cluster that is down. One gate means every entry path inherits
+the same verify-then-mount contract instead of each re-deriving it (and the
+picker's manual-select path having a check the auto-connect path silently
+lacked). The connect is async and its result is generation-checked so a
+superseded attempt can't swap the client out from under a newer one or leave
+a row stuck mid-check (see § Async lifecycle and stale results).
+
+Deviation: a failed `:cluster <name>` switch from an already-connected
+session lands on the picker with the error rather than staying on the current
+cluster. Consistency of "connect failure → picker + reason" is chosen over
+preserving the in-flight session — the failure always has the same home.
 
 ### Cluster loading: per-cluster soft fail
 
