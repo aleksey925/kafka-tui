@@ -289,8 +289,8 @@ func columnDefs() []components.Column {
 		{Title: " ", Width: 1},
 		{Title: "Name", Width: 24, Sortable: true},
 		{Title: "Brokers", Width: 32, Sortable: true},
-		// Flags widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
-		{Title: "Flags", Width: 16, Sortable: false},
+		// widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
+		{Title: "Notes", Width: 16, Sortable: false},
 		{Title: "Status", Width: 14, Sortable: false},
 	}
 }
