@@ -231,6 +231,15 @@ func formatElapsed(d time.Duration) string {
 	}
 }
 
+// menuColGutter is the blank gap kept between menu columns so a long hint in
+// the left column never butts up against the right column.
+const menuColGutter = 2
+
+// minMenuColWidth caps how many columns the menu fans into: a column narrower
+// than this is mostly ellipsis, so a tight pane shows fewer readable columns
+// instead. 13 preserves the prior "40-col pane => up to 3 columns" behavior.
+const minMenuColWidth = 13
+
 func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
 	if len(hints) == 0 {
 		hints = []KeyHint{
@@ -239,28 +248,72 @@ func renderMenu(s theme.Styles, hints []KeyHint, width int) string {
 			{Key: "q", Label: "quit"},
 		}
 	}
+	// derive the column count from the hint count so hints aren't dropped past
+	// a fixed cols*HeaderRows cap (k9s derives colCount the same way): topics
+	// and messages list views overflow a 2x5 grid. Two columns stay the floor
+	// for the common small sets; the pane width caps the upper end so a narrow
+	// pane shows fewer columns rather than slivers too thin to read.
 	cols := 2
-	if width < 40 {
-		cols = 1
+	if need := (len(hints) + HeaderRows - 1) / HeaderRows; need > cols {
+		cols = need
 	}
-	colW := width / cols
+	if fit := max(1, width/minMenuColWidth); cols > fit {
+		cols = fit
+	}
 	rowsN := min((len(hints)+cols-1)/cols, HeaderRows)
+
+	// align labels within a column: pad each key token to the column's widest
+	// key so every label in a column starts at the same x. keys vary in width
+	// (`<r>` vs `<ctrl+e>` vs `<tab / shift+tab>`), so without the pad the
+	// labels stagger into a ragged left edge.
 	cells := make([]string, len(hints))
-	for i, h := range hints {
-		cells[i] = padRight(s.HintKey.Render("<"+h.Key+">")+" "+s.HintLabel.Render(h.Label), colW)
+	for c := range cols {
+		start := c * rowsN
+		end := min(start+rowsN, len(hints))
+		keyW := 0
+		for j := start; j < end; j++ {
+			keyW = max(keyW, lipgloss.Width("<"+hints[j].Key+">"))
+		}
+		for j := start; j < end; j++ {
+			key := "<" + hints[j].Key + ">"
+			pad := strings.Repeat(" ", keyW-lipgloss.Width(key))
+			cells[j] = s.HintKey.Render(key) + pad + " " + s.HintLabel.Render(hints[j].Label)
+		}
 	}
+
+	// column-major: column c holds cells[c*rowsN : (c+1)*rowsN]. Size each
+	// column to its own widest cell (plus a gutter) rather than a fixed
+	// width/cols split — a long hint (the produce form's "previous field",
+	// "open record in $EDITOR") used to overrun the fixed slot and collide
+	// with the next column. Columns that genuinely can't fit the pane are
+	// truncated, never overflowed.
+	colW := make([]int, cols)
+	remaining := width
+	for c := range cols {
+		start := c * rowsN
+		end := min(start+rowsN, len(cells))
+		w := 0
+		for j := start; j < end; j++ {
+			w = max(w, lipgloss.Width(cells[j]))
+		}
+		if c < cols-1 {
+			w += menuColGutter
+		}
+		// reserve at least one column for each not-yet-sized column.
+		colW[c] = min(w, max(remaining-(cols-1-c), 1))
+		remaining -= colW[c]
+	}
+
 	lines := make([]string, HeaderRows)
 	for r := range HeaderRows {
 		var line strings.Builder
 		for c := range cols {
-			// only emit a cell when it falls inside its own column slot,
-			// otherwise the row leaks the next column's content.
 			idx := c*rowsN + r
+			cell := ""
 			if r < rowsN && idx < len(cells) {
-				line.WriteString(cells[idx])
-			} else {
-				line.WriteString(strings.Repeat(" ", colW))
+				cell = components.TruncateText(cells[idx], colW[c])
 			}
+			line.WriteString(padRight(cell, colW[c]))
 		}
 		lines[r] = padLine(line.String(), width)
 	}
