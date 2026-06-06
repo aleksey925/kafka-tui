@@ -62,9 +62,16 @@ func (m *Model) connectCluster(name string) tea.Cmd {
 	}
 	clu := findCluster(m.boot.Clusters, name)
 	if clu == nil {
+		// only `:cluster <name>` reaches here with a bad name (the picker and
+		// auto-select paths pre-validate); without feedback the command would
+		// be a silent no-op.
+		if q, ok := activeToastQueue(m.active); ok {
+			q.Push(components.ToastError, unknownClusterReason(m.boot, name))
+		}
 		return nil
 	}
 	m.connectGen++
+	m.connectName = name
 	if cs, ok := m.active.(*clusters.Model); ok {
 		cs.SetConnectionStatus(name, clusters.StatusChecking)
 	} else if q, ok := activeToastQueue(m.active); ok {
@@ -91,11 +98,15 @@ func (m *Model) handleConnectResult(msg connectResultMsg) tea.Cmd {
 		if msg.client != nil {
 			msg.client.Close()
 		}
-		// the superseding connect set its own row to checking; this one's
-		// result is the only thing that would have cleared msg.name, so drop
-		// it back to unknown instead of leaving a row stuck at "checking…".
-		if cs, ok := m.active.(*clusters.Model); ok {
-			cs.ClearConnecting(msg.name)
+		// a stale result is the only thing that would have cleared msg.name,
+		// so drop its row back to unknown instead of leaving it stuck at
+		// "checking…" — unless a newer connect for that same row is still in
+		// flight (it will resolve the row itself; clearing would wipe its
+		// live "checking…").
+		if msg.name != m.connectName {
+			if cs, ok := m.active.(*clusters.Model); ok {
+				cs.ClearConnecting(msg.name)
+			}
 		}
 		return nil
 	}
@@ -149,6 +160,20 @@ func (m *Model) failConnect(name string, err error) tea.Cmd {
 		q.Push(components.ToastError, fmt.Sprintf("connect %q failed: %v", name, err))
 	}
 	return initCmd
+}
+
+// unknownClusterReason explains why a `:cluster <name>` switch found no
+// connectable target: the name is either quarantined (invalid config, with
+// its load reason) or absent from the loaded set entirely.
+func unknownClusterReason(b *Bootstrap, name string) string {
+	if b != nil && b.Loaded != nil {
+		for _, ic := range b.Loaded.InvalidClusters {
+			if ic.Cluster.Name == name {
+				return fmt.Sprintf("cluster %q failed to load: %v", name, ic.Reason)
+			}
+		}
+	}
+	return fmt.Sprintf("cluster %q not found", name)
 }
 
 func findCluster(list []config.Cluster, name string) *config.Cluster {

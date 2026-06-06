@@ -84,6 +84,11 @@ type Model struct {
 	// (or after the user navigated away) is dropped instead of swapping the
 	// client out from under the active session.
 	connectGen uint64
+	// connectName is the target of the latest dispatch. A stale result only
+	// clears its row when the superseding connect targeted a different
+	// cluster — otherwise it would wipe the live "checking…" that a re-issued
+	// connect for the same row just set.
+	connectName string
 
 	active Screen
 
