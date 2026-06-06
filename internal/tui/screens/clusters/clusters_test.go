@@ -176,57 +176,87 @@ func TestInit_DoesNotPingClusters(t *testing.T) {
 	assert.Equal(t, clusters.StatusUnknown, m.Status("b"))
 }
 
-func TestEnter_OptimisticConnectWhenNoPinger(t *testing.T) {
-	m := clusters.New(clusters.Options{
-		Clusters: []config.Cluster{
-			{Name: "a", Brokers: []string{"x"}},
-			{Name: "b", Brokers: []string{"y"}},
-		},
-	})
-	_ = m.Update(keyPress("enter"))
-	a := m.ConsumeAction()
-	assert.Equal(t, "a", a.Connect)
-	assert.Equal(t, clusters.StatusOK, m.Status("a"))
-}
-
-func TestEnter_PingerSuccessSetsOKAndConnects(t *testing.T) {
-	calls := 0
+func TestEnter_EmitsConnectActionWithoutProbing(t *testing.T) {
+	pings := 0
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
 			{Name: "a", Brokers: []string{"x"}},
 			{Name: "b", Brokers: []string{"y"}},
 		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
-			calls++
+			pings++
 			return nil
 		}),
 	})
+
 	cmd := m.Update(keyPress("enter"))
-	require.NotNil(t, cmd)
+
+	assert.Nil(t, cmd, "picker must not probe on connect — the host owns the gate")
+	assert.Equal(t, 0, pings)
+	assert.Equal(t, "a", m.ConsumeAction().Connect)
+	assert.Equal(t, clusters.StatusUnknown, m.Status("a"), "host sets StatusChecking, not the picker")
+}
+
+func TestSetConnectionStatus_ReflectsHostOutcome(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+	})
+
+	m.SetConnectionStatus("a", clusters.StatusChecking)
 	assert.Equal(t, clusters.StatusChecking, m.Status("a"))
 
-	drive(t, m, cmd)
+	m.SetConnectionStatus("a", clusters.StatusFailed)
+	assert.Equal(t, clusters.StatusFailed, m.Status("a"))
+}
 
-	assert.Equal(t, clusters.StatusOK, m.Status("a"))
-	assert.Equal(t, "a", m.ConsumeAction().Connect)
-	assert.Equal(t, 1, calls)
+func TestSetConnectionStatus_DoesNotOverrideInvalid(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		InvalidClusters: []config.InvalidCluster{
+			{Cluster: config.Cluster{Name: "broken", Brokers: []string{"b:9092"}}, Reason: errors.New("vault is not configured")},
+		},
+	})
+
+	m.SetConnectionStatus("broken", clusters.StatusChecking)
+
+	assert.Equal(t, clusters.StatusInvalid, m.Status("broken"))
+}
+
+func TestClearConnecting_ResetsStuckCheckingRow(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+	})
+	m.SetConnectionStatus("a", clusters.StatusChecking)
+
+	m.ClearConnecting("a")
+
+	assert.Equal(t, clusters.StatusUnknown, m.Status("a"))
+}
+
+func TestClearConnecting_KeepsResolvedStatus(t *testing.T) {
+	m := clusters.New(clusters.Options{
+		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
+	})
+	m.SetConnectionStatus("a", clusters.StatusOK)
+
+	m.ClearConnecting("a")
+
+	assert.Equal(t, clusters.StatusOK, m.Status("a"), "a row resolved since dispatch must survive")
 }
 
 func TestPing_StaleResultIsDropped(t *testing.T) {
-	// arrange
+	// arrange — probe `a` via test (`t`) so a ping is in flight.
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
 	})
-	cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("t"))
 	drive(t, m, cmd)
-	_ = m.ConsumeAction()
 	require.Equal(t, clusters.StatusOK, m.Status("a"))
 
 	// act — a late result from a superseded ping (Gen 0) must not
-	// downgrade the live OK status or trigger a phantom connect.
+	// downgrade the live OK status.
 	m.Update(clusters.PingResultMsg{
 		Name: "a",
 		Err:  errors.New("stale broker error"),
@@ -235,12 +265,11 @@ func TestPing_StaleResultIsDropped(t *testing.T) {
 
 	// assert
 	assert.Equal(t, clusters.StatusOK, m.Status("a"))
-	assert.Empty(t, m.ConsumeAction().Connect)
 	assert.Equal(t, 0, m.Toasts().Len(), "stale result must not push a toast")
 }
 
 func TestPing_StaleResultForRemovedClusterIsDropped(t *testing.T) {
-	// arrange — connect to `a` so pingGen[a] is bumped, then config-reload
+	// arrange — probe `a` so pingGen[a] is bumped, then config-reload
 	// removes `a` entirely.
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
@@ -248,33 +277,30 @@ func TestPing_StaleResultForRemovedClusterIsDropped(t *testing.T) {
 			return nil
 		}),
 	})
-	cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("t"))
 	require.NotNil(t, cmd)
 	gen := uint64(1) // first ping dispatch bumps from 0 to 1
-	_ = m.ConsumeAction()
 	m.SetClusters([]config.Cluster{{Name: "b", Brokers: []string{"y"}}}, nil, nil, "")
 
 	// act — the in-flight ping for the removed `a` finally returns
 	m.Update(clusters.PingResultMsg{Name: "a", Err: nil, Gen: gen})
 
-	// assert — must not resurrect status or fire a phantom Connect
-	assert.Empty(t, m.ConsumeAction().Connect, "removed cluster must not auto-connect")
+	// assert — must not resurrect status
 	assert.Equal(t, clusters.StatusUnknown, m.Status("a"))
 }
 
 func TestPing_StaleResultForNewlyInvalidClusterIsDropped(t *testing.T) {
-	// arrange — connect to `a` so pingGen[a]=1 and a ping is in flight.
-	// Then reload makes `a` invalid (e.g. its vault placeholder broke).
+	// arrange — probe `a` so pingGen[a]=1 and a ping is in flight. Then
+	// reload makes `a` invalid (e.g. its vault placeholder broke).
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{{Name: "a", Brokers: []string{"x"}}},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
 	})
-	cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("t"))
 	require.NotNil(t, cmd)
 	gen := uint64(1)
-	_ = m.ConsumeAction()
 	m.SetClusters(nil, []config.InvalidCluster{{
 		Cluster: config.Cluster{Name: "a", Brokers: []string{"x"}},
 		Reason:  errors.New("vault placeholder broke"),
@@ -282,15 +308,13 @@ func TestPing_StaleResultForNewlyInvalidClusterIsDropped(t *testing.T) {
 	require.Equal(t, clusters.StatusInvalid, m.Status("a"))
 
 	// act — late ping result must not overwrite StatusInvalid with OK
-	// nor trigger a phantom Connect to a cluster with broken config.
 	m.Update(clusters.PingResultMsg{Name: "a", Err: nil, Gen: gen})
 
 	// assert
 	assert.Equal(t, clusters.StatusInvalid, m.Status("a"))
-	assert.Empty(t, m.ConsumeAction().Connect, "invalid cluster must not auto-connect")
 }
 
-func TestEnter_PingerFailureSetsFailedAndRaisesToast(t *testing.T) {
+func TestT_PingerFailureSetsFailedAndRaisesToast(t *testing.T) {
 	m := clusters.New(clusters.Options{
 		Clusters: []config.Cluster{
 			{Name: "a", Brokers: []string{"x"}},
@@ -300,11 +324,10 @@ func TestEnter_PingerFailureSetsFailedAndRaisesToast(t *testing.T) {
 			return errors.New("dial timeout")
 		}),
 	})
-	cmd := m.Update(keyPress("enter"))
+	cmd := m.Update(keyPress("t"))
 	drive(t, m, cmd)
 
 	assert.Equal(t, clusters.StatusFailed, m.Status("a"))
-	assert.Empty(t, m.ConsumeAction().Connect, "must not connect on failure")
 	require.Equal(t, 1, m.Toasts().Len())
 	assert.Contains(t, m.Toasts().Items()[0].Message, "dial timeout")
 }

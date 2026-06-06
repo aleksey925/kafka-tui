@@ -100,7 +100,7 @@ export PATH="$HOME/.local/bin:$PATH"
 The fastest way in is to provide brokers inline:
 
 ```bash
-kafka-tui --brokers localhost:9092
+kafka-tui connect --brokers localhost:9092
 ```
 
 For a more realistic setup, drop a `clusters.yaml` into `~/.kafka-tui/`:
@@ -132,19 +132,20 @@ kafka-tui
 
 Annotated `config.yaml` and `clusters.yaml` samples live in [`examples/`](examples/).
 
-The `--brokers` and `--cluster` flags have distinct, non-overlapping jobs:
+Connecting at startup goes through the `connect` subcommand, which reaches a cluster two
+mutually-exclusive ways:
 
-- `--brokers host:9092,...` defines an **inline cluster** for this session. It always gets an
-  auto-generated name with a `-cli` suffix (e.g. `bduzdc7w-cli`), shown in the picker.
-  Inline-cluster view state (seek position, partition filter) does not persist across runs
-  because the random part of the name changes — for persistent configuration, use `clusters.yaml`.
-- `--cluster <name>` selects which loaded cluster to **auto-connect to** at startup, instead of
-  showing the picker. The name must match an entry from `clusters.yaml` (or the inline cluster's
-  generated name, which you usually won't know in advance). An unknown or invalid name lands on
-  the picker with a warning toast — not a hard failure.
+- `connect <name>` **auto-connects** to a cluster loaded from `clusters.yaml`, skipping the
+  picker. An unknown or invalid name lands on the picker with a warning toast — not a hard failure.
+- `connect --brokers host:9092,...` defines an **inline cluster** for this session, with
+  `--tls*`, `--sasl-*`, `--color`, and `--read-only` supplying its connection details. It always
+  gets an auto-generated name with a `-cli` suffix (e.g. `bduzdc7w-cli`), shown in the picker.
+  Inline-cluster view state (seek position, partition filter) does not persist across runs because
+  the random part of the name changes — for persistent configuration, use `clusters.yaml`.
 
-The two flags can be combined: `kafka-tui --brokers x:9092 --cluster prod` creates an inline cluster
-_and_ auto-connects to YAML's `prod`; the inline cluster sits in the picker for later use.
+`connect` takes either a name or `--brokers`, never both. Global flags (`--config`, `--log-level`,
+`--vault-addr`, `--vault-token`) live on the root command and work on either side of the
+subcommand, e.g. `kafka-tui --log-level debug connect prod`.
 
 ### Configuration
 
@@ -231,19 +232,19 @@ Prefer one of:
 
 ```bash
 # environment variable (works well with direnv / mise / etc)
-kafka-tui --brokers prod:9092 --sasl-mechanism SCRAM-SHA-512 \
+kafka-tui connect --brokers prod:9092 --sasl-mechanism SCRAM-SHA-512 \
   --sasl-username svc --sasl-password '${env:KAFKA_PASS}'
 
 # file (works well with mode 0600 secrets)
-kafka-tui --vault-token '${file:/run/secrets/vault_token}' ...
+kafka-tui --vault-token '${file:/run/secrets/vault_token}' connect prod
 
 # vault (chained: --vault-token resolves the placeholder, then SASL pulls from vault)
-kafka-tui --brokers prod:9092 --sasl-mechanism PLAIN \
+kafka-tui connect --brokers prod:9092 --sasl-mechanism PLAIN \
   --sasl-username svc --sasl-password '${vault:secret/kafka/prod#password}'
 ```
 
-CLI-supplied placeholders are resolved once at startup (YAML reloads pick up rotated
-secrets; CLI values do not).
+Root global flags (`--vault-addr` / `--vault-token`) are resolved once at startup and frozen;
+the inline cluster's secrets re-resolve on config reload, like `clusters.yaml`.
 
 ## Development
 

@@ -103,7 +103,13 @@ func (r Resolvers) resolveValue(v reflect.Value) error {
 		}
 		return r.resolveValue(v.Elem())
 	case reflect.Struct:
+		t := v.Type()
 		for i := range v.NumField() {
+			// a `placeholder:"-"` field is resolved on the per-cluster
+			// path, not here — see CLAUDE.md § Cluster loading.
+			if t.Field(i).Tag.Get("placeholder") == "-" {
+				continue
+			}
 			f := v.Field(i)
 			if !f.CanSet() {
 				continue
@@ -322,7 +328,14 @@ func scanForPlaceholders(v reflect.Value) error {
 		}
 		return scanForPlaceholders(v.Elem())
 	case reflect.Struct:
+		t := v.Type()
 		for i := range v.NumField() {
+			// honor the same placeholder:"-" opt-out as resolveValue: a
+			// field resolved on the per-cluster path still carries raw
+			// ${...} here and must not trip the completeness guard.
+			if t.Field(i).Tag.Get("placeholder") == "-" {
+				continue
+			}
 			if err := scanForPlaceholders(v.Field(i)); err != nil {
 				return err
 			}

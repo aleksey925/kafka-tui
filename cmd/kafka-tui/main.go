@@ -89,6 +89,10 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 		VaultBuilder:   vaultBuilderWithCLIOverride(flags),
 		ResolveTargets: []any{flags},
 	}
+	if flags.Inline.HasInlineCluster() {
+		inline := cliInlineToCluster(flags.Inline)
+		loaderOpts.InlineCluster = &inline
+	}
 	watcher, loaded, err := config.NewWatcher(loaderOpts, flags.Inline.Name, 0)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -125,7 +129,7 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 		}
 	}()
 
-	clusterList, cliClu := buildClusterList(loaded.Clusters, flags.Inline)
+	cliClu := inlineClusterName(flags.Inline)
 
 	globalPath, projectPath := configPaths()
 
@@ -149,13 +153,13 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 	}
 	boot := &tui.Bootstrap{
 		Loaded:            loaded,
-		Clusters:          clusterList,
+		Clusters:          loaded.Clusters,
 		CLIName:           cliClu,
 		AutoSelectCluster: autoSelect,
 		GlobalPath:        globalPath,
 		ProjectPath:       projectPath,
 		LogPath:           logger.ResolvedAt,
-		Dialer:            dialer,
+		Connector:         tui.NewKafkaConnector(dialer, 5*time.Second),
 		Pinger:            tui.NewClusterPinger(dialer, 5*time.Second),
 		Editor:            clusters.DefaultEditor(),
 		MessagesViewState: messagesViewState(store, logger.Logger),
@@ -163,25 +167,19 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 		Clipboard:         clip,
 		Pager:             produce.DefaultPagerOpener(),
 		StartupWarnings:   startupWarnings,
-		ReadOnly:          flags.Inline.ReadOnly,
-		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
+		ConfigReloader: func() (*config.Loaded, error) {
 			fresh, err := config.Load(loaderOpts)
 			if err != nil {
-				return nil, nil, "", fmt.Errorf("reload config: %w", err)
+				return nil, fmt.Errorf("reload config: %w", err)
 			}
-			list, cli := buildClusterList(fresh.Clusters, flags.Inline)
-			return fresh, list, cli, nil
+			return fresh, nil
 		},
 		ConfigSnapshots: watcher.Snapshots(),
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return buildClusterList(c, flags.Inline)
-		},
 	}
 
 	model := tui.New(tui.Options{
 		Cluster:      flags.ClusterName,
 		ClusterColor: flags.Inline.Color,
-		ReadOnly:     flags.Inline.ReadOnly,
 		FromCLI:      flags.Inline.HasInlineCluster(),
 		Initial:      tui.ScreenClusters,
 		Build:        version.NewBuildInfo(ver),
@@ -197,18 +195,15 @@ func run(flags *cli.Flags, cliWarnings []string) error {
 	return nil
 }
 
-// buildClusterList prepends the CLI inline cluster onto the loaded list.
-// The inline name is auto-generated with a "-cli" suffix (cli.Parse), so
-// it cannot collide with any YAML cluster name — append is safe.
-func buildClusterList(loaded []config.Cluster, inline cli.CLICluster) ([]config.Cluster, string) {
+// inlineClusterName returns the auto-generated name of the CLI inline
+// cluster, or "" when no --brokers cluster was supplied. The inline cluster
+// itself is materialized by the loader (LoaderOptions.InlineCluster), so it
+// already lives in Loaded.Clusters / Loaded.InvalidClusters.
+func inlineClusterName(inline cli.CLICluster) string {
 	if !inline.HasInlineCluster() {
-		return loaded, ""
+		return ""
 	}
-	c := cliInlineToCluster(inline)
-	merged := make([]config.Cluster, 0, len(loaded)+1)
-	merged = append(merged, c)
-	merged = append(merged, loaded...)
-	return merged, c.Name
+	return inline.Name
 }
 
 // cliInlineToCluster only populates SASL / TLS sub-structs when at least one

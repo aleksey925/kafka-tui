@@ -289,8 +289,8 @@ func columnDefs() []components.Column {
 		{Title: " ", Width: 1},
 		{Title: "Name", Width: 24, Sortable: true},
 		{Title: "Brokers", Width: 32, Sortable: true},
-		// Flags widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
-		{Title: "Flags", Width: 16, Sortable: false},
+		// widened 12 → 16 so the [NO-TLS-VERIFY] marker fits.
+		{Title: "Notes", Width: 16, Sortable: false},
 		{Title: "Status", Width: 14, Sortable: false},
 	}
 }
@@ -617,6 +617,9 @@ func (m *Model) openEditChooser() tea.Cmd {
 	return nil
 }
 
+// connectCurrent emits a connect request for the selected cluster. The host
+// owns the connectivity gate and reflects the outcome back via
+// [Model.SetConnectionStatus]; the picker does not probe on connect here.
 func (m *Model) connectCurrent() tea.Cmd {
 	row, ok := m.table.SelectedRow()
 	if !ok {
@@ -626,20 +629,32 @@ func (m *Model) connectCurrent() tea.Cmd {
 	if m.flashInvalidReason(name) {
 		return nil
 	}
-	c := m.findCluster(name)
-	if c == nil {
-		return nil
+	m.action.Connect = name
+	return nil
+}
+
+// SetConnectionStatus lets the host reflect the outcome of a host-driven
+// connect attempt on a cluster's row (StatusChecking while dialing,
+// StatusFailed on a failed gate). Invalid clusters keep their StatusInvalid
+// marker — the host never connects them.
+func (m *Model) SetConnectionStatus(name string, status ConnectionStatus) {
+	if m.statuses[name] == StatusInvalid {
+		return
 	}
-	if m.pinger == nil {
-		m.action.Connect = name
-		m.statuses[name] = StatusOK
-		m.refreshTable()
-		return nil
-	}
-	m.statuses[name] = StatusChecking
-	m.pingGen[name]++
+	m.statuses[name] = status
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentConnect, m.pingGen[name])
+}
+
+// ClearConnecting resets a row the host left in StatusChecking for a connect
+// it then abandoned (superseded by a newer connect, whose result will never
+// arrive for this row). Only a still-checking row is touched, so an OK/failed
+// status the user re-probed with `t` in the meantime survives.
+func (m *Model) ClearConnecting(name string) {
+	if m.statuses[name] != StatusChecking {
+		return
+	}
+	m.statuses[name] = StatusUnknown
+	m.refreshTable()
 }
 
 func (m *Model) testCurrent() tea.Cmd {
@@ -658,7 +673,7 @@ func (m *Model) testCurrent() tea.Cmd {
 	m.statuses[name] = StatusChecking
 	m.pingGen[name]++
 	m.refreshTable()
-	return pingCmd(m.pinger, *c, m.pingTimeout, intentTest, m.pingGen[name])
+	return pingCmd(m.pinger, *c, m.pingTimeout, m.pingGen[name])
 }
 
 func (m *Model) testAll() tea.Cmd {
@@ -675,7 +690,7 @@ func (m *Model) testAll() tea.Cmd {
 		}
 		m.statuses[c.Name] = StatusChecking
 		m.pingGen[c.Name]++
-		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, intentTest, m.pingGen[c.Name]))
+		cmds = append(cmds, pingCmd(m.pinger, c, m.pingTimeout, m.pingGen[c.Name]))
 	}
 	m.refreshTable()
 	if len(cmds) == 0 {
@@ -720,9 +735,6 @@ func (m *Model) handlePingResult(msg PingResultMsg) {
 	} else {
 		m.statuses[msg.Name] = StatusOK
 		delete(m.errors, msg.Name)
-		if msg.Intent == intentConnect {
-			m.action.Connect = msg.Name
-		}
 	}
 	m.refreshTable()
 }
@@ -807,17 +819,9 @@ func (m *Model) EditCursor() int {
 
 // ----- Messages -----
 
-type pingIntent int
-
-const (
-	intentTest pingIntent = iota
-	intentConnect
-)
-
 type PingResultMsg struct {
-	Name   string
-	Err    error
-	Intent pingIntent
+	Name string
+	Err  error
 	// Gen pins the result to the [Model.pingGen] for Name at dispatch time
 	// so handlers drop stale arrivals from a re-issued ping.
 	Gen uint64
@@ -828,11 +832,11 @@ type EditCompletedMsg struct {
 	Err  error
 }
 
-func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, intent pingIntent, gen uint64) tea.Cmd {
+func pingCmd(p Pinger, c config.Cluster, timeout time.Duration, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		err := p.Ping(ctx, c)
-		return PingResultMsg{Name: c.Name, Err: err, Intent: intent, Gen: gen}
+		return PingResultMsg{Name: c.Name, Err: err, Gen: gen}
 	}
 }

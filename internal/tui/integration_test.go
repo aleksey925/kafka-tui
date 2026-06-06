@@ -471,9 +471,6 @@ func TestConfigSnapshot_UpdatesBootAndToastsOnClusters(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
@@ -641,9 +638,9 @@ func newConnectedHost(t *testing.T, cluster config.Cluster) *tui.Model {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		Dialer: tui.DialerFunc(func(c config.Cluster) (*kafka.Client, error) {
+		Connector: tui.NewKafkaConnector(tui.DialerFunc(func(c config.Cluster) (*kafka.Client, error) {
 			return kafka.Dial(c, kafka.DialOptions{ClientID: "kafka-tui-test"})
-		}),
+		}), 5*time.Second),
 	}
 	m := tui.New(tui.Options{
 		Initial:   tui.ScreenClusters,
@@ -808,9 +805,9 @@ func TestConnect_DialsAndPushesTopics(t *testing.T) {
 
 // TestConnect_UnknownClusterIsNoop pins findCluster's nil branch — when
 // the requested name isn't in the bootstrap list, connectCluster returns
-// nil without touching the dialer.
+// nil without touching the connector.
 func TestConnect_UnknownClusterIsNoop(t *testing.T) {
-	dialed := false
+	connected := false
 	loaded := &config.Loaded{
 		Config:   config.Defaults(),
 		Clusters: []config.Cluster{{Name: "alpha", Brokers: []string{"a:9092"}}},
@@ -821,8 +818,8 @@ func TestConnect_UnknownClusterIsNoop(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		Dialer: tui.DialerFunc(func(_ config.Cluster) (*kafka.Client, error) {
-			dialed = true
+		Connector: tui.ConnectorFunc(func(_ config.Cluster) (*kafka.Client, error) {
+			connected = true
 			return nil, errors.New("should not be called")
 		}),
 	}
@@ -840,14 +837,14 @@ func TestConnect_UnknownClusterIsNoop(t *testing.T) {
 	_, cmd := m.Update(keyPress("enter"))
 	drainCmd(t, m, cmd)
 
-	assert.False(t, dialed, "dialer must not run for unknown cluster")
+	assert.False(t, connected, "connector must not run for unknown cluster")
 	assert.Nil(t, m.ActiveClient())
 }
 
-// TestConnect_DialErrorSurfacesToast pins the dial-failure branch:
-// connectCluster pushes an error toast onto the clusters screen instead
-// of leaving the user without feedback.
-func TestConnect_DialErrorSurfacesToast(t *testing.T) {
+// TestConnect_FailureLandsOnPickerWithToast pins the connect-failure branch:
+// a broker that fails the connectivity gate leaves the user on the clusters
+// picker with the reason, never on an empty topics screen.
+func TestConnect_FailureLandsOnPickerWithToast(t *testing.T) {
 	loaded := &config.Loaded{
 		Config:   config.Defaults(),
 		Clusters: []config.Cluster{{Name: "alpha", Brokers: []string{"a:9092"}}},
@@ -858,8 +855,8 @@ func TestConnect_DialErrorSurfacesToast(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		Dialer: tui.DialerFunc(func(_ config.Cluster) (*kafka.Client, error) {
-			return nil, errors.New("dial refused")
+		Connector: tui.ConnectorFunc(func(_ config.Cluster) (*kafka.Client, error) {
+			return nil, errors.New("ping: broker unreachable")
 		}),
 	}
 	m := tui.New(tui.Options{
@@ -872,8 +869,83 @@ func TestConnect_DialErrorSurfacesToast(t *testing.T) {
 	_, cmd := m.Update(keyPress("enter"))
 	drainCmd(t, m, cmd)
 
-	assert.Contains(t, m.Render(), "dial refused")
+	out := m.Render()
+	assert.Contains(t, out, "broker unreachable")
+	assert.Contains(t, out, "Clusters", "must stay on the picker, not a topics screen")
 	assert.Nil(t, m.ActiveClient())
+}
+
+// TestConnect_AutoSelectFailureLandsOnPicker pins the startup auto-connect
+// path: an unreachable AutoSelectCluster must leave the user on the picker
+// with the failure, not on an empty topics list.
+func TestConnect_AutoSelectFailureLandsOnPicker(t *testing.T) {
+	loaded := &config.Loaded{
+		Config:   config.Defaults(),
+		Clusters: []config.Cluster{{Name: "alpha", Brokers: []string{"a:9092"}}},
+	}
+	boot := &tui.Bootstrap{
+		Loaded:            loaded,
+		Clusters:          loaded.Clusters,
+		AutoSelectCluster: "alpha",
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+		Connector: tui.ConnectorFunc(func(_ config.Cluster) (*kafka.Client, error) {
+			return nil, errors.New("ping: broker unreachable")
+		}),
+	}
+	m := tui.New(tui.Options{
+		Initial:   tui.ScreenClusters,
+		Width:     120,
+		Height:    30,
+		Bootstrap: boot,
+	})
+
+	drainCmd(t, m, m.Init())
+
+	out := m.Render()
+	assert.Contains(t, out, "broker unreachable")
+	assert.Contains(t, out, "Clusters", "auto-connect failure must land on the picker")
+	assert.Nil(t, m.ActiveClient())
+}
+
+// TestConnect_AutoSelectSuccessReachesTopics pins the happy startup path:
+// a reachable AutoSelectCluster connects and mounts the topics screen
+// without the user touching the picker.
+func TestConnect_AutoSelectSuccessReachesTopics(t *testing.T) {
+	cluster := startKfake(t)
+	cluster.Name = "alpha"
+	loaded := &config.Loaded{
+		Config:   config.Defaults(),
+		Clusters: []config.Cluster{cluster},
+	}
+	boot := &tui.Bootstrap{
+		Loaded:            loaded,
+		Clusters:          loaded.Clusters,
+		AutoSelectCluster: "alpha",
+		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
+			return nil
+		}),
+		Connector: tui.NewKafkaConnector(tui.DialerFunc(func(c config.Cluster) (*kafka.Client, error) {
+			return kafka.Dial(c, kafka.DialOptions{ClientID: "kafka-tui-test"})
+		}), 5*time.Second),
+	}
+	m := tui.New(tui.Options{
+		Initial:   tui.ScreenClusters,
+		Width:     120,
+		Height:    30,
+		Bootstrap: boot,
+	})
+	t.Cleanup(func() {
+		if c := m.ActiveClient(); c != nil {
+			c.Close()
+		}
+	})
+
+	drainCmd(t, m, m.Init())
+
+	assert.Contains(t, m.Render(), "Topics")
+	assert.NotNil(t, m.ActiveClient())
 }
 
 // TestRoute_TopicsToMessagesAndBack drives the host's topics→messages→back
@@ -1145,8 +1217,8 @@ func TestReloadClusters_PushesFreshList(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
-			return freshLoaded, freshLoaded.Clusters, "", nil
+		ConfigReloader: func() (*config.Loaded, error) {
+			return freshLoaded, nil
 		},
 	}
 	m := tui.New(tui.Options{
@@ -1189,8 +1261,8 @@ func TestReloadClusters_ErrorSurfacesToast(t *testing.T) {
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
-		ConfigReloader: func() (*config.Loaded, []config.Cluster, string, error) {
-			return nil, nil, "", errors.New("yaml: bad indent")
+		ConfigReloader: func() (*config.Loaded, error) {
+			return nil, errors.New("yaml: bad indent")
 		},
 	}
 	m := tui.New(tui.Options{
@@ -1221,9 +1293,6 @@ func TestConfigSnapshot_ActiveClusterChangedWarns(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),
@@ -1260,9 +1329,6 @@ func TestConfigSnapshot_ParseErrorSurfacesToast(t *testing.T) {
 		Loaded:          loaded,
 		Clusters:        loaded.Clusters,
 		ConfigSnapshots: snapshots,
-		BuildClusterList: func(c []config.Cluster) ([]config.Cluster, string) {
-			return c, ""
-		},
 		Pinger: clusters.PingerFunc(func(_ context.Context, _ config.Cluster) error {
 			return nil
 		}),

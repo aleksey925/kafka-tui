@@ -86,6 +86,12 @@ type LoaderOptions struct {
 	// CLAUDE.md § Placeholder pipeline. Targets are mutated in place and
 	// frozen after the first Load.
 	ResolveTargets []any
+
+	// InlineCluster, when non-nil, is the CLI --brokers cluster with its
+	// placeholders still unresolved. It is prepended to the loaded clusters
+	// and runs through the same per-cluster pipeline, so a bad ${vault:...}
+	// in --sasl-password quarantines it instead of aborting startup.
+	InlineCluster *Cluster
 }
 
 type Loaded struct {
@@ -179,6 +185,13 @@ func Load(opts LoaderOptions) (*Loaded, error) {
 		return nil, err
 	}
 
+	// deep-copy so loadCluster resolves a clone, leaving opts.InlineCluster
+	// with its placeholders intact — that is what lets a rotated secret be
+	// picked up on reload (the inline cluster is re-resolved every Load).
+	if opts.InlineCluster != nil {
+		clusters = append([]Cluster{cloneCluster(*opts.InlineCluster)}, clusters...)
+	}
+
 	valid, invalid := loadClusters(clusters, envFile, vaultPhase)
 	warnings := postProcessConfig(&cfg)
 	warnings = append(warnings, postProcessClustersSoft(valid)...)
@@ -253,6 +266,25 @@ func loadClusters(clusters []Cluster, envFile, vaultPhase Resolvers) (valid []Cl
 		valid = append(valid, c)
 	}
 	return valid, invalid
+}
+
+// cloneCluster deep-copies the fields loadCluster mutates in place (the
+// brokers slice and the SASL / TLS pointers) so resolving the copy never
+// touches the source. SASLConfig / TLSConfig hold only value fields, so a
+// shallow struct copy behind a fresh pointer is a full clone.
+func cloneCluster(c Cluster) Cluster {
+	if c.Brokers != nil {
+		c.Brokers = append([]string(nil), c.Brokers...)
+	}
+	if c.SASL != nil {
+		sasl := *c.SASL
+		c.SASL = &sasl
+	}
+	if c.TLS != nil {
+		tls := *c.TLS
+		c.TLS = &tls
+	}
+	return c
 }
 
 type fileSlot struct {

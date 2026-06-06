@@ -50,12 +50,73 @@ func TestParse__logsAndLogsDir__areMutuallyExclusive(t *testing.T) {
 	assert.Contains(t, pe.Msg, "mutually exclusive")
 }
 
+func TestParse__connectName__setsClusterName(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	f, err := Parse([]string{"connect", "prod"}, &out, &errOut)
+
+	// assert
+	require.NoError(t, err)
+	assert.Equal(t, "prod", f.ClusterName)
+	assert.False(t, f.Inline.HasInlineCluster())
+}
+
+func TestParse__connectNameAndBrokers__fails(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"connect", "prod", "--brokers", "x:9092"}, &out, &errOut)
+
+	// assert
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Contains(t, pe.Msg, "either a cluster name or --brokers, not both")
+}
+
+func TestParse__connectWithoutTarget__fails(t *testing.T) {
+	// arrange
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"connect"}, &out, &errOut)
+
+	// assert
+	var pe *ParseError
+	require.ErrorAs(t, err, &pe)
+	assert.Contains(t, pe.Msg, "requires a cluster name or --brokers")
+}
+
+func TestParse__globalFlagWorksBeforeAndAfterConnect(t *testing.T) {
+	// cobra lets a persistent flag sit on either side of the subcommand; this
+	// is the ergonomics we adopted cobra for.
+	for _, args := range [][]string{
+		{"--log-level", "debug", "connect", "prod"},
+		{"connect", "prod", "--log-level", "debug"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			// arrange
+			var out, errOut bytes.Buffer
+
+			// act
+			f, err := Parse(args, &out, &errOut)
+
+			// assert
+			require.NoError(t, err)
+			assert.Equal(t, "prod", f.ClusterName)
+			assert.Equal(t, "debug", f.LogLevel)
+		})
+	}
+}
+
 func TestParse__tlsCAWithoutTLS__fails(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--tls-ca", "/etc/ca.pem", "--brokers", "localhost:9092"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--tls-ca", "/etc/ca.pem", "--brokers", "localhost:9092"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -68,7 +129,7 @@ func TestParse__tlsSkipVerifyWithoutTLS__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--tls-skip-verify", "--brokers", "localhost:9092"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--tls-skip-verify", "--brokers", "localhost:9092"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -81,7 +142,7 @@ func TestParse__tlsCertWithoutKey__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--tls", "--tls-cert", "/c.pem", "--brokers", "localhost:9092"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--tls", "--tls-cert", "/c.pem", "--brokers", "localhost:9092"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -94,7 +155,7 @@ func TestParse__tlsRequiresBrokers__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--tls"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--tls"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -107,7 +168,7 @@ func TestParse__colorRequiresBrokers__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--color", "red"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--color", "red"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -120,7 +181,7 @@ func TestParse__readOnlyRequiresBrokers__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--read-only"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--read-only"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -133,7 +194,7 @@ func TestParse__partialSASL__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--brokers", "localhost:9092", "--sasl-username", "u"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--brokers", "localhost:9092", "--sasl-username", "u"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -145,8 +206,8 @@ func TestParse__validInlineCluster__populatesAllFields(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 	args := []string{
+		"connect",
 		"--brokers", "broker-1:9092,broker-2:9092",
-		"--cluster", "prod",
 		"--color", "red",
 		"--read-only",
 		"--tls",
@@ -161,12 +222,11 @@ func TestParse__validInlineCluster__populatesAllFields(t *testing.T) {
 	// act
 	f, err := Parse(args, &out, &errOut)
 
-	// assert — --cluster is a selector and is NOT used to name the inline
-	// cluster; the inline name is auto-generated with a "-cli" suffix.
+	// assert — the inline name is auto-generated with a "-cli" suffix; no
+	// cluster name is set when --brokers defines an ad-hoc cluster.
 	require.NoError(t, err)
-	assert.Equal(t, "prod", f.ClusterName)
+	assert.Empty(t, f.ClusterName)
 	assert.True(t, strings.HasSuffix(f.Inline.Name, "-cli"), "inline name must end with -cli, got %q", f.Inline.Name)
-	assert.NotEqual(t, "prod", f.Inline.Name, "--cluster value must not be used as the inline name")
 	assert.Equal(t, []string{"broker-1:9092", "broker-2:9092"}, f.Inline.Brokers)
 	assert.Equal(t, "red", f.Inline.Color)
 	assert.True(t, f.Inline.ReadOnly)
@@ -174,12 +234,12 @@ func TestParse__validInlineCluster__populatesAllFields(t *testing.T) {
 	assert.Equal(t, "PLAIN", f.Inline.SASLMechanism)
 }
 
-func TestParse__inlineClusterWithoutName__getsAutoName(t *testing.T) {
+func TestParse__inlineClusterGetsAutoName(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 
 	// act
-	f, err := Parse([]string{"--brokers", "localhost:9092"}, &out, &errOut)
+	f, err := Parse([]string{"connect", "--brokers", "localhost:9092"}, &out, &errOut)
 
 	// assert
 	require.NoError(t, err)
@@ -193,9 +253,9 @@ func TestParse__inlineClusterNameIsRandomPerCall(t *testing.T) {
 
 	// act — two parses must produce different inline names so collisions
 	// across processes (or with YAML clusters) stay astronomically rare.
-	f1, err := Parse([]string{"--brokers", "x:9092"}, &out, &errOut)
+	f1, err := Parse([]string{"connect", "--brokers", "x:9092"}, &out, &errOut)
 	require.NoError(t, err)
-	f2, err := Parse([]string{"--brokers", "x:9092"}, &out, &errOut)
+	f2, err := Parse([]string{"connect", "--brokers", "x:9092"}, &out, &errOut)
 	require.NoError(t, err)
 
 	// assert
@@ -219,7 +279,7 @@ func TestParse__invalidColor__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--brokers", "localhost:9092", "--color", "magenta"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--brokers", "localhost:9092", "--color", "magenta"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -237,7 +297,7 @@ func TestParse__validColor__accepted(t *testing.T) {
 			var out, errOut bytes.Buffer
 
 			// act
-			f, err := Parse([]string{"--brokers", "localhost:9092", "--color", color}, &out, &errOut)
+			f, err := Parse([]string{"connect", "--brokers", "localhost:9092", "--color", color}, &out, &errOut)
 
 			// assert
 			require.NoError(t, err)
@@ -258,7 +318,7 @@ func TestParse__colorIsNormalized(t *testing.T) {
 			var out, errOut bytes.Buffer
 
 			// act
-			f, err := Parse([]string{"--brokers", "localhost:9092", "--color", tc.input}, &out, &errOut)
+			f, err := Parse([]string{"connect", "--brokers", "localhost:9092", "--color", tc.input}, &out, &errOut)
 
 			// assert
 			require.NoError(t, err)
@@ -272,7 +332,7 @@ func TestParse__emptyBroker__fails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	// act
-	_, err := Parse([]string{"--brokers", "localhost:9092,"}, &out, &errOut)
+	_, err := Parse([]string{"connect", "--brokers", "localhost:9092,"}, &out, &errOut)
 
 	// assert
 	var pe *ParseError
@@ -280,7 +340,7 @@ func TestParse__emptyBroker__fails(t *testing.T) {
 	assert.Contains(t, pe.Msg, "empty entry")
 }
 
-func TestParse__helpFlag__returnsErrHelpRequested(t *testing.T) {
+func TestParse__helpFlag__returnsErrExitEarly(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 
@@ -288,10 +348,10 @@ func TestParse__helpFlag__returnsErrHelpRequested(t *testing.T) {
 	_, err := Parse([]string{"--help"}, &out, &errOut)
 
 	// assert
-	assert.ErrorIs(t, err, ErrHelpRequested)
+	assert.ErrorIs(t, err, ErrExitEarly)
 }
 
-func TestParse__positionalArgs__fails(t *testing.T) {
+func TestParse__unknownCommand__fails(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 
@@ -299,10 +359,22 @@ func TestParse__positionalArgs__fails(t *testing.T) {
 	_, err := Parse([]string{"something"}, &out, &errOut)
 
 	// assert
-	var pe *ParseError
-	require.ErrorAs(t, err, &pe)
-	assert.Contains(t, pe.Msg, "unexpected argument")
-	assert.Contains(t, pe.Msg, "something")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown command")
+	assert.Contains(t, err.Error(), "something")
+}
+
+func TestParse__completionCommand__exitsEarlyWithoutLaunching(t *testing.T) {
+	// the shell-completion command prints its script and must signal a clean
+	// exit, not fall through to launching the TUI.
+	var out, errOut bytes.Buffer
+
+	// act
+	_, err := Parse([]string{"completion", "bash"}, &out, &errOut)
+
+	// assert
+	require.ErrorIs(t, err, ErrExitEarly)
+	assert.Contains(t, out.String(), "kafka-tui")
 }
 
 func TestParse__unknownFlag__fails(t *testing.T) {
@@ -414,12 +486,10 @@ func TestParse__logLevel__isNormalized(t *testing.T) {
 }
 
 func TestParse__saslMechanism__isNormalized(t *testing.T) {
-	// Inline clusters skip the per-cluster pipeline (loadCluster +
-	// normalizeClusterHard run only over YAML-loaded clusters). The CLI
-	// validator must therefore upper-case the mechanism itself, otherwise
-	// `--sasl-mechanism plain` would silently reach the strict
-	// buildSASLMechanism and fail at dial time — violating the "CLI
-	// always hard-fails at parse" rule from CLAUDE.md.
+	// The inline cluster runs through the loader's per-cluster pipeline, where
+	// a bad enum would only quarantine it. CLI input must instead hard-fail at
+	// parse (CLAUDE.md § Config-value normalization), so the validator
+	// case-folds the mechanism here and rejects unknown values immediately.
 	cases := []struct{ input, want string }{
 		{"plain", "PLAIN"},
 		{"PLAIN", "PLAIN"},
@@ -431,6 +501,7 @@ func TestParse__saslMechanism__isNormalized(t *testing.T) {
 			// arrange
 			var out, errOut bytes.Buffer
 			args := []string{
+				"connect",
 				"--brokers", "x:9092",
 				"--sasl-mechanism", tc.input,
 				"--sasl-username", "u",
@@ -451,6 +522,7 @@ func TestParse__saslMechanism__invalidValue__fails(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 	args := []string{
+		"connect",
 		"--brokers", "x:9092",
 		"--sasl-mechanism", "kerberos",
 		"--sasl-username", "u",
@@ -554,17 +626,16 @@ func TestCredentialExposureWarnings(t *testing.T) {
 	}
 }
 
-func TestParse__saslPasswordHelp__mentionsPlaceholders(t *testing.T) {
+func TestParse__connectHelp__mentionsCredentialPlaceholders(t *testing.T) {
 	// arrange
 	var out, errOut bytes.Buffer
 
-	// act
-	_, err := Parse([]string{"--help"}, &out, &errOut)
+	// act — the credential flags live on the connect subcommand.
+	_, err := Parse([]string{"connect", "--help"}, &out, &errOut)
 
-	// assert: --help is treated as a clean early exit, the usage went to errOut
-	require.ErrorIs(t, err, ErrHelpRequested)
-	usage := errOut.String()
+	// assert: --help is a clean early exit; the usage mentions placeholders.
+	require.ErrorIs(t, err, ErrExitEarly)
+	usage := out.String() + errOut.String()
 	assert.Contains(t, usage, "--sasl-password")
 	assert.Contains(t, usage, "${env:")
-	assert.Contains(t, usage, "--vault-token")
 }

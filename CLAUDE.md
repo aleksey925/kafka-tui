@@ -36,7 +36,9 @@ global shortcuts** (one dispatcher), **Paste** (one sanitization point),
 **Bounded display** (one viewport for vertical overflow, one truncate helper
 for horizontal), **Toast / flash routing** (one flash bar for every screen's
 toasts), **Tab navigation** (one paired contract for forward/backward),
-**Inline hint footer** (one renderer for every `<key> <label>` hint surface).
+**Inline hint footer** (one renderer for every `<key> <label>` hint surface),
+**Cluster connect** (one connectivity gate every connect path verifies
+before mounting a cluster-bound screen).
 
 ### Text input
 
@@ -423,6 +425,15 @@ the same `${vault:...}` referenced from a CLI flag does not. This is by
 design — CLI flags model "process invocation context" and shouldn't drift
 mid-process.
 
+Exception: the CLI inline cluster (`--brokers` + its `--sasl-*` / `--tls-*`
+flags) is treated as a cluster, not as process-invocation context — it is
+re-resolved on every reload like a YAML cluster. So an inline `${vault:...}`
+that failed because the vault config was wrong recovers once the operator
+fixes that config in YAML and a reload fires, instead of staying broken
+until restart. The CLI **vault config itself** (`--vault-addr` /
+`--vault-token`) stays frozen — it cannot be edited mid-process, so freezing
+it loses nothing.
+
 ### Optional subsystems and graceful degradation
 
 Non-essential subsystems — persistence stores (history, view state,
@@ -446,6 +457,31 @@ part of the design, not an afterthought. If the subsystem cannot be
 optional (brokers, auth), that's an explicit deviation worth flagging in
 review.
 
+### Connecting to a cluster: verify before mounting
+
+*Applies the single-source rule above: one connectivity gate every connect
+path routes through.*
+
+Reaching a cluster — startup auto-connect, the picker, or `:cluster <name>` —
+always confirms the broker actually answers before any cluster-bound screen
+mounts. A constructed-but-unreachable connection never lands the user on an
+empty topics view: a failed connect surfaces the picker with the reason on
+the cluster's row, regardless of where the connect was triggered from.
+
+Why: the Kafka client connects lazily, so "a client was constructed" is not
+"the broker answered" — gating on construction alone shows an empty topics
+screen for a cluster that is down. One gate means every entry path inherits
+the same verify-then-mount contract instead of each re-deriving it (and the
+picker's manual-select path having a check the auto-connect path silently
+lacked). The connect is async and its result is generation-checked so a
+superseded attempt can't swap the client out from under a newer one or leave
+a row stuck mid-check (see § Async lifecycle and stale results).
+
+Deviation: a failed `:cluster <name>` switch from an already-connected
+session lands on the picker with the error rather than staying on the current
+cluster. Consistency of "connect failure → picker + reason" is chosen over
+preserving the in-flight session — the failure always has the same home.
+
 ### Cluster loading: per-cluster soft fail
 
 A single broken cluster (vault outage for its secret, unresolved
@@ -456,31 +492,60 @@ clusters as non-selectable rows with the failure reason so the user
 sees what's wrong and can edit the YAML, while every other cluster
 stays usable.
 
+This includes the CLI inline cluster (`--brokers`): it is just another
+cluster source and quarantines when its secret cannot be resolved (vault
+outage, missing `${env:...}` / `${file:...}`, leftover placeholder)
+rather than aborting the process. Structural CLI errors — an unknown
+`--sasl-mechanism`, a malformed `--tls-*` combination — still hard-fail
+at parse per § Config-value normalization; the per-cluster quarantine
+covers resolution failures, not invalid interactive input. A broken
+auto-connect target (whether selected by `connect <name>` or the inline
+cluster) falls back to the picker with the failure surfaced, never an
+abort — fatality is decided by "is there a usable fallback", not by
+where the value came from. Since the picker always renders the broken
+cluster as its own row, the landing screen is never empty.
+
 Why: clusters are often many and unrelated (dev, staging, multiple
 production regions). A vault outage that touches only one cluster's
 secrets used to deny access to all of them — and oncall doesn't have
-time to debug YAML during an incident.
+time to debug YAML during an incident. A literal `${vault:...}` in a
+`--sasl-password` used to take the whole process down with it; routing
+the inline cluster through the same per-cluster path removes that.
 
-Deviation: global config (vault settings, CLI flags) stays hard-fail.
-The vault client cannot dial without a resolved address, and a bad CLI
-flag is explicit user input — degrading either situation would just
-defer the same error into confusing runtime failures.
+Deviation: global config — vault settings (including the CLI
+`--vault-addr` / `--vault-token`) and other non-cluster CLI flags —
+stays hard-fail. The vault client cannot dial without a resolved
+address, and a bad global flag is explicit user input with no cluster
+to fall back to; degrading either would just defer the same error into
+confusing runtime failures.
 
-### CLI inline cluster: separate namespace from YAML
+### CLI: connect subcommand and inline-cluster namespace
 
-`--brokers` creates an inline cluster for the session. Its name is
-always auto-generated with a `-cli` suffix (random prefix) — never
-taken from `--cluster` or any user-controlled source. `--cluster` is a
-pure selector that names which already-loaded cluster to auto-connect
-to at startup.
+The CLI is split into two namespaces so a flag's scope is self-evident
+from where it lives. Process/session flags sit on the root command
+(config path, log level, vault overrides, version/logs); the flags that
+*define a connection* sit on the `connect` subcommand. `kafka-tui` with
+no subcommand opens the cluster picker.
 
-Why: when both flags could name the inline cluster, name collisions
-with `clusters.yaml` were possible and the previous "silent override"
-behavior was dangerous — a user typo could replace a fully-configured
-production cluster (TLS, SASL, read-only) with a stripped-down inline
-one without the user noticing. Separating the namespaces removes the
-collision class entirely: inline names are unguessable, YAML names are
-unconstrained, and the two never meet.
+`connect` reaches a cluster two mutually-exclusive ways:
+
+- `connect <name>` — a positional selector naming an already-loaded
+  `clusters.yaml` cluster to auto-connect to.
+- `connect --brokers …` (plus `--tls*` / `--sasl-*` / `--color` /
+  `--read-only`) — an ad-hoc inline cluster for the session. Its name is
+  always auto-generated with a `-cli` suffix (random prefix), never taken
+  from the positional or any user-controlled source. `--read-only` here
+  marks only this ad-hoc cluster; there is no session-wide read-only —
+  per-cluster `read_only` in `clusters.yaml` covers named clusters.
+
+Why: the connection flags were once flat (`--cluster` selector vs
+`--brokers` inline + bare `--tls`/`--sasl`/`--color`/`--read-only`),
+which read like global options and invited double-reading — and a name
+that could feed both invited collisions with `clusters.yaml`, where a
+typo could silently replace a fully-configured production cluster (TLS,
+SASL, read-only) with a stripped-down inline one. Under `connect` the
+selector and the ad-hoc definition are structurally exclusive and the
+inline name is unguessable, so the two namespaces never meet.
 
 Deviation: inline-cluster persistent state (per-(cluster, topic) view
 state, etc.) does not survive between runs — the random part of the
@@ -587,8 +652,9 @@ vault).
 Routing: warnings flow through the existing startup-warnings →
 clusters-screen-toast pipeline so the operator sees them on first
 mount. CLI warnings are additionally mirrored to slog directly because
-auto-skip (`--cluster` selecting a single auto-connect target) bypasses
-the clusters screen entirely and the toast pipeline never fires there.
+auto-skip (`connect <name>` selecting a single auto-connect target)
+bypasses the clusters screen entirely and the toast pipeline never fires
+there.
 
 ## Project commands
 
