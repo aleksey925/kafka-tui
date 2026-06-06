@@ -39,6 +39,7 @@ func main() {
 	// flag can't block debugging the binary itself.
 	if flags.ShowVersion {
 		_, _ = fmt.Fprintln(os.Stdout, version.NewBuildInfo(ver).Display())
+		cli.WarnDuplicateInstalls()
 		return
 	}
 

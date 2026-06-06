@@ -27,6 +27,25 @@ archives:
       - LICENSE
       - README.md
 
+brews:
+  - name: kafka-tui
+    repository:
+      owner: aleksey925
+      name: homebrew-apps
+      branch: master
+    directory: Formula
+    commit_author:
+      name: Aleksey Petrunnik
+      email: petrunnik.a@gmail.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    homepage: "https://github.com/aleksey925/kafka-tui"
+    description: "k9s-style terminal UI to browse, manage, and configure Apache Kafka"
+    license: "MIT"
+    caveats: |
+      If you previously installed kafka-tui manually (e.g. to ~/.local/bin),
+      remove that copy to avoid PATH conflicts:
+        rm ~/.local/bin/kafka-tui
+
 checksum:
   name_template: "checksums.txt"
 

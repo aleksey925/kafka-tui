@@ -1,8 +1,8 @@
 # kafka-tui
 
-Terminal UI client for Apache Kafka. Browse and manage topics, messages, and consumer groups
-with k9s-style navigation, hierarchical YAML configuration, Vault-backed secrets, and
-read-only protection for production clusters.
+A k9s-style terminal UI for Apache Kafka. Browse and manage topics, produce and inspect
+messages, edit topic configuration, and administer consumer groups - the everyday Kafka
+workflow, all from the keyboard.
 
 Built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and
 [franz-go](https://github.com/twmb/franz-go).
@@ -69,8 +69,14 @@ like any other editor window.
 
 ## Installation
 
-Download the latest release from [releases](https://github.com/aleksey925/kafka-tui/releases) and install it manually
-or you can run the following commands to install the latest version to `~/.local/bin`:
+The easiest way is via [Homebrew](https://brew.sh):
+
+```bash
+brew install aleksey925/apps/kafka-tui
+```
+
+Alternatively, download the latest release from [releases](https://github.com/aleksey925/kafka-tui/releases) and install
+it manually or you can run the following commands to install the latest version to `~/.local/bin`:
 
 ```bash
 VERSION=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/aleksey925/kafka-tui/releases/latest | sed 's/.*\/v//')
