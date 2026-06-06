@@ -7,6 +7,8 @@ workflow, all from the keyboard.
 Built on [Bubble Tea v2](https://github.com/charmbracelet/bubbletea) and
 [franz-go](https://github.com/twmb/franz-go).
 
+![kafka-tui demo](img/demo.gif)
+
 > [!WARNING]
 > Early project — not yet tested against production Kafka clusters. Use with caution:
 > check on a staging cluster before pointing it at critical environments.
