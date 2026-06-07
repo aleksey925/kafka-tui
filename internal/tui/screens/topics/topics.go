@@ -92,7 +92,7 @@ type Model struct {
 	svc      Service
 	readOnly bool
 
-	columns      []string
+	cols         components.ColumnSelection[kafka.TopicSummary]
 	focusTopic   string
 	allTopics    []kafka.TopicSummary
 	hiddenIntern int
@@ -151,27 +151,16 @@ func New(opts Options) *Model {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	cols := opts.Columns
-	if len(cols) == 0 {
-		cols = append([]string(nil), DefaultColumns...)
-	} else {
-		cols = append([]string(nil), cols...)
-	}
-
-	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
-
 	interval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenID, defaultRefreshInterval)
 
-	return &Model{
+	m := &Model{
 		svc:              opts.Service,
 		readOnly:         opts.ReadOnly,
-		columns:          cols,
 		focusTopic:       opts.FocusTopic,
 		watermarks:       map[string]kafka.BatchResult[kafka.TopicWatermarks]{},
 		sizes:            map[string]kafka.BatchResult[int64]{},
 		configs:          map[string]kafka.BatchResult[[]kafka.TopicConfig]{},
 		shownWarnings:    map[string]struct{}{},
-		table:            tbl,
 		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		now:              now,
 		styles:           styles,
@@ -179,6 +168,15 @@ func New(opts Options) *Model {
 		refreshIntervals: opts.RefreshIntervals,
 		track:            lifecycle.New(),
 	}
+
+	sel, unknown := m.columnSchema().Resolve(opts.Columns)
+	m.cols = sel
+	m.table = components.NewTable(sel.TableColumns(), components.WithStyles(styles))
+	if len(unknown) > 0 {
+		m.toasts.Push(components.ToastWarning, "ignoring unknown topics columns: "+strings.Join(unknown, ", "))
+	}
+
+	return m
 }
 
 // Init schedules the first auto-refresh tick — the recurring chain only
@@ -688,58 +686,10 @@ func (m *Model) refreshTable() {
 	for _, t := range visible {
 		rows = append(rows, components.Row{
 			ID:     t.Name,
-			Values: m.rowValues(t),
+			Values: m.cols.Row(t),
 		})
 	}
 	m.table.SetRows(rows)
-}
-
-func (m *Model) rowValues(t kafka.TopicSummary) []string {
-	out := make([]string, 0, len(m.columns))
-	for _, col := range m.columns {
-		out = append(out, m.cellFor(col, t))
-	}
-	return out
-}
-
-func (m *Model) cellFor(col string, t kafka.TopicSummary) string {
-	switch col {
-	case "name":
-		return t.Name
-	case "partitions":
-		return strconv.Itoa(t.Partitions)
-	case "replicas":
-		return strconv.Itoa(t.Replicas)
-	case "messages":
-		if r, ok := m.watermarks[t.Name]; ok {
-			if marker, denied := denialMarker(r.Err); denied {
-				return marker
-			}
-			return formatThousands(r.Value.MessageCount)
-		}
-		return "—"
-	case "size":
-		if r, ok := m.sizes[t.Name]; ok {
-			if marker, denied := denialMarker(r.Err); denied {
-				return marker
-			}
-			return formatBytes(r.Value)
-		}
-		return "—"
-	case "cleanup_policy":
-		return findConfig(m.configs[t.Name], kafka.ConfigCleanupPolicy)
-	case "retention_ms":
-		return findConfig(m.configs[t.Name], kafka.ConfigRetentionMs)
-	case "min_isr":
-		return findConfig(m.configs[t.Name], kafka.ConfigMinInSyncReplica)
-	case "internal":
-		if t.IsInternal {
-			return "✓"
-		}
-		return ""
-	default:
-		return ""
-	}
 }
 
 func (m *Model) View() string {
@@ -951,37 +901,53 @@ func createCmd(svc Service, spec kafka.CreateTopicSpec) tea.Cmd {
 	}
 }
 
-func buildColumns(keys []string) []components.Column {
-	out := make([]components.Column, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, columnSpec(k))
-	}
-	return out
-}
-
-func columnSpec(key string) components.Column {
-	switch key {
-	case "name":
-		return components.Column{Title: "Name", Flex: true, MinWidth: 24, Sortable: true}
-	case "partitions":
-		return components.Column{Title: "Partitions", Width: 10, Sortable: true}
-	case "replicas":
-		return components.Column{Title: "Replicas", Width: 8, Sortable: true}
-	case "messages":
-		return components.Column{Title: "Messages", Width: 12, Sortable: true}
-	case "size":
-		return components.Column{Title: "Size", Width: 10, Sortable: true}
-	case "cleanup_policy":
-		return components.Column{Title: "Cleanup", Width: 12, Sortable: true}
-	case "retention_ms":
-		return components.Column{Title: "Retention", Width: 14, Sortable: true}
-	case "min_isr":
-		return components.Column{Title: "MinISR", Width: 7, Sortable: true}
-	case "internal":
-		return components.Column{Title: "Int", Width: 4, Sortable: false}
-	default:
-		return components.Column{Title: key, Width: 10}
-	}
+// columnSchema declares every topics column once: its config key, table spec,
+// and cell renderer. Cell closures read the live watermark / size / config maps
+// off m, which are mutated in place (maps.Copy), never reassigned.
+func (m *Model) columnSchema() components.ColumnSchema[kafka.TopicSummary] {
+	return components.NewColumnSchema([]components.ColumnField[kafka.TopicSummary]{
+		{Key: "name", Col: components.Column{Title: "Name", Flex: true, MinWidth: 24, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return t.Name }},
+		{Key: "partitions", Col: components.Column{Title: "Partitions", Width: 10, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return strconv.Itoa(t.Partitions) }},
+		{Key: "replicas", Col: components.Column{Title: "Replicas", Width: 8, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return strconv.Itoa(t.Replicas) }},
+		{Key: "messages", Col: components.Column{Title: "Messages", Width: 12, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string {
+				r, ok := m.watermarks[t.Name]
+				if !ok {
+					return "—"
+				}
+				if marker, denied := denialMarker(r.Err); denied {
+					return marker
+				}
+				return formatThousands(r.Value.MessageCount)
+			}},
+		{Key: "size", Col: components.Column{Title: "Size", Width: 10, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string {
+				r, ok := m.sizes[t.Name]
+				if !ok {
+					return "—"
+				}
+				if marker, denied := denialMarker(r.Err); denied {
+					return marker
+				}
+				return formatBytes(r.Value)
+			}},
+		{Key: "cleanup_policy", Col: components.Column{Title: "Cleanup", Width: 12, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return findConfig(m.configs[t.Name], kafka.ConfigCleanupPolicy) }},
+		{Key: "retention_ms", Col: components.Column{Title: "Retention", Width: 14, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return findConfig(m.configs[t.Name], kafka.ConfigRetentionMs) }},
+		{Key: "min_isr", Col: components.Column{Title: "MinISR", Width: 7, Sortable: true},
+			Cell: func(t kafka.TopicSummary) string { return findConfig(m.configs[t.Name], kafka.ConfigMinInSyncReplica) }},
+		{Key: "internal", Col: components.Column{Title: "Int", Width: 4, Sortable: false},
+			Cell: func(t kafka.TopicSummary) string {
+				if t.IsInternal {
+					return "✓"
+				}
+				return ""
+			}},
+	}, DefaultColumns)
 }
 
 func findConfig(r kafka.BatchResult[[]kafka.TopicConfig], key string) string {

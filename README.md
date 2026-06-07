@@ -56,18 +56,15 @@ like any other editor window.
 
 ## Features
 
-- Cluster picker with colored health status and per-cluster `[RO]` read-only enforcement
-- Topic list with configurable columns, fuzzy search, sorting, and create / clone / delete flows
-- Message browser with follow-mode, partition filters, jump-by-offset / timestamp / partition,
-  JSON / raw / hex value views, and copy / save / open-in-`$EDITOR`
-- Producer form with compression, dynamic headers, and resend-from-message
-- Consumer groups list with lazy lag aggregation, detail view, and 4-step (or express) reset offsets flow
-- Hierarchical YAML config: global (`~/.kafka-tui/`) and project (`<repo>/.kafka-tui/`) layers
-- Placeholders in any string field: `${env:...}`, `${file:...}`, `${vault:...}`
-- Vault KV v2 integration with token resolution chain
-- Live config reload via fsnotify watcher (500 ms debounce)
-- Clipboard via OSC 52 (SSH-friendly), native (`pbcopy` / `xclip` / `wl-copy`), or both
-- In-app log viewer (`:logs`) with follow-mode and colored levels
+- Browse topics, messages, and consumer groups with fuzzy filter, sort, and auto-refresh; live tail for messages
+- Inspect any record as JSON / raw / hex and copy, save, or open it in `$EDITOR`
+- Produce messages with compression and custom headers, or resend an existing one
+- Manage topics (create / clone / delete) and consumer groups (reset offsets, delete)
+- Multi-cluster with colored health status, per-cluster read-only guards, SASL / TLS, and
+  Vault-backed secrets
+- One static binary with k9s-style keyboard UX
+
+See [Configuration](#configuration) for layered YAML, placeholders, and Vault setup.
 
 ## Installation
 
@@ -179,21 +176,27 @@ Merge rules:
 `:config sources` opens an in-app screen showing which file each field came from. Annotated
 samples covering all fields below live in [`examples/`](examples/).
 
+Any string value in either file can use `${env:...}` / `${file:...}` / `${vault:...}`
+placeholders (see [Placeholders](#placeholders)), except `vault.address` / `vault.token`, which
+cannot reference `${vault:...}` themselves.
+
 #### `config.yaml` — UI behavior
 
-| Section     | Field                      | Description                                                                                                                       |
-| ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                    |
-|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                               |
-|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                             |
-| `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`.             |
-| `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                                          |
-| `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                                           |
-| `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
-| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), `osc52`, or `off`.                               |
-| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                 |
-|             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)). |
+| Section     | Field                      | Description                                                                                                                           |
+| ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                        |
+|             | `file`                     | Log file path.                                                                                                                        |
+|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                                 |
+| `topics`    | `columns`                  | Visible columns, in display order: `name`, `partitions`, `replicas`, `messages`, `size`, `cleanup_policy`, `retention_ms`, `min_isr`. |
+| `groups`    | `columns`                  | Visible columns, in display order: `state`, `name`, `coordinator`, `protocol`, `members`, `total_lag`.                                |
+| `messages`  | `columns`                  | Visible columns, in display order: `timestamp`, `partition`, `offset`, `key`, `value`, `headers`.                                     |
+| `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                                |
+| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), `osc52`, or `off`.                                   |
+| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                     |
+|             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).     |
 
+For `columns`, the list order is the on-screen order and any key you omit is hidden; an empty or
+absent list falls back to the built-in defaults. Unknown keys are ignored with a warning toast.
 Lists (`columns`) replace wholesale across layers; everything else is merged scalar-by-scalar.
 
 #### `clusters.yaml` — cluster definitions
@@ -214,7 +217,8 @@ marks the cluster invalid in the picker.
 ### Placeholders
 
 Any string field may contain one or more placeholders. Resolution runs in two phases: `env` and
-`file` first, then `vault`. Nested placeholders are rejected.
+`file` first, then `vault`. Nested placeholders are rejected. `vault.address` / `vault.token`
+cannot reference `${vault:...}` (a vault lookup needs them resolved first).
 
 | Placeholder           | Description                              |
 | --------------------- | ---------------------------------------- |
