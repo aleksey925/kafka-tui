@@ -56,23 +56,15 @@ like any other editor window.
 
 ## Features
 
-- Cluster picker with colored health status and per-cluster `[RO]` read-only enforcement
-- Topic list with create / clone / delete flows
-- Message browser with follow-mode, partition filters, seek by offset / timestamp (latest, earliest,
-  from / to), JSON / raw / hex value views, and a copy menu (record / key / value / headers) plus
-  save / open-in-`$EDITOR`
-- Producer form with compression, dynamic headers, and resend-from-message
-- Consumer groups list with lazy lag aggregation, detail view, and a 4-step reset offsets flow
-- Configurable columns, fuzzy filter (with history), column sort, and an adjustable auto-refresh
-  interval shared by the topics, messages, and groups lists
-- Command bar (`:`) for jumping between screens (`:topics`, `:groups`, `:cluster <name>`, `:logs`,
-  `:config sources`) with tab-completion
-- Hierarchical YAML config: global (`~/.kafka-tui/`) and project (`<repo>/.kafka-tui/`) layers
-- Placeholders in any string field: `${env:...}`, `${file:...}`, `${vault:...}`
-- Vault KV v2 integration with token resolution chain
-- Live config reload via fsnotify watcher (500 ms debounce)
-- Clipboard via OSC 52 (SSH-friendly), native (`pbcopy` / `xclip` / `wl-copy`), or both
-- In-app log viewer (`:logs`) with follow-mode and colored levels
+- Browse topics, messages, and consumer groups with fuzzy filter, sort, and auto-refresh; live tail for messages
+- Inspect any record as JSON / raw / hex and copy, save, or open it in `$EDITOR`
+- Produce messages with compression and custom headers, or resend an existing one
+- Manage topics (create / clone / delete) and consumer groups (reset offsets, delete)
+- Multi-cluster with colored health status, per-cluster read-only guards, SASL / TLS, and
+  Vault-backed secrets
+- One static binary with k9s-style keyboard UX
+
+See [Configuration](#configuration) for layered YAML, placeholders, and Vault setup.
 
 ## Installation
 
