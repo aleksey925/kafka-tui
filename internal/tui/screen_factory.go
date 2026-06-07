@@ -183,9 +183,11 @@ func (m *Model) newProduce() *produce.Model {
 }
 
 func (m *Model) newGroups() *groups.Model {
+	cfg := m.boot.Loaded.Config
 	return groups.New(groups.Options{
 		Service:          m.client,
 		ReadOnly:         m.clusterRO,
+		Columns:          cfg.Groups.Columns,
 		FilterTopic:      m.navGroupFilter,
 		RefreshIntervals: m.boot.RefreshIntervals,
 		Now:              m.now,

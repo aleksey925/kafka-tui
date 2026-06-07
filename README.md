@@ -57,11 +57,16 @@ like any other editor window.
 ## Features
 
 - Cluster picker with colored health status and per-cluster `[RO]` read-only enforcement
-- Topic list with configurable columns, fuzzy search, sorting, and create / clone / delete flows
-- Message browser with follow-mode, partition filters, jump-by-offset / timestamp / partition,
-  JSON / raw / hex value views, and copy / save / open-in-`$EDITOR`
+- Topic list with create / clone / delete flows
+- Message browser with follow-mode, partition filters, seek by offset / timestamp (latest, earliest,
+  from / to), JSON / raw / hex value views, and a copy menu (record / key / value / headers) plus
+  save / open-in-`$EDITOR`
 - Producer form with compression, dynamic headers, and resend-from-message
-- Consumer groups list with lazy lag aggregation, detail view, and 4-step (or express) reset offsets flow
+- Consumer groups list with lazy lag aggregation, detail view, and a 4-step reset offsets flow
+- Configurable columns, fuzzy filter (with history), column sort, and an adjustable auto-refresh
+  interval shared by the topics, messages, and groups lists
+- Command bar (`:`) for jumping between screens (`:topics`, `:groups`, `:cluster <name>`, `:logs`,
+  `:config sources`) with tab-completion
 - Hierarchical YAML config: global (`~/.kafka-tui/`) and project (`<repo>/.kafka-tui/`) layers
 - Placeholders in any string field: `${env:...}`, `${file:...}`, `${vault:...}`
 - Vault KV v2 integration with token resolution chain
@@ -181,19 +186,21 @@ samples covering all fields below live in [`examples/`](examples/).
 
 #### `config.yaml` — UI behavior
 
-| Section     | Field                      | Description                                                                                                                       |
-| ----------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                    |
-|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                               |
-|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                             |
-| `topics`    | `columns`                  | Visible columns: `name`, `partitions`, `replicas`, `message_count`, `size`, `cleanup_policy`, `retention`, `min_isr`.             |
-| `groups`    | `columns`                  | Visible columns: `name`, `state`, `members`, `total_lag`, `coordinator`.                                                          |
-| `messages`  | `columns`                  | Visible columns: `timestamp`, `partition`, `offset`, `key`, `value_preview`, `headers`.                                           |
-| `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                            |
-| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), `osc52`, or `off`.                               |
-| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                 |
-|             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)). |
+| Section     | Field                      | Description                                                                                                                           |
+| ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                        |
+|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                                   |
+|             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                                 |
+| `topics`    | `columns`                  | Visible columns, in display order: `name`, `partitions`, `replicas`, `messages`, `size`, `cleanup_policy`, `retention_ms`, `min_isr`. |
+| `groups`    | `columns`                  | Visible columns, in display order: `state`, `name`, `coordinator`, `protocol`, `members`, `total_lag`.                                |
+| `messages`  | `columns`                  | Visible columns, in display order: `timestamp`, `partition`, `offset`, `key`, `value`, `headers`.                                     |
+| `produce`   | `default_compression`      | Default compression in the producer form: `none` / `gzip` / `snappy` / `lz4` / `zstd`.                                                |
+| `clipboard` | `method`                   | `auto` (native + OSC 52 in parallel), `native` (`pbcopy` / `xclip` / `wl-copy`), `osc52`, or `off`.                                   |
+| `vault`     | `address`                  | Vault server URL. Required only when `${vault:...}` placeholders appear anywhere. Overridable via `--vault-addr`.                     |
+|             | `token`                    | Vault token. Overridable via `--vault-token`. Empty value falls through the resolution chain (see [Placeholders](#placeholders)).     |
 
+For `columns`, the list order is the on-screen order and any key you omit is hidden; an empty or
+absent list falls back to the built-in defaults. Unknown keys are ignored with a warning toast.
 Lists (`columns`) replace wholesale across layers; everything else is merged scalar-by-scalar.
 
 #### `clusters.yaml` — cluster definitions

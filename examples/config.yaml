@@ -16,17 +16,18 @@ logging:
   max_files: 5
 
 topics:
-  # available keys: name, partitions, replicas, message_count, size,
-  # cleanup_policy, retention, min_isr
-  columns: [name, partitions, replicas, message_count, size]
+  # available keys: name, partitions, replicas, messages, size,
+  # cleanup_policy, retention_ms, min_isr
+  # order in the list = column order on screen; omitted keys are hidden
+  columns: [name, partitions, replicas, cleanup_policy, messages, size]
 
 groups:
-  # available keys: name, state, members, total_lag, coordinator
-  columns: [name, state, members, total_lag]
+  # available keys: state, name, coordinator, protocol, members, total_lag
+  columns: [state, name, coordinator, protocol, members, total_lag]
 
 messages:
-  # available keys: timestamp, partition, offset, key, value_preview, headers
-  columns: [timestamp, partition, offset, key, value_preview]
+  # available keys: timestamp, partition, offset, key, value, headers
+  columns: [timestamp, partition, offset, key, headers, value]
 
 produce:
   # default compression for the dropdown: none | gzip | snappy | lz4 | zstd

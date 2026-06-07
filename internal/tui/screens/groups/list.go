@@ -69,6 +69,7 @@ const (
 type Options struct {
 	Service     Service
 	ReadOnly    bool
+	Columns     []string
 	FilterTopic string
 	// RefreshIntervals persists each cadence across runs (keyed separately
 	// for the list and detail views). nil disables persistence; both
@@ -78,10 +79,14 @@ type Options struct {
 	Styles           theme.Styles
 }
 
+// DefaultColumns is the column selection used when config names none.
+var DefaultColumns = []string{"state", "name", "coordinator", "protocol", "members", "total_lag"}
+
 type Model struct {
 	svc      Service
 	readOnly bool
 
+	cols        components.ColumnSelection[kafka.GroupListInfo]
 	filterTopic string
 
 	groups   []kafka.GroupListInfo
@@ -134,18 +139,15 @@ func New(opts Options) *Model {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	tbl := components.NewTable(listColumns(), components.WithStyles(styles))
-
 	listInterval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenListID, defaultListRefreshInterval)
 	detailInterval := components.LoadRefreshIntervalOr(opts.RefreshIntervals, refreshIntervalScreenDetailID, defaultDetailRefreshInterval)
 
-	return &Model{
+	m := &Model{
 		svc:              opts.Service,
 		readOnly:         opts.ReadOnly,
 		filterTopic:      opts.FilterTopic,
 		totalLag:         map[string]int64{},
 		memberN:          map[string]int{},
-		table:            tbl,
 		toasts:           components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		listRefresher:    components.NewRefresher(listInterval, now),
 		detailRefresher:  components.NewRefresher(detailInterval, now),
@@ -154,17 +156,52 @@ func New(opts Options) *Model {
 		now:              now,
 		styles:           styles,
 	}
+
+	sel, unknown := m.columnSchema().Resolve(opts.Columns)
+	m.cols = sel
+	m.table = components.NewTable(sel.TableColumns(), components.WithStyles(styles))
+	if len(unknown) > 0 {
+		m.toasts.Push(components.ToastWarning, "ignoring unknown groups columns: "+strings.Join(unknown, ", "))
+	}
+
+	return m
 }
 
-func listColumns() []components.Column {
-	return []components.Column{
-		{Title: "State", Width: 12, Sortable: true},
-		{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
-		{Title: "Coordinator", Width: 14, Sortable: true},
-		{Title: "Protocol", Width: 12, Sortable: true},
-		{Title: "Members", Width: 8, Sortable: true},
-		{Title: "Total Lag", Width: 12, Sortable: true},
-	}
+// columnSchema declares every groups column once: its config key, table spec,
+// and cell renderer. Member-count and lag cells read the lazily-populated
+// m.memberN / m.totalLag maps, which are mutated in place, never reassigned.
+func (m *Model) columnSchema() components.ColumnSchema[kafka.GroupListInfo] {
+	return components.NewColumnSchema([]components.ColumnField[kafka.GroupListInfo]{
+		{Key: "state", Col: components.Column{Title: "State", Width: 12, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string {
+				return lipgloss.NewStyle().Foreground(groupStateColor(m.styles, g.State)).Render(g.State)
+			}},
+		{Key: "name", Col: components.Column{Title: "ID", Flex: true, MinWidth: 24, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string { return g.Group }},
+		{Key: "coordinator", Col: components.Column{Title: "Coordinator", Width: 14, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string { return strconv.FormatInt(int64(g.Coordinator), 10) }},
+		{Key: "protocol", Col: components.Column{Title: "Protocol", Width: 12, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string {
+				if g.Protocol == "" {
+					return emDash
+				}
+				return g.Protocol
+			}},
+		{Key: "members", Col: components.Column{Title: "Members", Width: 8, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string {
+				if n, ok := m.memberN[g.Group]; ok {
+					return strconv.Itoa(n)
+				}
+				return emDash
+			}},
+		{Key: "total_lag", Col: components.Column{Title: "Total Lag", Width: 12, Sortable: true},
+			Cell: func(g kafka.GroupListInfo) string {
+				if l, ok := m.totalLag[g.Group]; ok {
+					return formatThousands(l)
+				}
+				return emDash
+			}},
+	}, DefaultColumns)
 }
 
 // Init dispatches the initial groups load and schedules the first
@@ -708,31 +745,9 @@ func (m *Model) refreshCmd() tea.Cmd {
 func (m *Model) refreshTable() {
 	rows := make([]components.Row, 0, len(m.groups))
 	for _, g := range m.groups {
-		members := emDash
-		if n, ok := m.memberN[g.Group]; ok {
-			members = strconv.Itoa(n)
-		}
-		lag := emDash
-		if l, ok := m.totalLag[g.Group]; ok {
-			lag = formatThousands(l)
-		}
-		state := lipgloss.NewStyle().
-			Foreground(groupStateColor(m.styles, g.State)).
-			Render(g.State)
-		protocol := g.Protocol
-		if protocol == "" {
-			protocol = emDash
-		}
 		rows = append(rows, components.Row{
-			ID: g.Group,
-			Values: []string{
-				state,
-				g.Group,
-				strconv.FormatInt(int64(g.Coordinator), 10),
-				protocol,
-				members,
-				lag,
-			},
+			ID:     g.Group,
+			Values: m.cols.Row(g),
 		})
 	}
 	m.table.SetRows(rows)

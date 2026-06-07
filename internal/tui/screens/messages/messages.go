@@ -132,7 +132,7 @@ type Model struct {
 	readOnly bool
 	repo     ViewStateRepository
 
-	columns   []string
+	cols      components.ColumnSelection[kafka.Message]
 	pageSize  int
 	filter    []int32
 	clipboard Clipboard
@@ -201,31 +201,22 @@ func New(opts Options) *Model {
 	if styles.Palette.Foreground == nil {
 		styles = theme.DefaultStyles()
 	}
-	cols := opts.Columns
-	if len(cols) == 0 {
-		cols = append([]string(nil), DefaultColumns...)
-	} else {
-		cols = append([]string(nil), cols...)
-	}
 	pageSize := opts.PageSize
 	if pageSize <= 0 {
 		pageSize = DefaultPageSize
 	}
-	tbl := components.NewTable(buildColumns(cols), components.WithStyles(styles))
 
-	return &Model{
+	m := &Model{
 		svc:       opts.Service,
 		topic:     opts.Topic,
 		cluster:   opts.Cluster,
 		readOnly:  opts.ReadOnly,
 		repo:      opts.ViewState,
-		columns:   cols,
 		pageSize:  pageSize,
 		clipboard: opts.Clipboard,
 		writer:    opts.FileWriter,
 		pager:     opts.Pager,
 		outputDir: opts.OutputDir,
-		table:     tbl,
 		toasts:    components.NewToasts(components.WithToastClock(now), components.WithToastStyles(styles)),
 		now:       now,
 		styles:    styles,
@@ -234,6 +225,15 @@ func New(opts Options) *Model {
 		track:     lifecycle.New(),
 		copyMenu:  NewCopyMenu(opts.Clipboard, styles),
 	}
+
+	sel, unknown := m.columnSchema().Resolve(opts.Columns)
+	m.cols = sel
+	m.table = components.NewTable(sel.TableColumns(), components.WithStyles(styles))
+	if len(unknown) > 0 {
+		m.toasts.Push(components.ToastWarning, "ignoring unknown messages columns: "+strings.Join(unknown, ", "))
+	}
+
+	return m
 }
 
 // Init: with persisted state, restoration is two-phase (fetch watermarks,
@@ -1234,37 +1234,10 @@ func (m *Model) refreshTable() {
 	for _, msg := range m.messages {
 		rows = append(rows, components.Row{
 			ID:     formatRowID(msg.Partition, msg.Offset),
-			Values: m.rowValues(msg),
+			Values: m.cols.Row(msg),
 		})
 	}
 	m.table.SetRows(rows)
-}
-
-func (m *Model) rowValues(msg kafka.Message) []string {
-	out := make([]string, 0, len(m.columns))
-	for _, col := range m.columns {
-		out = append(out, m.cellFor(col, msg))
-	}
-	return out
-}
-
-func (m *Model) cellFor(col string, msg kafka.Message) string {
-	switch col {
-	case "timestamp":
-		return FormatTimestamp(msg.Timestamp)
-	case "partition":
-		return strconv.FormatInt(int64(msg.Partition), 10)
-	case "offset":
-		return strconv.FormatInt(msg.Offset, 10)
-	case "key":
-		return PreviewLine(msg.Key, 32)
-	case "value":
-		return PreviewLine(msg.Value, valuePreviewWidth(m.width))
-	case "headers":
-		return headersPreview(msg.Headers)
-	default:
-		return ""
-	}
 }
 
 func headersPreview(headers []kafka.Header) string {
@@ -1393,31 +1366,24 @@ func FormatTimestamp(ts time.Time) string {
 
 // ----- column helpers -----
 
-func buildColumns(keys []string) []components.Column {
-	out := make([]components.Column, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, columnSpec(k))
-	}
-	return out
-}
-
-func columnSpec(key string) components.Column {
-	switch key {
-	case "timestamp":
-		return components.Column{Title: "Timestamp", Width: 23, Sortable: true}
-	case "partition":
-		return components.Column{Title: "Partition", Width: 9, Sortable: true}
-	case "offset":
-		return components.Column{Title: "Offset", Width: 10, Sortable: true}
-	case "key":
-		return components.Column{Title: "Key", Width: 32, Sortable: true}
-	case "value":
-		return components.Column{Title: "Value", Flex: true, MinWidth: 20, Sortable: false}
-	case "headers":
-		return components.Column{Title: "Headers", Width: 28, Sortable: false}
-	default:
-		return components.Column{Title: key, Width: 10}
-	}
+// columnSchema declares every messages column once: its config key, table spec,
+// and cell renderer. The value cell reads m.width (mutated on resize) for its
+// preview budget.
+func (m *Model) columnSchema() components.ColumnSchema[kafka.Message] {
+	return components.NewColumnSchema([]components.ColumnField[kafka.Message]{
+		{Key: "timestamp", Col: components.Column{Title: "Timestamp", Width: 23, Sortable: true},
+			Cell: func(msg kafka.Message) string { return FormatTimestamp(msg.Timestamp) }},
+		{Key: "partition", Col: components.Column{Title: "Partition", Width: 9, Sortable: true},
+			Cell: func(msg kafka.Message) string { return strconv.FormatInt(int64(msg.Partition), 10) }},
+		{Key: "offset", Col: components.Column{Title: "Offset", Width: 10, Sortable: true},
+			Cell: func(msg kafka.Message) string { return strconv.FormatInt(msg.Offset, 10) }},
+		{Key: "key", Col: components.Column{Title: "Key", Width: 32, Sortable: true},
+			Cell: func(msg kafka.Message) string { return PreviewLine(msg.Key, 32) }},
+		{Key: "value", Col: components.Column{Title: "Value", Flex: true, MinWidth: 20, Sortable: false},
+			Cell: func(msg kafka.Message) string { return PreviewLine(msg.Value, valuePreviewWidth(m.width)) }},
+		{Key: "headers", Col: components.Column{Title: "Headers", Width: 28, Sortable: false},
+			Cell: func(msg kafka.Message) string { return headersPreview(msg.Headers) }},
+	}, DefaultColumns)
 }
 
 func formatRowID(partition int32, offset int64) string {
