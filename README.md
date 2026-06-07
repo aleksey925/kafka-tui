@@ -176,12 +176,16 @@ Merge rules:
 `:config sources` opens an in-app screen showing which file each field came from. Annotated
 samples covering all fields below live in [`examples/`](examples/).
 
+Any string value in either file can use `${env:...}` / `${file:...}` / `${vault:...}`
+placeholders (see [Placeholders](#placeholders)), except `vault.address` / `vault.token`, which
+cannot reference `${vault:...}` themselves.
+
 #### `config.yaml` — UI behavior
 
 | Section     | Field                      | Description                                                                                                                           |
 | ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `logging`   | `level`                    | Log level: `debug` / `info` / `warn` / `error`. Overridable via `--log-level`.                                                        |
-|             | `file`                     | Log file path (supports `${env:...}`, `${file:...}`, and `~`; vault placeholders not allowed here).                                   |
+|             | `file`                     | Log file path.                                                                                                                        |
 |             | `max_size_mb`, `max_files` | Rotation thresholds for the log file.                                                                                                 |
 | `topics`    | `columns`                  | Visible columns, in display order: `name`, `partitions`, `replicas`, `messages`, `size`, `cleanup_policy`, `retention_ms`, `min_isr`. |
 | `groups`    | `columns`                  | Visible columns, in display order: `state`, `name`, `coordinator`, `protocol`, `members`, `total_lag`.                                |
@@ -213,7 +217,8 @@ marks the cluster invalid in the picker.
 ### Placeholders
 
 Any string field may contain one or more placeholders. Resolution runs in two phases: `env` and
-`file` first, then `vault`. Nested placeholders are rejected.
+`file` first, then `vault`. Nested placeholders are rejected. `vault.address` / `vault.token`
+cannot reference `${vault:...}` (a vault lookup needs them resolved first).
 
 | Placeholder           | Description                              |
 | --------------------- | ---------------------------------------- |

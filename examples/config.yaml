@@ -6,11 +6,13 @@
 #
 # Scalars in the project layer override global; lists are replaced wholesale.
 # Use `:config sources` inside the TUI to inspect where each field came from.
+#
+# Any string value can use ${env:VAR}, ${file:/path}, or ${vault:path#key} placeholders
+# (except vault.address / vault.token, which cannot reference ${vault:...} themselves).
 
 logging:
   # one of: debug | info | warn | error
   level: info
-  # supports ${env:VAR}, ${env:VAR:-default}, and ~ expansion (vault not supported here)
   file: ~/.kafka-tui/kafka-tui.log
   max_size_mb: 10
   max_files: 5
