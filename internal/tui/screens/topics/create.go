@@ -230,18 +230,18 @@ func updateFormModal(form *components.Form, mode FormMode, key tea.KeyPressMsg, 
 	return form, mode
 }
 
-// applyPasteToForm routes a paste event into the focused text-like field and
-// auto-transitions to INSERT (so the user lands in the field they just pasted
-// into). Non-text fields silently drop the paste — its content has no meaning
-// for an option picker.
+// applyPasteToForm routes a paste event into the focused text-like field
+// without changing mode. Paste is a discrete action on the focused field, not
+// a keystroke stream, so it never crosses NORMAL into INSERT (see § Paste in
+// CLAUDE.md). Non-text fields silently drop the paste — its content has no
+// meaning for an option picker.
 func applyPasteToForm(form *components.Form, mode FormMode, paste tea.PasteMsg) (*components.Form, FormMode) {
 	kind := form.FocusedField().Kind
 	if kind != components.FieldText && kind != components.FieldTextarea && kind != components.FieldList {
 		return form, mode
 	}
 	f, _ := form.Update(paste)
-	applyMode(f, FormInsert)
-	return f, FormInsert
+	return f, mode
 }
 
 func applyMode(form *components.Form, mode FormMode) {

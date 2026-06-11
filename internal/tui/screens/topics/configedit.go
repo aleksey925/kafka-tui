@@ -220,7 +220,8 @@ func (m *ConfigEditModel) actOpenSaveConfirm() tea.Cmd {
 	m.err = ""
 	m.confirm = components.NewConfirm(
 		"Save config",
-		fmt.Sprintf("Save changes to %q?", m.topic),
+		"Save changes?",
+		components.WithConfirmField("Topic", m.topic),
 		components.WithConfirmStyles(m.styles),
 	)
 	return nil

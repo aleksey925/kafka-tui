@@ -416,9 +416,10 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// handlePaste injects the pasted text into the focused text field, auto
-// switching from NORMAL to INSERT so the user lands in the field they just
-// pasted into. Non-text fields (segmented) silently drop the paste — its
+// handlePaste injects the pasted text into the focused text field without
+// changing mode. Paste is a discrete action on the focused field, not a
+// keystroke stream, so it never crosses NORMAL into INSERT (see § Paste in
+// CLAUDE.md). Non-text fields (segmented) silently drop the paste — its
 // content has no meaning for an option picker.
 //
 // While the send confirm modal is up the form is uneditable: the modal
@@ -434,9 +435,6 @@ func (m *Model) handlePaste(msg tea.PasteMsg) {
 	}
 	f, _ := m.form.Update(msg)
 	m.form = f
-	if m.mode != ModeInsert {
-		m.setMode(ModeInsert)
-	}
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {

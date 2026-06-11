@@ -435,8 +435,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.PasteMsg:
+		// mirror handleKey: picker owns paste when open, otherwise the reset
+		// form receives it (it drops paste on its non-text steps itself).
 		if m.refreshPicker != nil {
 			m.refreshPicker, _ = m.refreshPicker.Update(msg)
+		} else if m.mode == ModeReset {
+			m.reset, _ = m.reset.Update(msg)
 		}
 		return nil
 	case tea.KeyPressMsg:
@@ -508,7 +512,8 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 		m.pending = pendingOp{group: d.Group()}
 		m.confirm = components.NewConfirm(
 			"Delete consumer group",
-			fmt.Sprintf("Delete group %q? This cannot be undone.", d.Group()),
+			"This cannot be undone.",
+			components.WithConfirmField("Group", d.Group()),
 			components.WithConfirmStyles(m.styles),
 		)
 		m.detail = nil
@@ -602,7 +607,8 @@ func (m *Model) openDeleteConfirm() tea.Cmd {
 	m.pending = pendingOp{group: row.ID}
 	m.confirm = components.NewConfirm(
 		"Delete consumer group",
-		fmt.Sprintf("Delete group %q? This cannot be undone.", row.ID),
+		"This cannot be undone.",
+		components.WithConfirmField("Group", row.ID),
 		components.WithConfirmStyles(m.styles),
 	)
 	return nil

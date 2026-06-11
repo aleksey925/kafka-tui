@@ -4,18 +4,10 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
 )
-
-// modalContentWidth is the inner width shared by every confirm modal so
-// hints fit on a single row and titles can be centered against a known
-// canvas. The value comfortably fits the longest hint line in the app
-// ("y send  k send & keep  esc cancel") with breathing room on both
-// sides.
-const modalContentWidth = 44
 
 // ConfirmResult is what Confirm.Update returns when the user answers.
 type ConfirmResult int
@@ -26,13 +18,19 @@ const (
 	ConfirmNo
 )
 
-// Confirm is a centered yes/no modal dialog.
+// Confirm is a centered yes/no modal dialog. Message is the trailing
+// sentence (e.g. "This cannot be undone."); fields carry the labeled
+// context (Topic, Group, From/To) that identifies what is about to happen.
+// Long context values wrap onto their own lines so the modal box never
+// stretches to the full length of an identifier (see the shared
+// [renderModal]).
 type Confirm struct {
 	Title   string
 	Message string
 	YesKey  string // defaults to "y"
 	NoKey   string // defaults to "n"
 
+	fields []modalField
 	result ConfirmResult
 	styles theme.Styles
 }
@@ -55,6 +53,12 @@ type ConfirmOption func(*Confirm)
 
 func WithConfirmStyles(s theme.Styles) ConfirmOption {
 	return func(c *Confirm) { c.styles = s }
+}
+
+// WithConfirmField appends a labeled context line (e.g. "Topic", name) shown
+// above the message. The value wraps when it would overflow the modal width.
+func WithConfirmField(label, value string) ConfirmOption {
+	return func(c *Confirm) { c.fields = append(c.fields, modalField{Label: label, Value: value}) }
 }
 
 func (c *Confirm) Result() ConfirmResult { return c.result }
@@ -93,28 +97,5 @@ func (c *Confirm) View(width, height int) string {
 		Hint{Key: c.YesKey, Label: "yes"},
 		Hint{Key: c.NoKey, Label: "no"},
 	)
-
-	body := []string{}
-	if c.Title != "" {
-		body = append(body, lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, c.styles.HelpTitle.Render(c.Title)))
-	}
-	if c.Message != "" {
-		body = append(body, "", c.styles.Command.Render(c.Message))
-	}
-	body = append(body, "", lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, hint))
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Foreground(c.styles.Palette.Foreground).
-		Render(strings.Join(body, "\n"))
-
-	placed := box
-	if width > 0 {
-		placed = lipgloss.PlaceHorizontal(width, lipgloss.Center, placed)
-	}
-	if height > 0 {
-		placed = lipgloss.PlaceVertical(height, lipgloss.Center, placed)
-	}
-	return placed
+	return renderModal(c.styles, c.Title, c.fields, c.Message, hint, width, height)
 }

@@ -458,11 +458,15 @@ func TestTextarea_CursorFollowKeepsLastLineVisible(t *testing.T) {
 	}
 	value.WriteString("CURSOR_TARGET")
 	_ = m.Update(tea.PasteMsg{Content: value.String()})
-	require.Equal(t, produce.ModeInsert, m.Mode(), "paste auto-enters INSERT on the focused textarea")
+	require.Equal(t, produce.ModeNormal, m.Mode(), "paste must not cross into INSERT")
+	// enter INSERT to edit: the cursor sits at the end of the pasted content,
+	// so the bounded textarea viewport must follow it to the last line.
+	_ = m.Update(keyPress("enter"))
+	require.Equal(t, produce.ModeInsert, m.Mode())
 
 	out := m.View()
 	assert.Contains(t, out, "CURSOR_TARGET",
-		"cursor's logical line must be in the visible window after a long paste")
+		"cursor's logical line must be in the visible window after entering INSERT")
 	assert.NotContains(t, out, "FIRST_MARKER_xxxxx\n",
 		"early lines must have scrolled out — otherwise the viewport isn't actually bounded")
 }
@@ -524,7 +528,7 @@ func TestTextarea_NormalModeScrollKeysPanViewport(t *testing.T) {
 		"end in NORMAL on a textarea must scroll the viewport to the bottom")
 }
 
-func TestPaste_InNormalAutoEntersInsertAndInsertsValue(t *testing.T) {
+func TestPaste_InNormalLandsValueAndStaysNormal(t *testing.T) {
 	svc := newFakeService()
 	m := produce.New(produce.Options{Service: svc, Topic: "orders"})
 	// focus the value field; mode stays NORMAL because we never pressed enter.
@@ -535,7 +539,7 @@ func TestPaste_InNormalAutoEntersInsertAndInsertsValue(t *testing.T) {
 
 	got, _ := m.Form().Field("value")
 	assert.Equal(t, "payload", got.Value, "paste must land in the focused value field")
-	assert.Equal(t, produce.ModeInsert, m.Mode(), "paste in NORMAL must auto-transition to INSERT")
+	assert.Equal(t, produce.ModeNormal, m.Mode(), "paste must not cross NORMAL into INSERT")
 }
 
 func TestPaste_OnSegmentedFieldIsIgnored(t *testing.T) {

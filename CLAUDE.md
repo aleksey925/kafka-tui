@@ -140,9 +140,10 @@ dropped. Paste into a single-line field is flattened (newlines and tabs
 become spaces) rather than rejected or truncated. Non-text controls
 (dropdowns, segmented selectors) ignore paste.
 
-Deviation: in modal forms, paste auto-transitions NORMAL → INSERT when the
-focused field is text-like — the only implicit mode crossing. Without it the
-user would paste into a field they haven't entered.
+In a modal form, paste lands in the focused field without crossing NORMAL into
+INSERT: it targets the field directly, it is not a keystroke stream (only
+keystrokes edit, and only in INSERT). A paste arriving while a confirm modal
+owns input is dropped.
 
 ### Bounded display
 

@@ -672,6 +672,25 @@ func TestWantsRawInput_OnlyDuringResetParams(t *testing.T) {
 	assert.True(t, m.WantsRawInput(), "params step edits text")
 }
 
+func TestReset_PasteLandsInParamsField(t *testing.T) {
+	svc := newFakeService()
+	svc.groups = []kafka.GroupListInfo{{Group: "g1", State: "Empty"}}
+	m := groups.New(groups.Options{Service: svc})
+	drive(t, m, m.Init())
+	_ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	// R → reset, j j → ResetShift strategy, enter → StepParams (text input).
+	_ = m.Update(keyPress("R"))
+	_ = m.Update(keyPress("j"))
+	_ = m.Update(keyPress("j"))
+	_ = m.Update(keyPress("enter"))
+	require.Equal(t, groups.StepParams, m.Reset().Step())
+
+	_ = m.Update(tea.PasteMsg{Content: "98765"})
+
+	assert.Contains(t, m.View(), "98765", "paste must reach the reset params field")
+}
+
 // TestReset_DoneFromDetailRefreshesDetail pins the post-commit
 // refresh: after a successful reset opened from inside detail, the
 // detail must re-fetch so the user sees the new committed offsets

@@ -109,7 +109,9 @@ func (m *Model) actOpenCloneConfirm() tea.Cmd {
 	m.clone.SetError("")
 	m.cloneConfirm = components.NewConfirm(
 		"Clone topic",
-		fmt.Sprintf("Clone %s → %s?", src, dst),
+		"",
+		components.WithConfirmField("From", src),
+		components.WithConfirmField("To", dst),
 		components.WithConfirmStyles(m.styles),
 	)
 	return nil
