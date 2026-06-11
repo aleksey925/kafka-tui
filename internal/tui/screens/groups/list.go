@@ -435,8 +435,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.PasteMsg:
+		// mirror handleKey: picker owns paste when open, otherwise the reset
+		// form receives it (it drops paste on its non-text steps itself).
 		if m.refreshPicker != nil {
 			m.refreshPicker, _ = m.refreshPicker.Update(msg)
+		} else if m.mode == ModeReset {
+			m.reset, _ = m.reset.Update(msg)
 		}
 		return nil
 	case tea.KeyPressMsg:

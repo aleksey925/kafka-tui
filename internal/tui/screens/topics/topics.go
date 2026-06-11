@@ -373,14 +373,34 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		cmd := m.HandleRefreshTick()
 		return cmd
 	case tea.PasteMsg:
-		if m.refreshPicker != nil {
-			m.refreshPicker, _ = m.refreshPicker.Update(msg)
-		}
+		m.handlePaste(msg)
 		return nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return nil
+}
+
+// handlePaste routes a paste like handleKey routes keys: the picker owns it
+// when open, else the create / clone form for the active mode; modes with no
+// text field drop it. The cloneConfirm guard is load-bearing — without it a
+// paste would land in the clone form behind the modal.
+func (m *Model) handlePaste(msg tea.PasteMsg) {
+	if m.refreshPicker != nil {
+		m.refreshPicker, _ = m.refreshPicker.Update(msg)
+		return
+	}
+	switch m.mode {
+	case ModeList, ModeCloning:
+		// no text field to paste into
+	case ModeCreate:
+		m.create, _ = m.create.Update(msg)
+	case ModeClone:
+		if m.cloneConfirm != nil {
+			return
+		}
+		m.clone, _ = m.clone.Update(msg)
+	}
 }
 
 func (m *Model) handleKey(key tea.KeyPressMsg) tea.Cmd {

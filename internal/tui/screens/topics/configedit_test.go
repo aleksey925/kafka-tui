@@ -268,6 +268,23 @@ func TestConfigEdit_IntegerRejectsEmpty(t *testing.T) {
 	assert.Contains(t, m.View(), "must be an integer")
 }
 
+func TestConfigEdit_PasteInNormalLandsValueAndStaysNormal(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.NewConfigEditModel(topics.ConfigEditOptions{
+		Service:      svc,
+		Topic:        "alpha",
+		Key:          "retention.ms",
+		CurrentValue: "60000",
+	})
+	require.Equal(t, topics.FormNormal, m.Mode())
+
+	_ = m.Update(tea.PasteMsg{Content: "123"})
+
+	got := m.Form().FocusedField()
+	assert.Contains(t, got.Value, "123", "paste must land in the focused value field")
+	assert.Equal(t, topics.FormNormal, m.Mode(), "paste must not cross NORMAL into INSERT")
+}
+
 func TestConfigEdit_PasteIsDroppedWhileConfirmOpen(t *testing.T) {
 	svc := newFakeService(nil, nil)
 	m := topics.NewConfigEditModel(topics.ConfigEditOptions{

@@ -327,6 +327,45 @@ func TestN_OpensCreateForm(t *testing.T) {
 	assert.Contains(t, out, "create")
 }
 
+func TestCreateForm_PasteLandsInFocusedField(t *testing.T) {
+	svc := newFakeService(nil, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("n"))
+	require.Equal(t, topics.ModeCreate, m.CurrentMode())
+	m.CreateForm().Form().FocusKey("name")
+
+	_ = m.Update(tea.PasteMsg{Content: "orders.events"})
+
+	got, _ := m.CreateForm().Form().Field("name")
+	assert.Equal(t, "orders.events", got.Value, "paste must reach the create form name field")
+	assert.Equal(t, topics.FormNormal, m.CreateForm().Mode(), "paste must not cross into INSERT")
+}
+
+func TestCloneForm_PasteLandsAndDropsWhileConfirmOpen(t *testing.T) {
+	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
+	m := topics.New(topics.Options{Service: svc})
+	drive(t, m, m.Init())
+
+	_ = m.Update(keyPress("y"))
+	require.Equal(t, topics.ModeClone, m.CurrentMode())
+	m.CloneForm().Form().FocusKey("destination")
+
+	_ = m.Update(tea.PasteMsg{Content: "-eu"})
+	dst, _ := m.CloneForm().Form().Field("destination")
+	require.Contains(t, dst.Value, "-eu", "paste must reach the clone form destination field")
+	before := dst.Value
+
+	// open the clone confirm: it owns input, so a paste must be dropped
+	// rather than leak into the field behind the modal.
+	_ = m.Update(keyPress("s"))
+	_ = m.Update(tea.PasteMsg{Content: "LEAK"})
+
+	after, _ := m.CloneForm().Form().Field("destination")
+	assert.Equal(t, before, after.Value, "paste must not mutate the field while the clone confirm owns input")
+}
+
 func TestCreateForm_EscReturnsToList(t *testing.T) {
 	svc := newFakeService([]kafka.TopicSummary{{Name: "alpha"}}, nil)
 	m := topics.New(topics.Options{Service: svc})
