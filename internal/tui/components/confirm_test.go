@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/components"
@@ -85,4 +86,54 @@ func TestConfirm_ViewVerticallyCentered(t *testing.T) {
 func TestWithConfirmStyles_AppliesPalette(t *testing.T) {
 	c := components.NewConfirm("Title", "Body", components.WithConfirmStyles(theme.DefaultStyles()))
 	assert.NotEmpty(t, c.View(40, 0))
+}
+
+func TestConfirm_FieldSurfacesLabelAndValue(t *testing.T) {
+	c := components.NewConfirm("Delete topic", "This cannot be undone.",
+		components.WithConfirmField("Topic", "orders"))
+	out := c.View(80, 0)
+	assert.Contains(t, out, "Topic:")
+	assert.Contains(t, out, "orders")
+}
+
+// A long context value must wrap onto its own lines (broken at the `.`/`-`
+// separators) rather than stretch the box to its full length.
+func TestConfirm_LongFieldValueWraps(t *testing.T) {
+	c := components.NewConfirm("Delete topic", "This cannot be undone.",
+		components.WithConfirmField("Topic", "payments.transactions.events-v2-eu-west-region-extra-long"))
+	out := boxLines(c.View(80, 0))
+
+	headRow, tailRow := -1, -1
+	for i, ln := range out {
+		if strings.Contains(ln, "payments.") {
+			headRow = i
+		}
+		if strings.Contains(ln, "extra-long") {
+			tailRow = i
+		}
+	}
+	assert.GreaterOrEqual(t, headRow, 0)
+	assert.GreaterOrEqual(t, tailRow, 0)
+	assert.NotEqual(t, headRow, tailRow, "value head and tail must land on different rows")
+}
+
+// The regression guard for the centering bug: every rendered row shares the
+// same visual width, so the title and hints centered inside the box can't
+// drift off-center when a long value widens it.
+func TestConfirm_AllRowsShareWidth(t *testing.T) {
+	c := components.NewConfirm("Delete topic", "This cannot be undone.",
+		components.WithConfirmField("Topic", "payments.transactions.events-v2-eu-west-region-extra-long"))
+	// width 0 skips outer placement, so the rows we measure are the box
+	// itself rather than placement padding equalizing every line to the
+	// screen width.
+	lines := boxLines(c.View(0, 0))
+
+	want := ansi.StringWidth(lines[0])
+	for i, ln := range lines {
+		assert.Equal(t, want, ansi.StringWidth(ln), "row %d width mismatch", i)
+	}
+}
+
+func boxLines(view string) []string {
+	return strings.Split(strings.Trim(view, "\n"), "\n")
 }

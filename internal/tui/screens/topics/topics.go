@@ -524,7 +524,8 @@ func (m *Model) openDeleteConfirm() tea.Cmd {
 	m.pending = pendingOp{topic: row.ID}
 	m.confirm = components.NewConfirm(
 		"Delete topic",
-		fmt.Sprintf("Delete topic %q? This cannot be undone.", row.ID),
+		"This cannot be undone.",
+		components.WithConfirmField("Topic", row.ID),
 		components.WithConfirmStyles(m.styles),
 	)
 	return nil

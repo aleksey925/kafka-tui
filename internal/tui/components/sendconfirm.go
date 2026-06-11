@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/aleksey925/kafka-tui/internal/tui/keymap"
 	"github.com/aleksey925/kafka-tui/internal/tui/theme"
@@ -86,33 +85,17 @@ func (c *SendConfirm) Bindings(category string) []keymap.Binding {
 // View renders the modal centered within width/height; pass 0 to skip
 // placement on that axis.
 func (c *SendConfirm) View(width, height int) string {
-	title := lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, c.styles.HelpTitle.Render("Send"))
-	body := []string{title, ""}
+	var fields []modalField
 	if c.Cluster != "" {
-		body = append(body, c.styles.Command.Render("Cluster:  "+c.Cluster))
+		fields = append(fields, modalField{Label: "Cluster", Value: c.Cluster})
 	}
 	if c.Topic != "" {
-		body = append(body, c.styles.Command.Render("Topic:    "+c.Topic))
+		fields = append(fields, modalField{Label: "Topic", Value: c.Topic})
 	}
 	hint := HintLine(c.styles,
 		Hint{Key: "y", Label: "send"},
 		Hint{Key: "k", Label: "send & keep"},
 		Hint{Key: "esc", Label: "cancel"},
 	)
-	body = append(body, "", lipgloss.PlaceHorizontal(modalContentWidth, lipgloss.Center, hint))
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 2).
-		Foreground(c.styles.Palette.Foreground).
-		Render(strings.Join(body, "\n"))
-
-	placed := box
-	if width > 0 {
-		placed = lipgloss.PlaceHorizontal(width, lipgloss.Center, placed)
-	}
-	if height > 0 {
-		placed = lipgloss.PlaceVertical(height, lipgloss.Center, placed)
-	}
-	return placed
+	return renderModal(c.styles, "Send", fields, "", hint, width, height)
 }

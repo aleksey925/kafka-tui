@@ -508,7 +508,8 @@ func (m *Model) handleDetailKey(key tea.KeyPressMsg) tea.Cmd {
 		m.pending = pendingOp{group: d.Group()}
 		m.confirm = components.NewConfirm(
 			"Delete consumer group",
-			fmt.Sprintf("Delete group %q? This cannot be undone.", d.Group()),
+			"This cannot be undone.",
+			components.WithConfirmField("Group", d.Group()),
 			components.WithConfirmStyles(m.styles),
 		)
 		m.detail = nil
@@ -602,7 +603,8 @@ func (m *Model) openDeleteConfirm() tea.Cmd {
 	m.pending = pendingOp{group: row.ID}
 	m.confirm = components.NewConfirm(
 		"Delete consumer group",
-		fmt.Sprintf("Delete group %q? This cannot be undone.", row.ID),
+		"This cannot be undone.",
+		components.WithConfirmField("Group", row.ID),
 		components.WithConfirmStyles(m.styles),
 	)
 	return nil
